@@ -15,6 +15,7 @@
 #include <linux/mfd/samsung/s2mps11.h>
 #include <linux/mfd/samsung/s2mps13.h>
 #include <linux/mfd/samsung/s2mps14.h>
+#include <linux/mfd/samsung/s2mps16.h>
 #include <linux/mfd/samsung/s5m8767.h>
 #include <linux/mfd/samsung/core.h>
 
@@ -153,6 +154,9 @@ static int s2mps11_clk_probe(struct platform_device *pdev)
 	case S2MPS14X:
 		s2mps11_reg = S2MPS14_REG_RTCCTRL;
 		break;
+	case S2MPS16X:
+		s2mps11_reg = S2MPS16_REG_RTC_BUF;
+		break;
 	case S5M8767X:
 		s2mps11_reg = S5M8767_REG_CTRL1;
 		break;
@@ -229,6 +233,7 @@ static const struct platform_device_id s2mps11_clk_id[] = {
 	{ .name = "s2mps11-clk", .driver_data = S2MPS11X },
 	{ .name = "s2mps13-clk", .driver_data = S2MPS13X },
 	{ .name = "s2mps14-clk", .driver_data = S2MPS14X },
+	{ .name = "s2mps16-clk", .driver_data = S2MPS16X },
 	{ .name = "s5m8767-clk", .driver_data = S5M8767X },
 	{ }
 };
@@ -257,6 +262,9 @@ static const struct of_device_id s2mps11_dt_match[] __used = {
 	}, {
 		.compatible = "samsung,s2mps14-clk",
 		.data = (void *)S2MPS14X,
+	}, {
+		.compatible = "samsung,s2mps16-clk",
+		.data = (void *)S2MPS16X,
 	}, {
 		.compatible = "samsung,s5m8767-clk",
 		.data = (void *)S5M8767X,
