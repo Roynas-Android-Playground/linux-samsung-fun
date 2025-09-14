@@ -51,6 +51,7 @@ static const struct exynos_soc_id {
 	{ "EXYNOS4210", 0x43200000 },	/* EVT0 revision */
 	{ "EXYNOS4210", 0x43210000 },
 	{ "EXYNOS4212", 0x43220000 },
+	{ "EXYNOS8890", 0xE8890000 },
 	{ "EXYNOS4412", 0xE4412000 },
 	{ "EXYNOS5250", 0x43520000 },
 	{ "EXYNOS5260", 0xE5260000 },
