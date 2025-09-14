@@ -27,6 +27,7 @@ properties:
       - samsung,exynos5420-tmu-ext-triminfo
       - samsung,exynos5433-tmu
       - samsung,exynos7-tmu
+      - samsung,exynos8890-tmu
 
   clocks:
     minItems: 1
@@ -104,6 +105,7 @@ allOf:
             enum:
               - samsung,exynos5433-tmu
               - samsung,exynos7-tmu
+              - samsung,exynos8890-tmu
     then:
       properties:
         clocks:
