@@ -14,6 +14,7 @@ properties:
     oneOf:
       - enum:
           - samsung,exynos4210-chipid
+              - samsung,exynos8890-chipid
           - samsung,exynos850-chipid
       - items:
           - enum:
