@@ -116,6 +116,12 @@
 #define EXYNOS7_EMUL_DATA_SHIFT			7
 #define EXYNOS7_EMUL_DATA_MASK			0x1ff
 
+/* Exynos8890 TEM1456X calibration fields */
+#define EXYNOS8890_TRIMINFO_85_SHIFT		9
+#define EXYNOS8890_CALIB_SEL_SHIFT		23
+#define EXYNOS8890_REF_VOLTAGE_OTP_SHIFT	18
+#define EXYNOS8890_BUF_SLOPE_OTP_SHIFT		18
+
 #define EXYNOS_FIRST_POINT_TRIM			25
 #define EXYNOS_SECOND_POINT_TRIM		85
 
@@ -133,6 +139,7 @@ enum soc_type {
 	SOC_ARCH_EXYNOS5420_TRIMINFO,
 	SOC_ARCH_EXYNOS5433,
 	SOC_ARCH_EXYNOS7,
+	SOC_ARCH_EXYNOS8890,
 };
 
 /**
@@ -232,12 +239,14 @@ static int code_to_temp(struct exynos_tmu_data *data, u16 temp_code)
 static void sanitize_temp_error(struct exynos_tmu_data *data, u32 trim_info)
 {
 	u16 tmu_temp_mask =
-		(data->soc == SOC_ARCH_EXYNOS7) ? EXYNOS7_TMU_TEMP_MASK
-						: EXYNOS_TMU_TEMP_MASK;
+		(data->soc == SOC_ARCH_EXYNOS7 ||
+		 data->soc == SOC_ARCH_EXYNOS8890) ? EXYNOS7_TMU_TEMP_MASK
+						 : EXYNOS_TMU_TEMP_MASK;
+	u8 triminfo_85_shift = data->soc == SOC_ARCH_EXYNOS8890 ?
+		EXYNOS8890_TRIMINFO_85_SHIFT : EXYNOS_TRIMINFO_85_SHIFT;
 
 	data->temp_error1 = trim_info & tmu_temp_mask;
-	data->temp_error2 = ((trim_info >> EXYNOS_TRIMINFO_85_SHIFT) &
-				EXYNOS_TMU_TEMP_MASK);
+	data->temp_error2 = (trim_info >> triminfo_85_shift) & tmu_temp_mask;
 
 	if (!data->temp_error1 ||
 	    (data->min_efuse_value > data->temp_error1) ||
@@ -245,9 +254,8 @@ static void sanitize_temp_error(struct exynos_tmu_data *data, u32 trim_info)
 		data->temp_error1 = data->efuse_value & EXYNOS_TMU_TEMP_MASK;
 
 	if (!data->temp_error2)
-		data->temp_error2 =
-			(data->efuse_value >> EXYNOS_TRIMINFO_85_SHIFT) &
-			EXYNOS_TMU_TEMP_MASK;
+		data->temp_error2 = (data->efuse_value >> triminfo_85_shift) &
+			tmu_temp_mask;
 }
 
 static int exynos_tmu_initialize(struct platform_device *pdev)
@@ -286,7 +294,8 @@ static int exynos_thermal_zone_configure(struct platform_device *pdev)
 	ret = thermal_zone_get_crit_temp(tzd, &temp);
 	if (ret) {
 		/* FIXME: Remove this special case */
-		if (data->soc == SOC_ARCH_EXYNOS5433)
+		if (data->soc == SOC_ARCH_EXYNOS5433 ||
+		    data->soc == SOC_ARCH_EXYNOS8890)
 			return 0;
 
 		dev_err(&pdev->dev,
@@ -582,6 +591,36 @@ static void exynos7_tmu_initialize(struct platform_device *pdev)
 	sanitize_temp_error(data, trim_info);
 }
 
+static void exynos8890_tmu_initialize(struct platform_device *pdev)
+{
+	struct exynos_tmu_data *data = platform_get_drvdata(pdev);
+	u32 pending, trim_info, trim_info1;
+
+	trim_info = readl(data->base + EXYNOS_TMU_REG_TRIMINFO);
+	trim_info1 = readl(data->base + EXYNOS_TMU_REG_TRIMINFO + 4);
+
+	data->cal_type = trim_info & BIT(EXYNOS8890_CALIB_SEL_SHIFT) ?
+		TYPE_TWO_POINT_TRIMMING : TYPE_ONE_POINT_TRIMMING;
+	data->reference_voltage =
+		(trim_info >> EXYNOS8890_REF_VOLTAGE_OTP_SHIFT) &
+		EXYNOS_TMU_REF_VOLTAGE_MASK;
+	data->gain = (trim_info1 >> EXYNOS8890_BUF_SLOPE_OTP_SHIFT) &
+		EXYNOS_TMU_BUF_SLOPE_SEL_MASK;
+
+	sanitize_temp_error(data, trim_info);
+	if (data->cal_type == TYPE_TWO_POINT_TRIMMING &&
+	    data->temp_error2 <= data->temp_error1) {
+		dev_warn(&pdev->dev,
+			 "invalid two-point calibration, using one-point trim\n");
+		data->cal_type = TYPE_ONE_POINT_TRIMMING;
+	}
+
+	/* Leave policy to the thermal core; start with all trips masked. */
+	writel(0, data->base + EXYNOS7_TMU_REG_INTEN);
+	pending = readl(data->base + EXYNOS7_TMU_REG_INTPEND);
+	writel(pending, data->base + EXYNOS7_TMU_REG_INTPEND);
+}
+
 static void exynos4210_tmu_control(struct platform_device *pdev, bool on)
 {
 	struct exynos_tmu_data *data = platform_get_drvdata(pdev);
@@ -633,6 +672,20 @@ static void exynos7_tmu_control(struct platform_device *pdev, bool on)
 	writel(con, data->base + EXYNOS_TMU_REG_CONTROL);
 }
 
+static void exynos8890_tmu_control(struct platform_device *pdev, bool on)
+{
+	struct exynos_tmu_data *data = platform_get_drvdata(pdev);
+	u32 con;
+
+	con = get_con_reg(data, readl(data->base + EXYNOS_TMU_REG_CONTROL));
+	if (on)
+		con |= BIT(EXYNOS_TMU_CORE_EN_SHIFT);
+	else
+		con &= ~BIT(EXYNOS_TMU_CORE_EN_SHIFT);
+
+	writel(con, data->base + EXYNOS_TMU_REG_CONTROL);
+}
+
 static int exynos_get_temp(struct thermal_zone_device *tz, int *temp)
 {
 	struct exynos_tmu_data *data = thermal_zone_device_priv(tz);
@@ -671,7 +724,8 @@ static u32 get_emul_con_reg(struct exynos_tmu_data *data, unsigned int val,
 
 		val &= ~(EXYNOS_EMUL_TIME_MASK << EXYNOS_EMUL_TIME_SHIFT);
 		val |= (EXYNOS_EMUL_TIME << EXYNOS_EMUL_TIME_SHIFT);
-		if (data->soc == SOC_ARCH_EXYNOS7) {
+		if (data->soc == SOC_ARCH_EXYNOS7 ||
+		    data->soc == SOC_ARCH_EXYNOS8890) {
 			val &= ~(EXYNOS7_EMUL_DATA_MASK <<
 				EXYNOS7_EMUL_DATA_SHIFT);
 			val |= (temp_to_code(data, temp) <<
@@ -701,7 +755,8 @@ static void exynos4412_tmu_set_emulation(struct exynos_tmu_data *data,
 		emul_con = EXYNOS5260_EMUL_CON;
 	else if (data->soc == SOC_ARCH_EXYNOS5433)
 		emul_con = EXYNOS5433_TMU_EMUL_CON;
-	else if (data->soc == SOC_ARCH_EXYNOS7)
+	else if (data->soc == SOC_ARCH_EXYNOS7 ||
+		 data->soc == SOC_ARCH_EXYNOS8890)
 		emul_con = EXYNOS7_TMU_REG_EMUL_CON;
 	else
 		emul_con = EXYNOS_EMUL_CON;
@@ -782,7 +837,8 @@ static void exynos4210_tmu_clear_irqs(struct exynos_tmu_data *data)
 	if (data->soc == SOC_ARCH_EXYNOS5260) {
 		tmu_intstat = EXYNOS5260_TMU_REG_INTSTAT;
 		tmu_intclear = EXYNOS5260_TMU_REG_INTCLEAR;
-	} else if (data->soc == SOC_ARCH_EXYNOS7) {
+	} else if (data->soc == SOC_ARCH_EXYNOS7 ||
+		   data->soc == SOC_ARCH_EXYNOS8890) {
 		tmu_intstat = EXYNOS7_TMU_REG_INTPEND;
 		tmu_intclear = EXYNOS7_TMU_REG_INTPEND;
 	} else if (data->soc == SOC_ARCH_EXYNOS5433) {
@@ -833,6 +889,9 @@ static const struct of_device_id exynos_tmu_match[] = {
 	}, {
 		.compatible = "samsung,exynos7-tmu",
 		.data = (const void *)SOC_ARCH_EXYNOS7,
+	}, {
+		.compatible = "samsung,exynos8890-tmu",
+		.data = (const void *)SOC_ARCH_EXYNOS8890,
 	},
 	{ },
 };
@@ -944,6 +1003,21 @@ static int exynos_map_dt_data(struct platform_device *pdev)
 		data->efuse_value = 75;
 		data->min_efuse_value = 15;
 		data->max_efuse_value = 100;
+		break;
+	case SOC_ARCH_EXYNOS8890:
+		data->tmu_set_low_temp = exynos7_tmu_set_low_temp;
+		data->tmu_set_high_temp = exynos7_tmu_set_high_temp;
+		data->tmu_disable_low = exynos7_tmu_disable_low;
+		data->tmu_disable_high = exynos7_tmu_disable_high;
+		data->tmu_set_crit_temp = exynos7_tmu_set_crit_temp;
+		data->tmu_initialize = exynos8890_tmu_initialize;
+		data->tmu_control = exynos8890_tmu_control;
+		data->tmu_read = exynos7_tmu_read;
+		data->tmu_set_emulation = exynos4412_tmu_set_emulation;
+		data->tmu_clear_irqs = exynos4210_tmu_clear_irqs;
+		data->efuse_value = 50;
+		data->min_efuse_value = 0;
+		data->max_efuse_value = EXYNOS7_TMU_TEMP_MASK;
 		break;
 	default:
 		dev_err(&pdev->dev, "Platform not supported\n");
@@ -1062,6 +1136,7 @@ static int exynos_tmu_probe(struct platform_device *pdev)
 	switch (data->soc) {
 	case SOC_ARCH_EXYNOS5433:
 	case SOC_ARCH_EXYNOS7:
+	case SOC_ARCH_EXYNOS8890:
 		data->sclk = devm_clk_get(dev, "tmu_sclk");
 		if (IS_ERR(data->sclk)) {
 			ret = dev_err_probe(dev, PTR_ERR(data->sclk), "Failed to get sclk\n");
