@@ -388,8 +388,12 @@ static __init void parse_cmdline(const void *fdt, int chosen)
 	if (IS_ENABLED(CONFIG_CMDLINE_FORCE) || !prop)
 		__parse_cmdline(cmdline, true);
 
-	if (!IS_ENABLED(CONFIG_CMDLINE_FORCE) && prop)
+	if (!IS_ENABLED(CONFIG_CMDLINE_FORCE) && prop) {
 		__parse_cmdline(prop, true);
+
+		if (IS_ENABLED(CONFIG_CMDLINE_EXTEND))
+			__parse_cmdline(cmdline, true);
+	}
 }
 
 void __init init_feature_override(u64 boot_status, const void *fdt,
