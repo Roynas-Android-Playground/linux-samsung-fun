@@ -2814,6 +2814,8 @@ OF_EARLYCON_DECLARE(s5pv210, "samsung,s5pv210-uart",
 			s5pv210_early_console_setup);
 OF_EARLYCON_DECLARE(exynos4210, "samsung,exynos4210-uart",
 			s5pv210_early_console_setup);
+OF_EARLYCON_DECLARE(exynos8895, "samsung,exynos8895-uart",
+			s5pv210_early_console_setup);
 OF_EARLYCON_DECLARE(artpec8, "axis,artpec8-uart",
 			s5pv210_early_console_setup);
 OF_EARLYCON_DECLARE(exynos850, "samsung,exynos850-uart",
