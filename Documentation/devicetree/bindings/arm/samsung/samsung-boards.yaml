@@ -221,6 +221,7 @@ properties:
               - samsung,j5y17lte                # Samsung Galaxy J5 (2017)
               - samsung,j6lte                   # Samsung Galaxy J6
               - samsung,j7xelte                 # Samsung Galaxy J7 (2016)
+              - samsung,matisse10wifikx          # Samsung Galaxy Tab Advanced 4
               - samsung,on7xelte                # Samsung Galaxy J7 Prime
           - const: samsung,exynos7870
 
