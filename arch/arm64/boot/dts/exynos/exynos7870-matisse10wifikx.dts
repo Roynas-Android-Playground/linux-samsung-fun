@@ -73,6 +73,15 @@
 		};
 	};
 
+	tsp_en: regulator-tsp-en {
+		compatible = "regulator-fixed";
+		regulator-name = "tsp_en";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&gpd1 6 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
 	/* Matches the two stock SM-T536 memory nodes. */
 	memory@40000000 {
 		device_type = "memory";
@@ -347,7 +356,36 @@
 	status = "okay";
 };
 
+&i2c1 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	touchscreen@49 {
+		compatible = "st,stmfts";
+		reg = <0x49>;
+
+		interrupt-parent = <&gpa1>;
+		interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&tsp_irq>;
+
+		touchscreen-size-x = <1280>;
+		touchscreen-size-y = <800>;
+
+		/* Stock uses one TSP_EN rail for both digital and analog power. */
+		vdd-supply = <&tsp_en>;
+		avdd-supply = <&tsp_en>;
+	};
+};
+
 &pinctrl_alive {
+	tsp_irq: touchscreen-irq-pins {
+		samsung,pins = "gpa1-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
+	};
+
 	key_home: key-home-pins {
 		samsung,pins = "gpa1-7";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
