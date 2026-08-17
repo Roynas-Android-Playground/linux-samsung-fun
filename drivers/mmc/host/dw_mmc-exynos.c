@@ -46,6 +46,7 @@ struct dw_mci_exynos_priv_data {
 	u32				dqs_delay;
 	u32				saved_dqs_en;
 	u32				saved_strobe_ctrl;
+	bool				fmp_bypassed;
 };
 
 static struct dw_mci_exynos_compatible {
@@ -153,9 +154,6 @@ static int dw_mci_exynos_priv_init(struct dw_mci *host)
 	struct dw_mci_exynos_priv_data *priv = host->priv;
 
 	dw_mci_exynos_config_smu(host);
-
-	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU)
-		dw_mci_exynos8890_bypass_fmp(host);
 
 	if (priv->ctrl_type >= DW_MCI_TYPE_EXYNOS5420) {
 		priv->saved_strobe_ctrl = mci_readl(host, HS400_DLINE_CTRL);
@@ -391,6 +389,18 @@ static void dw_mci_exynos_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 	struct dw_mci_exynos_priv_data *priv = host->priv;
 	unsigned int wanted = ios->clock;
 	u32 timing = ios->timing, clksel;
+
+	/*
+	 * Must happen after the controller's own reset/DMA-init sequence in
+	 * dw_mci_probe() has already run (unlike the .init hook, which fires
+	 * too early, before dw_mci_ctrl_reset()); set_ios() is only ever
+	 * called once mmc core starts powering up the card, well after
+	 * probe() returns, matching where downstream issues this same call.
+	 */
+	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU && !priv->fmp_bypassed) {
+		dw_mci_exynos8890_bypass_fmp(host);
+		priv->fmp_bypassed = true;
+	}
 
 	switch (timing) {
 	case MMC_TIMING_MMC_HS400:
