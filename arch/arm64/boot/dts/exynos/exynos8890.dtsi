@@ -1051,3 +1051,12 @@
 
 #include "exynos8890-pinctrl.dtsi"
 #include "arm/samsung/exynos-syscon-restart.dtsi"
+
+&poweroff {
+	mask = <0x100>; /* PS_HOLD_EN */
+	value = <0x0>;
+};
+
+&reboot {
+	status = "disabled";
+};
