@@ -16,6 +16,18 @@
 #define SDMMC_HS400_ASYNC_FIFO_CTRL	0x184
 #define SDMMC_HS400_DLINE_CTRL		0x188
 
+/*
+ * Samsung-specific Hardware Auto Clock Gating control. Not part of the
+ * generic Synopsys DesignWare MMC register map. On exynos8890, the
+ * controller's clock domain is gated by the SoC's Q-active/HWACG logic;
+ * MMC_HWACG_CONTROL must be deasserted while running the low-speed (<=
+ * 400kHz) identification clock and asserted once switched to the real
+ * operating frequency, or the first data-phase transfer after the switch
+ * times out (DRTO) because the CIU clock isn't kept ungated in time.
+ */
+#define SDMMC_FORCE_CLK_STOP		0x0B0
+#define MMC_HWACG_CONTROL		BIT(4)
+
 /* CLKSEL register defines */
 #define SDMMC_CLKSEL_CCLK_SAMPLE(x)	(((x) & 7) << 0)
 #define SDMMC_CLKSEL_CCLK_DRIVE(x)	(((x) & 7) << 16)
@@ -65,5 +77,8 @@
 
 /* Minimal required clock frequency for cclkin, unit: HZ */
 #define EXYNOS_CCLKIN_MIN	50000000
+
+/* SD identification-mode clock ceiling, unit: HZ */
+#define EXYNOS_CCLKIN_MIN_IDENT	400000
 
 #endif /* _DW_MMC_EXYNOS_H_ */
