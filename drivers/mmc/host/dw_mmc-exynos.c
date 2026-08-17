@@ -29,6 +29,7 @@ enum dw_mci_exynos_type {
 	DW_MCI_TYPE_EXYNOS7_SMU,
 	DW_MCI_TYPE_EXYNOS7870,
 	DW_MCI_TYPE_EXYNOS7870_SMU,
+	DW_MCI_TYPE_EXYNOS8890_SMU,
 	DW_MCI_TYPE_ARTPEC8,
 };
 
@@ -78,6 +79,9 @@ static struct dw_mci_exynos_compatible {
 		.compatible	= "samsung,exynos7870-dw-mshc-smu",
 		.ctrl_type	= DW_MCI_TYPE_EXYNOS7870_SMU,
 	}, {
+		.compatible	= "samsung,exynos8890-dw-mshc-smu",
+		.ctrl_type	= DW_MCI_TYPE_EXYNOS8890_SMU,
+	}, {
 		.compatible	= "axis,artpec8-dw-mshc",
 		.ctrl_type	= DW_MCI_TYPE_ARTPEC8,
 	},
@@ -95,6 +99,7 @@ static inline u8 dw_mci_exynos_get_ciu_div(struct dw_mci *host)
 			priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 			priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 			priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+			priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 			priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		return SDMMC_CLKSEL_GET_DIV(mci_readl(host, CLKSEL64)) + 1;
 	else
@@ -111,7 +116,8 @@ static void dw_mci_exynos_config_smu(struct dw_mci *host)
 	 */
 	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS5420_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
-		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU) {
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU) {
 		mci_writel(host, MPSBEGIN0, 0);
 		mci_writel(host, MPSEND0, SDMMC_ENDING_SEC_NR_MAX);
 		mci_writel(host, MPSCTRL0, SDMMC_MPSCTRL_SECURE_WRITE_BIT |
@@ -163,6 +169,7 @@ static void dw_mci_exynos_set_clksel_timing(struct dw_mci *host, u32 timing)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		clksel = mci_readl(host, CLKSEL64);
 	else
@@ -174,6 +181,7 @@ static void dw_mci_exynos_set_clksel_timing(struct dw_mci *host, u32 timing)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		mci_writel(host, CLKSEL64, clksel);
 	else
@@ -243,6 +251,7 @@ static int dw_mci_exynos_resume_noirq(struct device *dev)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		clksel = mci_readl(host, CLKSEL64);
 	else
@@ -253,6 +262,7 @@ static int dw_mci_exynos_resume_noirq(struct device *dev)
 			priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 			priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 			priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+			priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 			priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 			mci_writel(host, CLKSEL64, clksel);
 		else
@@ -297,6 +307,26 @@ static void dw_mci_exynos_config_hs400(struct dw_mci *host, u32 timing)
 	mci_writel(host, HS400_DLINE_CTRL, strobe);
 }
 
+/*
+ * exynos8890's controller clock domain is gated by the SoC's Q-active/HWACG
+ * logic via a Samsung-only FORCE_CLK_STOP register, outside the generic
+ * Synopsys register map. It must be deasserted while running the <=400kHz
+ * identification clock and asserted once switched to the real operating
+ * frequency, or the CIU clock isn't kept ungated in time for the first
+ * data-phase transfer after the switch, which then times out (DRTO).
+ */
+static void dw_mci_exynos8890_hwacg_ctrl(struct dw_mci *host, unsigned int wanted)
+{
+	u32 reg = mci_readl(host, FORCE_CLK_STOP);
+
+	if (wanted > EXYNOS_CCLKIN_MIN_IDENT)
+		reg |= MMC_HWACG_CONTROL;
+	else
+		reg &= ~MMC_HWACG_CONTROL;
+
+	mci_writel(host, FORCE_CLK_STOP, reg);
+}
+
 static void dw_mci_exynos_adjust_clock(struct dw_mci *host, unsigned int wanted)
 {
 	struct dw_mci_exynos_priv_data *priv = host->priv;
@@ -309,6 +339,9 @@ static void dw_mci_exynos_adjust_clock(struct dw_mci *host, unsigned int wanted)
 	 */
 	if (!wanted || IS_ERR(host->ciu_clk))
 		return;
+
+	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU)
+		dw_mci_exynos8890_hwacg_ctrl(host, wanted);
 
 	/* Guaranteed minimum frequency for cclkin */
 	if (wanted < EXYNOS_CCLKIN_MIN)
@@ -433,6 +466,7 @@ static inline u8 dw_mci_exynos_get_clksmpl(struct dw_mci *host)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		return SDMMC_CLKSEL_CCLK_SAMPLE(mci_readl(host, CLKSEL64));
 	else
@@ -448,6 +482,7 @@ static inline void dw_mci_exynos_set_clksmpl(struct dw_mci *host, u8 sample)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		clksel = mci_readl(host, CLKSEL64);
 	else
@@ -457,6 +492,7 @@ static inline void dw_mci_exynos_set_clksmpl(struct dw_mci *host, u8 sample)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		mci_writel(host, CLKSEL64, clksel);
 	else
@@ -473,6 +509,7 @@ static inline u8 dw_mci_exynos_move_next_clksmpl(struct dw_mci *host)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		clksel = mci_readl(host, CLKSEL64);
 	else
@@ -485,6 +522,7 @@ static inline u8 dw_mci_exynos_move_next_clksmpl(struct dw_mci *host)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870 ||
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS7870_SMU ||
+		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU ||
 		priv->ctrl_type == DW_MCI_TYPE_ARTPEC8)
 		mci_writel(host, CLKSEL64, clksel);
 	else
@@ -666,6 +704,8 @@ static const struct of_device_id dw_mci_exynos_match[] = {
 	{ .compatible = "samsung,exynos7870-dw-mshc",
 			.data = &exynos_drv_data, },
 	{ .compatible = "samsung,exynos7870-dw-mshc-smu",
+			.data = &exynos_drv_data, },
+	{ .compatible = "samsung,exynos8890-dw-mshc-smu",
 			.data = &exynos_drv_data, },
 	{ .compatible = "axis,artpec8-dw-mshc",
 			.data = &artpec_drv_data, },
