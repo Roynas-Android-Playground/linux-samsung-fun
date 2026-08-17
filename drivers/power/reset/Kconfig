@@ -376,4 +376,10 @@ config POWER_RESET_QEMU_VIRT_CTRL
 	  Say Y here if you are running Linux on a QEMU virtual machine that
 	  provides this controller, such as the m68k virt machine.
 
+config EXYNOS8890_RESET
+	tristate "Samsung Exynos8890 reboot driver"
+	depends on ARCH_EXYNOS && OF
+	help
+	  This driver handles reboot functionality, ensuring proper reset of mongoose cores.
+	  
 endif
