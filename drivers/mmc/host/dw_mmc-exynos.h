@@ -28,6 +28,21 @@
 #define SDMMC_FORCE_CLK_STOP		0x0B0
 #define MMC_HWACG_CONTROL		BIT(4)
 
+/*
+ * exynos8890's SD/MMC data path runs through an inline FMP (Flash Memory
+ * Protector) hardware block, sitting at a fixed +0x1000 offset from the
+ * controller's own register base, that is left in a blocking/undefined
+ * state by the bootloader. It must be explicitly told to pass data through
+ * unmodified via an SMC call into EL3 firmware before any real data-phase
+ * transfer will work; command-only exchanges never touch the FMP and are
+ * unaffected either way, which is why identification always succeeds while
+ * every first data transfer times out (DRTO) without this call.
+ */
+#define EXYNOS8890_FMP_OFFSET		0x1000
+#define SMC_CMD_FMP			0xC2001810
+#define FMP_SECURITY			0x8
+#define FMP_DESC_OFF			0x0
+
 /* CLKSEL register defines */
 #define SDMMC_CLKSEL_CCLK_SAMPLE(x)	(((x) & 7) << 0)
 #define SDMMC_CLKSEL_CCLK_DRIVE(x)	(((x) & 7) << 16)

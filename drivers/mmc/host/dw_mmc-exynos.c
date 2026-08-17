@@ -5,6 +5,7 @@
  * Copyright (C) 2012, Samsung Electronics Co., Ltd.
  */
 
+#include <linux/arm-smccc.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
@@ -127,11 +128,34 @@ static void dw_mci_exynos_config_smu(struct dw_mci *host)
 	}
 }
 
+static void dw_mci_exynos8890_bypass_fmp(struct dw_mci *host)
+{
+	struct resource *res;
+	struct arm_smccc_res smc_res;
+	resource_size_t fmp_base;
+
+	res = platform_get_resource(to_platform_device(host->dev), IORESOURCE_MEM, 0);
+	if (!res) {
+		dev_warn(host->dev, "no MMIO resource, cannot locate FMP\n");
+		return;
+	}
+	fmp_base = res->start + EXYNOS8890_FMP_OFFSET;
+
+	arm_smccc_smc(SMC_CMD_FMP, FMP_SECURITY, fmp_base, FMP_DESC_OFF,
+		      0, 0, 0, 0, &smc_res);
+	if (smc_res.a0)
+		dev_warn(host->dev, "SMC FMP bypass failed for 0x%pa: %ld\n",
+			 &fmp_base, smc_res.a0);
+}
+
 static int dw_mci_exynos_priv_init(struct dw_mci *host)
 {
 	struct dw_mci_exynos_priv_data *priv = host->priv;
 
 	dw_mci_exynos_config_smu(host);
+
+	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU)
+		dw_mci_exynos8890_bypass_fmp(host);
 
 	if (priv->ctrl_type >= DW_MCI_TYPE_EXYNOS5420) {
 		priv->saved_strobe_ctrl = mci_readl(host, HS400_DLINE_CTRL);
