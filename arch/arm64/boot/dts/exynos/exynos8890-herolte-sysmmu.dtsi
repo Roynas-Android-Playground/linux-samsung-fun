@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Samsung Galaxy S7 (herolte) MFC System MMU bring-up.
+ * Samsung Galaxy S7 (herolte) MFC bring-up.
  *
  * Keep the MFC power domain on while the Exynos8890-specific power-off and
- * local CMU/Q-channel sequencing is still being brought upstream. This first
- * stage only exposes the two MFC System MMUs; the MFC client is wired later.
+ * local CMU/Q-channel sequencing is still being brought upstream.
  */
 
-#include <dt-bindings/clock/samsung,exynos8890-cmu.h>
+#include <dt-bindings/clock/samsung,exynos8890-cmu-mfc.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
 &soc {
@@ -18,25 +17,50 @@
 		label = "MFC";
 	};
 
-	sysmmu_mfc0_0: iommu@152d0000 {
-		compatible = "samsung,exynos-sysmmu";
-		reg = <0x152d0000 0x2000>;
-		interrupts = <GIC_SPI 290 IRQ_TYPE_LEVEL_HIGH>;
+	cmu_mfc: clock-controller@15280000 {
+		compatible = "samsung,exynos8890-cmu-mfc";
+		reg = <0x15280000 0x8000>;
+		#clock-cells = <1>;
+		clocks = <&oscclk>,
+			 <&cmu_top CLK_GOUT_TOP_ACLK_MFC_600>;
+		clock-names = "oscclk", "aclk_mfc_600";
+		power-domains = <&pd_mfc>;
+	};
 
-		clocks = <&cmu_top CLK_GOUT_TOP_ACLK_MFC_600>;
-		clock-names = "sysmmu";
+	mfc: codec@152e0000 {
+		compatible = "samsung,exynos8890-mfc", "samsung,mfc-v10";
+		reg = <0x152e0000 0x10000>;
+		interrupts = <GIC_SPI 302 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_mfc CLK_GOUT_MFC_ACLK_MFC>;
+		clock-names = "mfc";
+		power-domains = <&pd_mfc>;
+
+		iommus = <&sysmmu_mfc0_0>, <&sysmmu_mfc0_1>;
+		iommu-names = "left", "right";
+	};
+
+	sysmmu_mfc0_0: iommu@15200000 {
+		compatible = "samsung,exynos-sysmmu";
+		reg = <0x15200000 0x1000>;
+		interrupts = <GIC_SPI 296 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_mfc CLK_GOUT_MFC_ACLK_SMMU_MFC_0>,
+			 <&cmu_mfc CLK_GOUT_MFC_PCLK_SMMU_MFC_0>;
+		clock-names = "aclk", "pclk";
 		power-domains = <&pd_mfc>;
 
 		#iommu-cells = <0>;
 	};
 
-	sysmmu_mfc0_1: iommu@152f0000 {
+	sysmmu_mfc0_1: iommu@15220000 {
 		compatible = "samsung,exynos-sysmmu";
-		reg = <0x152f0000 0x2000>;
-		interrupts = <GIC_SPI 291 IRQ_TYPE_LEVEL_HIGH>;
+		reg = <0x15220000 0x1000>;
+		interrupts = <GIC_SPI 298 IRQ_TYPE_LEVEL_HIGH>;
 
-		clocks = <&cmu_top CLK_GOUT_TOP_ACLK_MFC_600>;
-		clock-names = "sysmmu";
+		clocks = <&cmu_mfc CLK_GOUT_MFC_ACLK_SMMU_MFC_1>,
+			 <&cmu_mfc CLK_GOUT_MFC_PCLK_SMMU_MFC_1>;
+		clock-names = "aclk", "pclk";
 		power-domains = <&pd_mfc>;
 
 		#iommu-cells = <0>;

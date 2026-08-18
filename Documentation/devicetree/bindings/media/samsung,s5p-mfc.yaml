@@ -29,6 +29,9 @@ properties:
           - enum:
               - samsung,exynos3250-mfc    # Exynos3250
           - const: samsung,mfc-v7         # Fall back for Exynos3250
+      - items:
+          - const: samsung,exynos8890-mfc # Exynos8890
+          - const: samsung,mfc-v10
 
   reg:
     maxItems: 1
