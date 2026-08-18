@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0+
 //
-// max77693.c - Regulator driver for the Maxim 77693 and 77843
+// max77693.c - Regulator driver for the Maxim 77693, 77843 and 77854
 //
 // Copyright (C) 2013-2015 Samsung Electronics
 // Jonghwa Lee <jonghwa3.lee@samsung.com>
@@ -23,7 +23,7 @@
 #include <linux/regmap.h>
 
 /*
- * ID for MAX77843 regulators.
+ * ID for MAX77843/MAX77854 regulators.
  * There is no need for such for MAX77693.
  */
 enum max77843_regulator_type {
@@ -108,7 +108,7 @@ static struct regmap *max77693_get_regmap(enum max77693_types type,
 	if (type == TYPE_MAX77693)
 		return max77693->regmap;
 
-	/* Else: TYPE_MAX77843 */
+	/* MAX77843/MAX77854 SAFEOUT lives in the top-level PMIC regmap. */
 	switch (reg_id) {
 	case MAX77843_SAFEOUT1:
 	case MAX77843_SAFEOUT2:
@@ -218,6 +218,12 @@ static const struct regulator_desc max77843_supported_regulators[] = {
 	},
 };
 
+/* MAX77854 bring-up exposes only the two validated SAFEOUT regulators. */
+static const struct regulator_desc max77854_supported_regulators[] = {
+	[MAX77843_SAFEOUT1] = max77843_regulator_desc_esafeout(1),
+	[MAX77843_SAFEOUT2] = max77843_regulator_desc_esafeout(2),
+};
+
 static const struct chg_reg_data max77843_chg_reg_data = {
 	.linear_reg	= MAX77843_CHG_REG_CHG_CNFG_02,
 	.linear_mask	= MAX77843_CHG_FAST_CHG_CURRENT_MASK,
@@ -247,6 +253,10 @@ static int max77693_pmic_probe(struct platform_device *pdev)
 		regulators_size = ARRAY_SIZE(max77843_supported_regulators);
 		config.driver_data = (void *)&max77843_chg_reg_data;
 		break;
+	case TYPE_MAX77854:
+		regulators = max77854_supported_regulators;
+		regulators_size = ARRAY_SIZE(max77854_supported_regulators);
+		break;
 	default:
 		dev_err(&pdev->dev, "Unsupported device type: %u\n", type);
 		return -ENODEV;
@@ -273,6 +283,7 @@ static int max77693_pmic_probe(struct platform_device *pdev)
 static const struct platform_device_id max77693_pmic_id[] = {
 	{ .name = "max77693-pmic", .driver_data = TYPE_MAX77693 },
 	{ .name = "max77843-regulator", .driver_data = TYPE_MAX77843 },
+	{ .name = "max77854-regulator", .driver_data = TYPE_MAX77854 },
 	{ }
 };
 
@@ -299,7 +310,7 @@ static void __exit max77693_pmic_cleanup(void)
 }
 module_exit(max77693_pmic_cleanup);
 
-MODULE_DESCRIPTION("MAXIM 77693/77843 regulator driver");
+MODULE_DESCRIPTION("MAXIM 77693/77843/77854 regulator driver");
 MODULE_AUTHOR("Jonghwa Lee <jonghwa3.lee@samsung.com>");
 MODULE_AUTHOR("Krzysztof Kozlowski <krzk@kernel.org>");
 MODULE_LICENSE("GPL");

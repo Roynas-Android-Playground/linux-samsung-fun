@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 MAX77854 companion PMIC bring-up.
+ *
+ * MAX77854 reuses the upstream MAX77843-compatible MUIC, SAFEOUT and haptic
+ * interfaces. Charger, fuel gauge and AFC/QC support are intentionally left
+ * for later validation.
+ */
+
+&pinctrl_alive {
+	max77854_irq: max77854-irq-pins {
+		samsung,pins = "gpa1-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+&hsi2c_1 {
+	status = "okay";
+
+	max77854: pmic@66 {
+		compatible = "maxim,max77854";
+		reg = <0x66>;
+
+		interrupt-parent = <&gpa1>;
+		interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+
+		pinctrl-0 = <&max77854_irq>;
+		pinctrl-names = "default";
+
+		max77854_muic: extcon {
+			compatible = "maxim,max77843-muic";
+
+			connector {
+				compatible = "samsung,usb-connector-11pin",
+					     "usb-b-connector";
+				label = "micro-USB";
+				type = "micro";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						status = "disabled";
+					};
+				};
+			};
+		};
+
+		regulators {
+			compatible = "maxim,max77843-regulator";
+
+			max77854_safeout1: SAFEOUT1 {
+				regulator-name = "safeout1_range";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <4900000>;
+				regulator-boot-on;
+			};
+
+			max77854_safeout2: SAFEOUT2 {
+				regulator-name = "safeout2_range";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <4900000>;
+			};
+		};
+
+		motor-driver {
+			compatible = "maxim,max77843-haptic";
+			haptic-supply = <&s2mps16_ldo34>;
+			pwms = <&pwm 1 37950 0>;
+		};
+	};
+};
+
+&pwm {
+	pinctrl-0 = <&pwm_tout1>;
+	pinctrl-names = "default";
+	status = "okay";
+};
