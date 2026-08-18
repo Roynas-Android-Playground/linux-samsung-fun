@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * MAXIM MAX77693/MAX77843 Haptic device driver
+ * MAXIM MAX77693/MAX77705/MAX77843/MAX77854 Haptic device driver
  *
  * Copyright (C) 2014,2015 Samsung Electronics
  * Jaewon Kim <jaewon02.kim@samsung.com>
@@ -88,7 +88,8 @@ static int max77843_haptic_bias(struct max77693_haptic *haptic, bool on)
 {
 	int error;
 
-	if (haptic->dev_type != TYPE_MAX77843)
+	if (haptic->dev_type != TYPE_MAX77843 &&
+	    haptic->dev_type != TYPE_MAX77854)
 		return 0;
 
 	error = regmap_update_bits(haptic->regmap_haptic,
@@ -126,6 +127,7 @@ static int max77693_haptic_configure(struct max77693_haptic *haptic,
 		config_reg = MAX77705_PMIC_REG_MCONFIG;
 		break;
 	case TYPE_MAX77843:
+	case TYPE_MAX77854:
 		value = (haptic->type << MCONFIG_MODE_SHIFT) |
 			(enable << MCONFIG_MEN_SHIFT) |
 			MAX77693_HAPTIC_PWM_DIVISOR_128;
@@ -324,6 +326,7 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 		break;
 	case TYPE_MAX77705:
 	case TYPE_MAX77843:
+	case TYPE_MAX77854:
 		haptic->regmap_haptic = max77693->regmap;
 		break;
 	default:
@@ -334,7 +337,7 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 
 	INIT_WORK(&haptic->work, max77693_haptic_play_work);
 
-	/* Get pwm and regulatot for haptic device */
+	/* Get pwm and regulator for haptic device */
 	haptic->pwm_dev = devm_pwm_get(&pdev->dev, NULL);
 	if (IS_ERR(haptic->pwm_dev)) {
 		dev_err(&pdev->dev, "failed to get pwm device\n");
@@ -439,5 +442,5 @@ module_platform_driver(max77693_haptic_driver);
 
 MODULE_AUTHOR("Jaewon Kim <jaewon02.kim@samsung.com>");
 MODULE_AUTHOR("Krzysztof Kozlowski <krzk@kernel.org>");
-MODULE_DESCRIPTION("MAXIM 77693/77705/77843 Haptic driver");
+MODULE_DESCRIPTION("MAXIM 77693/77705/77843/77854 Haptic driver");
 MODULE_LICENSE("GPL");
