@@ -208,6 +208,7 @@ struct dw_mci {
 	u32			current_speed;
 	u32			minimum_speed;
 	u32			fifoth_val;
+	u32			fixed_fifoth;
 	u16			verid;
 	struct device		*dev;
 	const struct dw_mci_drv_data	*drv_data;
@@ -513,6 +514,7 @@ extern int dw_mci_runtime_resume(struct device *device);
  * @common_caps: mmc subsystem specified capabilities applicable to all of
  *	the controllers
  * @init: early implementation specific initialization.
+ * @prepare_power_up: prepare implementation-specific hardware before power-up.
  * @set_ios: handle bus specific extensions.
  * @parse_dt: parse implementation specific device tree properties.
  * @execute_tuning: implementation specific tuning procedure.
@@ -529,6 +531,7 @@ struct dw_mci_drv_data {
 	u32		num_caps;
 	u32		common_caps;
 	int		(*init)(struct dw_mci *host);
+	int		(*prepare_power_up)(struct dw_mci *host);
 	void		(*set_ios)(struct dw_mci *host, struct mmc_ios *ios);
 	int		(*parse_dt)(struct dw_mci *host);
 	int		(*execute_tuning)(struct dw_mci *host, u32 opcode);

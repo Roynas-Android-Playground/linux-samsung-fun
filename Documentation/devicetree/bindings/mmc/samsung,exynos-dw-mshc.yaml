@@ -59,6 +59,14 @@ properties:
     description:
       The divider value for the card interface unit (ciu) clock.
 
+  samsung,voltage-int-extra:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 7
+    description:
+      Exynos8890 SD interface-voltage tuning value programmed into bits
+      26 through 24 of the Samsung AXI burst extension register.
+
   samsung,dw-mshc-ddr-timing:
     $ref: /schemas/types.yaml#/definitions/uint32-array
     items:
@@ -137,6 +145,14 @@ allOf:
     then:
       required:
         - samsung,dw-mshc-ciu-div
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8890-dw-mshc-smu
+    then:
+      required:
+        - samsung,voltage-int-extra
 
 unevaluatedProperties: false
 

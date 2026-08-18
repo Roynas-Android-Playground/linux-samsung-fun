@@ -906,6 +906,11 @@ static void dw_mci_adjust_fifoth(struct dw_mci *host, struct mmc_data *data)
 	u32 msize = 0, rx_wmark = 1, tx_wmark, tx_wmark_invers;
 	int idx = ARRAY_SIZE(mszs) - 1;
 
+	if (host->fixed_fifoth) {
+		mci_writel(host, FIFOTH, host->fixed_fifoth);
+		return;
+	}
+
 	/* pio should ship this scenario */
 	if (!host->use_dma)
 		return;
@@ -1369,6 +1374,15 @@ static void dw_mci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	switch (ios->power_mode) {
 	case MMC_POWER_UP:
+		if (drv_data && drv_data->prepare_power_up) {
+			ret = drv_data->prepare_power_up(host);
+			if (ret) {
+				dev_err(host->dev,
+					"failed to prepare controller power-up: %d\n",
+					ret);
+				return;
+			}
+		}
 		ret = mmc_regulator_set_ocr(mmc, mmc->supply.vmmc, ios->vdd);
 		if (ret) {
 			dev_err(host->dev, "failed to enable vmmc regulator\n");
@@ -1829,8 +1843,6 @@ static int dw_mci_data_complete(struct dw_mci *host, struct mmc_data *data)
 			/* SDMMC_INT_SBE is included */
 			data->error = -EILSEQ;
 		}
-
-		dev_dbg(host->dev, "data error, status 0x%08x\n", status);
 
 		/*
 		 * After an error, there may be data lingering
@@ -2943,8 +2955,9 @@ static void dw_mci_init_dma(struct dw_mci *host)
 			host->dma_64bit_address = 1;
 			dev_info(host->dev,
 				 "IDMAC supports 64-bit address mode.\n");
-			if (dma_set_mask_and_coherent(host->dev, DMA_BIT_MASK(64)))
+			if (dma_set_mask_and_coherent(host->dev, DMA_BIT_MASK(64))) {
 				dev_info(host->dev, "Fail to set 64-bit DMA mask");
+			}
 		} else {
 			/* host supports IDMAC in 32-bit address mode */
 			host->dma_64bit_address = 0;
@@ -3333,8 +3346,12 @@ int dw_mci_probe(struct dw_mci *host)
 		fifo_size = host->fifo_depth;
 	}
 	host->fifo_depth = fifo_size;
-	host->fifoth_val =
-		SDMMC_SET_FIFOTH(0x2, fifo_size / 2 - 1, fifo_size / 2);
+	if (host->fixed_fifoth)
+		host->fifoth_val = host->fixed_fifoth;
+	else
+		host->fifoth_val =
+			SDMMC_SET_FIFOTH(0x2, fifo_size / 2 - 1,
+					  fifo_size / 2);
 	mci_writel(host, FIFOTH, host->fifoth_val);
 
 	/* disable clock to CIU */

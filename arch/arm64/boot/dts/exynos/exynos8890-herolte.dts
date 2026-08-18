@@ -631,8 +631,9 @@
 	vqmmc-supply = <&s2mps16_ldo2>;
 
 	samsung,dw-mshc-ciu-div = <3>;
-	samsung,dw-mshc-sdr-timing = <0 3>;
+	samsung,dw-mshc-sdr-timing = <0 2>;
 	samsung,dw-mshc-ddr-timing = <1 2>;
+	samsung,voltage-int-extra = <0x7>;
 
 	status = "okay";
 };
@@ -752,7 +753,6 @@
 	pcie0: pcie@157a0000 {
 		compatible = "samsung,exynos8890-pcie";
 		device_type = "pci";
-
 		reg = <0x157a0000 0x1000>,
 		      <0x15660000 0x1000>,
 		      <0x1c000000 0x1000>,

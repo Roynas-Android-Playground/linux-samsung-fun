@@ -41,6 +41,7 @@ struct dw_mci_exynos_priv_data {
 	u32				sdr_timing;
 	u32				ddr_timing;
 	u32				hs400_timing;
+	u32				voltage_int_extra;
 	u32				tuned_sample;
 	u32				cur_speed;
 	u32				dqs_delay;
@@ -122,14 +123,15 @@ static void dw_mci_exynos_config_smu(struct dw_mci *host)
 		priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU) {
 		mci_writel(host, MPSBEGIN0, 0);
 		mci_writel(host, MPSEND0, SDMMC_ENDING_SEC_NR_MAX);
-		mci_writel(host, MPSCTRL0, SDMMC_MPSCTRL_SECURE_WRITE_BIT |
+		mci_writel(host, MPSCTRL0, SDMMC_MPSCTRL_SECURE_READ_BIT |
+			   SDMMC_MPSCTRL_SECURE_WRITE_BIT |
 			   SDMMC_MPSCTRL_NON_SECURE_READ_BIT |
 			   SDMMC_MPSCTRL_VALID |
 			   SDMMC_MPSCTRL_NON_SECURE_WRITE_BIT);
 	}
 }
 
-static void dw_mci_exynos8890_bypass_fmp(struct dw_mci *host)
+static int dw_mci_exynos8890_bypass_fmp(struct dw_mci *host)
 {
 	struct resource *res;
 	struct arm_smccc_res smc_res;
@@ -137,23 +139,56 @@ static void dw_mci_exynos8890_bypass_fmp(struct dw_mci *host)
 
 	res = platform_get_resource(to_platform_device(host->dev), IORESOURCE_MEM, 0);
 	if (!res) {
-		dev_warn(host->dev, "no MMIO resource, cannot locate FMP\n");
-		return;
+		dev_err(host->dev, "no MMIO resource, cannot locate FMP\n");
+		return -ENODEV;
 	}
 	fmp_base = res->start + EXYNOS8890_FMP_OFFSET;
 
 	arm_smccc_smc(SMC_CMD_FMP, FMP_SECURITY, fmp_base, FMP_DESC_OFF,
 		      0, 0, 0, 0, &smc_res);
-	if (smc_res.a0)
-		dev_warn(host->dev, "SMC FMP bypass failed for 0x%pa: %ld\n",
-			 &fmp_base, smc_res.a0);
+	if (smc_res.a0) {
+		dev_err(host->dev, "SMC FMP bypass failed for 0x%pa: %ld\n",
+			&fmp_base, smc_res.a0);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int dw_mci_exynos_prepare_power_up(struct dw_mci *host)
+{
+	struct dw_mci_exynos_priv_data *priv = host->priv;
+	int ret;
+
+	if (priv->ctrl_type != DW_MCI_TYPE_EXYNOS8890_SMU ||
+	    priv->fmp_bypassed)
+		return 0;
+
+	ret = dw_mci_exynos8890_bypass_fmp(host);
+	if (ret)
+		return ret;
+
+	dw_mci_exynos_config_smu(host);
+	priv->fmp_bypassed = true;
+	return 0;
 }
 
 static int dw_mci_exynos_priv_init(struct dw_mci *host)
 {
 	struct dw_mci_exynos_priv_data *priv = host->priv;
+	u32 reg;
 
-	dw_mci_exynos_config_smu(host);
+	/* Exynos8890 must program FMP before MPS after the generic reset. */
+	if (priv->ctrl_type != DW_MCI_TYPE_EXYNOS8890_SMU)
+		dw_mci_exynos_config_smu(host);
+
+	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU) {
+		host->fixed_fifoth = EXYNOS8890_SD_FIFOTH;
+		reg = mci_readl(host, AXI_BURST_LEN);
+		reg &= ~SDMMC_VOLTAGE_INT_EXTRA_MASK;
+		reg |= priv->voltage_int_extra << 24;
+		mci_writel(host, AXI_BURST_LEN, reg);
+	}
 
 	if (priv->ctrl_type >= DW_MCI_TYPE_EXYNOS5420) {
 		priv->saved_strobe_ctrl = mci_readl(host, HS400_DLINE_CTRL);
@@ -223,15 +258,25 @@ static void dw_mci_exynos_set_clksel_timing(struct dw_mci *host, u32 timing)
 static int dw_mci_exynos_runtime_resume(struct device *dev)
 {
 	struct dw_mci *host = dev_get_drvdata(dev);
+	struct dw_mci_exynos_priv_data *priv = host->priv;
 	int ret;
 
 	ret = dw_mci_runtime_resume(dev);
 	if (ret)
 		return ret;
 
-	dw_mci_exynos_config_smu(host);
+	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU) {
+		priv->fmp_bypassed = false;
+		ret = dw_mci_exynos_prepare_power_up(host);
+		if (ret) {
+			dw_mci_runtime_suspend(dev);
+			return ret;
+		}
+	} else {
+		dw_mci_exynos_config_smu(host);
+	}
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -353,6 +398,7 @@ static void dw_mci_exynos_adjust_clock(struct dw_mci *host, unsigned int wanted)
 {
 	struct dw_mci_exynos_priv_data *priv = host->priv;
 	unsigned long actual;
+	unsigned int minimum = EXYNOS_CCLKIN_MIN;
 	u8 div;
 	int ret;
 	/*
@@ -366,8 +412,10 @@ static void dw_mci_exynos_adjust_clock(struct dw_mci *host, unsigned int wanted)
 		dw_mci_exynos8890_hwacg_ctrl(host, wanted);
 
 	/* Guaranteed minimum frequency for cclkin */
-	if (wanted < EXYNOS_CCLKIN_MIN)
-		wanted = EXYNOS_CCLKIN_MIN;
+	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU)
+		minimum = EXYNOS8890_CCLKIN_MIN;
+	if (wanted < minimum)
+		wanted = minimum;
 
 	if (wanted == priv->cur_speed)
 		return;
@@ -390,17 +438,10 @@ static void dw_mci_exynos_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 	unsigned int wanted = ios->clock;
 	u32 timing = ios->timing, clksel;
 
-	/*
-	 * Must happen after the controller's own reset/DMA-init sequence in
-	 * dw_mci_probe() has already run (unlike the .init hook, which fires
-	 * too early, before dw_mci_ctrl_reset()); set_ios() is only ever
-	 * called once mmc core starts powering up the card, well after
-	 * probe() returns, matching where downstream issues this same call.
-	 */
-	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU && !priv->fmp_bypassed) {
-		dw_mci_exynos8890_bypass_fmp(host);
-		priv->fmp_bypassed = true;
-	}
+	/* Invalidate the secure setup before the generic power-off reset. */
+	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU &&
+	    ios->power_mode == MMC_POWER_OFF)
+		priv->fmp_bypassed = false;
 
 	switch (timing) {
 	case MMC_TIMING_MMC_HS400:
@@ -463,6 +504,16 @@ static int dw_mci_exynos_parse_dt(struct dw_mci *host)
 	else {
 		of_property_read_u32(np, "samsung,dw-mshc-ciu-div", &div);
 		priv->ciu_div = div;
+	}
+
+	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS8890_SMU) {
+		ret = of_property_read_u32(np, "samsung,voltage-int-extra",
+					  &priv->voltage_int_extra);
+		if (ret)
+			return dev_err_probe(host->dev, ret,
+					     "missing interface voltage setting\n");
+		if (priv->voltage_int_extra > 0x7)
+			return -EINVAL;
 	}
 
 	ret = of_property_read_u32_array(np,
@@ -693,6 +744,14 @@ static u32 dw_mci_exynos_get_drto_clks(struct dw_mci *host)
 	return (((drto_clks & 0x7) - 1) * 0xFFFFFF) + ((drto_clks & 0xFFFFF8));
 }
 
+static void dw_mci_exynos8890_set_data_timeout(struct dw_mci *host,
+					       unsigned int timeout_ns)
+{
+	/* The vendor controller contract uses a 200 ms data-timeout floor. */
+	timeout_ns = max(timeout_ns, 200U * NSEC_PER_MSEC);
+	dw_mci_exynos_set_data_timeout(host, timeout_ns);
+}
+
 /* Common capabilities of Exynos4/Exynos5 SoC */
 static unsigned long exynos_dwmmc_caps[4] = {
 	MMC_CAP_1_8V_DDR | MMC_CAP_8_BIT_DATA,
@@ -706,11 +765,27 @@ static const struct dw_mci_drv_data exynos_drv_data = {
 	.num_caps		= ARRAY_SIZE(exynos_dwmmc_caps),
 	.common_caps		= MMC_CAP_CMD23,
 	.init			= dw_mci_exynos_priv_init,
+	.prepare_power_up	= dw_mci_exynos_prepare_power_up,
 	.set_ios		= dw_mci_exynos_set_ios,
 	.parse_dt		= dw_mci_exynos_parse_dt,
 	.execute_tuning		= dw_mci_exynos_execute_tuning,
 	.prepare_hs400_tuning	= dw_mci_exynos_prepare_hs400_tuning,
 };
+
+static const struct dw_mci_drv_data exynos8890_drv_data = {
+	.caps			= exynos_dwmmc_caps,
+	.num_caps		= ARRAY_SIZE(exynos_dwmmc_caps),
+	.common_caps		= MMC_CAP_CMD23,
+	.init			= dw_mci_exynos_priv_init,
+	.prepare_power_up	= dw_mci_exynos_prepare_power_up,
+	.set_ios		= dw_mci_exynos_set_ios,
+	.parse_dt		= dw_mci_exynos_parse_dt,
+	.execute_tuning		= dw_mci_exynos_execute_tuning,
+	.prepare_hs400_tuning	= dw_mci_exynos_prepare_hs400_tuning,
+	.set_data_timeout	= dw_mci_exynos8890_set_data_timeout,
+	.get_drto_clks		= dw_mci_exynos_get_drto_clks,
+};
+
 
 static const struct dw_mci_drv_data artpec_drv_data = {
 	.common_caps		= MMC_CAP_CMD23,
@@ -740,7 +815,7 @@ static const struct of_device_id dw_mci_exynos_match[] = {
 	{ .compatible = "samsung,exynos7870-dw-mshc-smu",
 			.data = &exynos_drv_data, },
 	{ .compatible = "samsung,exynos8890-dw-mshc-smu",
-			.data = &exynos_drv_data, },
+			.data = &exynos8890_drv_data, },
 	{ .compatible = "axis,artpec8-dw-mshc",
 			.data = &artpec_drv_data, },
 	{},

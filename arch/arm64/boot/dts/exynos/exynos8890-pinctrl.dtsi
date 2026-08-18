@@ -179,28 +179,28 @@
 	};
 
 	sd2_bus1: sd2-bus1-pins {
-		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV2>;
+		samsung,pin-drv = <EXYNOS7_FSYS1_PIN_DRV_LV5>;
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pins = "gpj0-3";
 	};
 
 	sd2_bus4: sd2-bus4-pins {
-		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV2>;
+		samsung,pin-drv = <EXYNOS7_FSYS1_PIN_DRV_LV5>;
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pins = "gpj0-4", "gpj0-5", "gpj0-6";
 	};
 
 	sd2_clk: sd2-clk-pins {
-		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV3>;
+		samsung,pin-drv = <EXYNOS7_FSYS1_PIN_DRV_LV3>;
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pins = "gpj0-0";
 	};
 
 	sd2_cmd: sd2-cmd-pins {
-		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV3>;
+		samsung,pin-drv = <EXYNOS7_FSYS1_PIN_DRV_LV3>;
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pins = "gpj0-1";
