@@ -23,7 +23,6 @@
 #include <linux/leds-s2mpb02.h>
 #include <linux/ctype.h>
 
-extern struct class *camera_class; /*sys/class/camera*/
 struct device *camera_flash_dev;
 struct s2mpb02_led_data *global_led_datas[S2MPB02_LED_MAX];
 
@@ -906,47 +905,6 @@ static int s2mpb02_led_probe(struct platform_device *pdev)
 	kfree(pdata);
 #endif
 
-	camera_flash_dev = device_create(camera_class, NULL, 3, NULL, "flash");
-	if (IS_ERR(camera_flash_dev)) {
-		pr_err("<%s> Failed to create device(flash)!\n", __func__);
-	} else {
-		if (device_create_file(camera_flash_dev, &dev_attr_rear_flash) <
-		    0) {
-			pr_err("<%s> failed to create device file, %s\n",
-			       __func__, dev_attr_rear_flash.attr.name);
-		}
-
-		if (device_create_file(camera_flash_dev,
-				       &dev_attr_rear_torch_flash) < 0) {
-			pr_err("<%s> failed to create device file, %s\n",
-			       __func__, dev_attr_rear_torch_flash.attr.name);
-		}
-
-#ifdef CONFIG_LEDS_IRIS_IRLED_CERTIFICATE_SUPPORT
-		if (device_create_file(camera_flash_dev,
-				       &dev_attr_irled_torch) < 0) {
-			pr_err("<%s> failed to create device file, %s\n",
-			       __func__, dev_attr_irled_torch.attr.name);
-		}
-#endif
-
-#ifdef CONFIG_LEDS_S2MPB02_MULTI_TORCH_REAR2
-		if (device_create_file(camera_flash_dev,
-				       &dev_attr_rear_torch_flash2) < 0) {
-			pr_err("<%s> failed to create device file, %s\n",
-			       __func__, dev_attr_rear_torch_flash2.attr.name);
-		}
-
-		if (device_create_file(camera_flash_dev,
-				       &dev_attr_rear_flash2) < 0) {
-			pr_err("<%s> failed to create device file, %s\n",
-			       __func__, dev_attr_rear_flash2.attr.name);
-		}
-#endif
-	}
-
-	pr_err("<%s> end\n", __func__);
-
 	return ret;
 }
 
@@ -981,10 +939,6 @@ static void s2mpb02_led_remove(struct platform_device *pdev)
 #ifdef CONFIG_LEDS_IRIS_IRLED_CERTIFICATE_SUPPORT
 		device_remove_file(camera_flash_dev, &dev_attr_irled_torch);
 #endif
-	}
-
-	if (camera_class && camera_flash_dev) {
-		device_destroy(camera_class, camera_flash_dev->devt);
 	}
 }
 
