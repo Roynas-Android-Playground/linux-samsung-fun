@@ -12,7 +12,9 @@ maintainers:
 
 properties:
   compatible:
-    const: samsung,exynos5433-lpass
+    enum:
+      - samsung,exynos5433-lpass
+      - samsung,exynos8890-lpass
 
   '#address-cells':
     const: 1
@@ -31,7 +33,7 @@ properties:
 
   reg:
     minItems: 2
-    maxItems: 2
+    maxItems: 3
 
   '#size-cells':
     const: 1
@@ -54,6 +56,26 @@ required:
   - ranges
   - reg
   - '#size-cells'
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: samsung,exynos5433-lpass
+    then:
+      properties:
+        reg:
+          minItems: 2
+          maxItems: 2
+  - if:
+      properties:
+        compatible:
+          const: samsung,exynos8890-lpass
+    then:
+      properties:
+        reg:
+          minItems: 3
+          maxItems: 3
 
 additionalProperties: false
 
