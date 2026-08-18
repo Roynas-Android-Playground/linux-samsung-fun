@@ -795,7 +795,9 @@ int dw_pcie_wait_for_link(struct dw_pcie *pci)
 		 */
 		} else if (ltssm == DW_PCIE_LTSSM_POLL_ACTIVE ||
 			   ltssm == DW_PCIE_LTSSM_POLL_COMPLIANCE) {
-			dev_info(pci->dev, "Device found, but not active\n");
+			dev_info(pci->dev,
+				 "Device found, but not active (LTSSM: %s)\n",
+				 dw_pcie_ltssm_status_string(ltssm));
 			return -EIO;
 		}
 
