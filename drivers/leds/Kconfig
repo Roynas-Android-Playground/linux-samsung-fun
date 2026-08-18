@@ -801,6 +801,18 @@ config LEDS_MAX77705
 	help
 	  LED driver for MAX77705 PMIC from Maxim Integrated.
 
+config LEDS_S2MPB02
+	bool "LED support for the S2MPB02"
+	depends on LEDS_CLASS
+	help
+	  This option enables support for the LEDs on the S2MPB02.
+
+config LEDS_S2MPB02_MULTI_TORCH_REAR2
+	bool "LED support for second multi flash"
+	help
+	  If you say yes here you will get support for
+	  for second multi flash.
+
 config LEDS_MAX8997
 	tristate "LED support for MAX8997 PMIC"
 	depends on LEDS_CLASS && MFD_MAX8997
@@ -1027,6 +1039,11 @@ config LEDS_ACER_A500
 	help
 	  This option enables support for the Power Button LED of
 	  Acer Iconia Tab A500.
+
+config LEDS_IRIS_IRLED_SUPPORT
+	bool "IRLED support for IRIS"
+	help
+	  This option enables support for the IRLED.
 
 source "drivers/leds/blink/Kconfig"
 

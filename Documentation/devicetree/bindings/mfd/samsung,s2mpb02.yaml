@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mfd/samsung,s2mpb02.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung S2MPB02 camera and peripheral power-management IC
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  The S2MPB02 is an I2C power-management IC containing two buck
+  regulators, one buck-boost regulator, eighteen LDO regulators and
+  flash LED control circuitry.
+
+properties:
+  compatible:
+    const: samsung,s2mpb02
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  wakeup-source: true
+
+  regulators:
+    type: object
+    additionalProperties: false
+
+    patternProperties:
+      "^s2mpb02-(ldo([1-9]|1[0-8])|buck[12]|bb)$":
+        $ref: /schemas/regulator/regulator.yaml#
+
+required:
+  - compatible
+  - reg
+  - regulators
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        pmic@59 {
+            compatible = "samsung,s2mpb02";
+            reg = <0x59>;
+
+            regulators {
+                s2mpb02-buck1 {
+                    regulator-name = "VDD_1P3_EXT";
+                    regulator-min-microvolt = <1300000>;
+                    regulator-max-microvolt = <1300000>;
+                    regulator-always-on;
+                };
+
+                s2mpb02-ldo18 {
+                    regulator-name = "vmmc";
+                    regulator-min-microvolt = <2800000>;
+                    regulator-max-microvolt = <2800000>;
+                };
+            };
+        };
+    };
