@@ -192,6 +192,7 @@ static int arizona_spi_probe(struct spi_device *spi)
 {
 	struct arizona *arizona;
 	const struct regmap_config *regmap_config = NULL;
+	const struct regmap_config *regmap_32bit_config = NULL;
 	unsigned long type = 0;
 	int ret;
 
@@ -210,6 +211,13 @@ static int arizona_spi_probe(struct spi_device *spi)
 	case CS47L24:
 		if (IS_ENABLED(CONFIG_MFD_CS47L24))
 			regmap_config = &cs47l24_spi_regmap;
+		break;
+	case CS47L90:
+	case CS47L91:
+		if (IS_ENABLED(CONFIG_MFD_MOON)) {
+			regmap_config = &moon_16bit_spi_regmap;
+			regmap_32bit_config = &moon_32bit_spi_regmap;
+		}
 		break;
 	default:
 		dev_err(&spi->dev, "Unknown device type %ld\n", type);
@@ -232,6 +240,18 @@ static int arizona_spi_probe(struct spi_device *spi)
 		dev_err(&spi->dev, "Failed to allocate register map: %d\n",
 			ret);
 		return ret;
+	}
+
+	if (regmap_32bit_config) {
+		arizona->regmap_32bit = devm_regmap_init_spi(spi,
+							   regmap_32bit_config);
+		if (IS_ERR(arizona->regmap_32bit)) {
+			ret = PTR_ERR(arizona->regmap_32bit);
+			dev_err(&spi->dev,
+				"Failed to allocate 32-bit register map: %d\n",
+				ret);
+			return ret;
+		}
 	}
 
 	arizona->type = type;
@@ -260,6 +280,8 @@ static const struct spi_device_id arizona_spi_ids[] = {
 	{ "wm8280", WM8280 },
 	{ "wm1831", WM1831 },
 	{ "cs47l24", CS47L24 },
+	{ "cs47l90", CS47L90 },
+	{ "cs47l91", CS47L91 },
 	{ },
 };
 MODULE_DEVICE_TABLE(spi, arizona_spi_ids);
@@ -271,6 +293,9 @@ static const struct of_device_id arizona_spi_of_match[] = {
 	{ .compatible = "wlf,wm8280", .data = (void *)WM8280 },
 	{ .compatible = "wlf,wm1831", .data = (void *)WM1831 },
 	{ .compatible = "cirrus,cs47l24", .data = (void *)CS47L24 },
+	{ .compatible = "cirrus,cs47l90", .data = (void *)CS47L90 },
+	{ .compatible = "cirrus,cs47l91", .data = (void *)CS47L91 },
+	{ .compatible = "samsung,herolte-cs47l91", .data = (void *)CS47L91 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, arizona_spi_of_match);

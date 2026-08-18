@@ -41,6 +41,7 @@ allOf:
         compatible:
           contains:
             enum:
+              - samsung,herolte-cs47l91
               - wlf,wm1814
               - wlf,wm5102
               - wlf,wm5110
@@ -60,6 +61,7 @@ allOf:
         compatible:
           contains:
             enum:
+              - samsung,herolte-cs47l91
               - wlf,wm1814
               - wlf,wm5102
               - wlf,wm5110
@@ -73,6 +75,16 @@ allOf:
 
       required:
         - DBVDD3-supply
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - samsung,herolte-cs47l91
+    then:
+      required:
+        - DCVDD-supply
+        - DBVDD4-supply
   - if:
       properties:
         compatible:
@@ -107,6 +119,7 @@ properties:
   compatible:
     enum:
       - cirrus,cs47l24
+      - samsung,herolte-cs47l91
       - wlf,wm1814
       - wlf,wm1831
       - wlf,wm5102
@@ -129,6 +142,10 @@ properties:
   DBVDD1-supply:
     description:
       Databus power supply.
+
+  DBVDD4-supply:
+    description:
+      Fourth databus power supply.
 
   DCVDD-supply:
     description:

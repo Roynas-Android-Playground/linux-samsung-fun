@@ -7,6 +7,8 @@
  * for later validation.
  */
 
+#include "exynos8890-herolte-audio.dtsi"
+
 &pinctrl_alive {
 	max77854_irq: max77854-irq-pins {
 		samsung,pins = "gpa1-6";

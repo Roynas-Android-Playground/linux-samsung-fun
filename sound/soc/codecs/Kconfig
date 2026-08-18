@@ -1123,6 +1123,13 @@ config SND_SOC_CS47L24
 	depends on MFD_CS47L24 && MFD_ARIZONA
 	select SND_SOC_WM_ADSP
 
+config SND_SOC_MOON
+	tristate "Cirrus Logic CS47L90/CS47L91 minimal Moon codec"
+	depends on MFD_MOON && MFD_ARIZONA
+	help
+	  Register the four serial audio interfaces of CS47L90/CS47L91 Moon
+	  codecs. This minimal bring-up driver has no controls, DAPM or DSP.
+
 config SND_SOC_CS47L35
 	tristate
 	depends on MFD_CS47L35
@@ -1455,6 +1462,15 @@ config SND_SOC_MAX98925
 config SND_SOC_MAX98926
 	tristate
 	depends on I2C
+
+config SND_SOC_MAX98506
+	tristate "Maxim MAX98506 speaker amplifier"
+	depends on I2C
+	help
+	  Enable playback-only support for the Maxim MAX98506 speaker
+	  amplifier. The initial driver uses a fixed conservative 48 kHz,
+	  stereo, 16-bit I2S configuration and does not enable DSM or voltage
+	  and current feedback.
 
 config SND_SOC_MAX98927
 	tristate "Maxim Integrated MAX98927 Speaker Amplifier"
