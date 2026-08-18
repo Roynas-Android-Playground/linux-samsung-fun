@@ -11,6 +11,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include "exynos8890-herolte-s2mpb02.dtsi"
 
 / {
 	model = "Samsung Galaxy S7 (SM-G930F)";
@@ -19,6 +20,9 @@
 
 	aliases {
 		mmc0 = &mmc;
+		spi0 = &spi_0;
+		serial0 = &serial_4; // UART
+		serial1 = &serial_1; // Bluetooth
 	};
 
 	chosen {
@@ -44,7 +48,8 @@
 	gpio-keys {
 		compatible = "gpio-keys";
 
-		pinctrl-0 = <&key_power &key_voldown &key_volup>;
+		pinctrl-0 = <&key_power &key_voldown &key_volup &key_home
+			     &hall_flip>;
 		pinctrl-names = "default";
 
 		power-key {
@@ -65,6 +70,47 @@
 			gpios = <&gpa0 3 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_VOLUMEUP>;
 		};
+
+		home-key {
+			label = "Home";
+			gpios = <&gpa0 5 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_HOMEPAGE>;
+			wakeup-source;
+		};
+
+		hall-switch {
+			label = "Flip cover";
+			gpios = <&gpa0 1 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			wakeup-source;
+		};
+	};
+
+	thermal-zones {
+		mngs-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmuctrl_0>;
+		};
+
+		apollo-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmuctrl_1>;
+		};
+
+		gpu-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmuctrl_2>;
+		};
+
+		isp-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmuctrl_3>;
+		};
 	};
 
 	memory@80000000 {
@@ -77,6 +123,51 @@
 		#address-cells = <2>;
 		#size-cells = <1>;
 		ranges;
+
+		tima@b1000000 {
+			reg = <0x0 0xb1000000 0x200000>;
+			no-map;
+		};
+
+		video-fw@c0800000 {
+			reg = <0x0 0xc0800000 0x400000>;
+			no-map;
+		};
+
+		video-stream@c1000000 {
+			reg = <0x0 0xc1000000 0x1400000>;
+			no-map;
+		};
+
+		video-frame@c2400000 {
+			reg = <0x0 0xc2400000 0x6400000>;
+			no-map;
+		};
+
+		video-scaler@c8800000 {
+			reg = <0x0 0xc8800000 0x4800000>;
+			no-map;
+		};
+
+		gpu-crc@cd000000 {
+			reg = <0x0 0xcd000000 0x800000>;
+			no-map;
+		};
+
+		gpu-buffer@cd800000 {
+			reg = <0x0 0xcd800000 0x3000000>;
+			no-map;
+		};
+
+		modem@f0000000 {
+			reg = <0x0 0xf0000000 0x8800000>;
+			no-map;
+		};
+
+		secure-camera@fc000000 {
+			reg = <0x0 0xfc000000 0x1c00000>;
+			no-map;
+		};
 
 		ramoops@92000000 {
 			compatible = "ramoops";
@@ -96,11 +187,44 @@
 
 		enable-active-high;
 		gpio = <&gpa3 7 GPIO_ACTIVE_HIGH>;
+		vin-supply = <&s2mpb02_ldo18>;
 
 		regulator-max-microvolt = <2800000>;
 		regulator-min-microvolt = <2800000>;
 		regulator-name = "vdd_fixed_mmc";
 	};
+};
+
+&tmuctrl_0 {
+	status = "okay";
+};
+
+&tmuctrl_1 {
+	status = "okay";
+};
+
+&tmuctrl_2 {
+	status = "okay";
+};
+
+&tmuctrl_3 {
+	status = "okay";
+};
+
+&decon_f {
+	status = "okay";
+};
+
+&dsim0_observer {
+	status = "okay";
+};
+
+&vpp_g1_observer {
+	status = "okay";
+};
+
+&sysmmu_disp01_observer {
+	status = "okay";
 };
 
 &gpu {
@@ -128,6 +252,17 @@
 
 		pinctrl-0 = <&ts_int>;
 		pinctrl-names = "default";
+	};
+};
+
+&hsi2c_2 {
+	proximity@28 {
+		compatible = "semtech,sx9310";
+		reg = <0x28>;
+		interrupt-parent = <&gpa2>;
+		interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
+		#io-channel-cells = <1>;
+		status = "disabled"; /* supplies are not identified by vendor DT */
 	};
 };
 
@@ -183,8 +318,8 @@
 	pmic@66 {
 		compatible = "samsung,s2mps16-pmic";
 		reg = <0x66>;
-		interrupts = <2 IRQ_TYPE_LEVEL_LOW>;
-		interrupt-parent = <&gpa0>;
+		interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-parent = <&gpa3>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pmic_irq>;
 		wakeup-source;
@@ -528,10 +663,24 @@
 		samsung,pins = "gpa0-3";
 	};
 
+	key_home: key-home-pins {
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pins = "gpa0-5";
+	};
+
+	hall_flip: hall-flip-pins {
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pins = "gpa0-1";
+	};
+
 	pmic_irq: pmic-irq-pins {
 		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
-		samsung,pins = "gpa0-3";
+		samsung,pins = "gpa3-6";
 	};
 
 	sd2_cd: sd2-cd-pins {
@@ -569,9 +718,17 @@
 
 &serial_4 {
 	/* multiplexed over muic */
+	pinctrl-0 = <&uart4_hero_bus>;
+	pinctrl-names = "default";
 	status = "okay";
 };
-&pinctrl_fsys1 {
+&pinctrl_peric1 {
+	uart4_hero_bus: uart4-hero-bus-pins {
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pins = "gpe1-1", "gpe1-0";
+	};
+
 	pcie0_clkreq: pcie0-clkreq-pins {
 		samsung,pins = "gpj1-0";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;

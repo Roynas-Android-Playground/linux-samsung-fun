@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 (herolte) S2MPB02 sub-PMIC.
+ */
+
+&hsi2c_9 {
+	status = "okay";
+
+	s2mpb02: pmic@59 {
+		compatible = "samsung,s2mpb02";
+		reg = <0x59>;
+
+		regulators {
+			s2mpb02_buck1: s2mpb02-buck1 {
+				regulator-name = "VDD_1P3_EXT";
+				regulator-min-microvolt = <1300000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			s2mpb02_buck2: s2mpb02-buck2 {
+				regulator-name = "VDDD_CORE_0.8V_COMP";
+				regulator-min-microvolt = <650000>;
+				regulator-max-microvolt = <850000>;
+			};
+
+			s2mpb02_bb: s2mpb02-bb {
+				regulator-name = "VDD_BB_EXT";
+				regulator-min-microvolt = <2600000>;
+				regulator-max-microvolt = <4000000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			s2mpb02_ldo1: s2mpb02-ldo1 {
+				regulator-name = "VDDD_NORET_0.9V_COMP";
+				regulator-min-microvolt = <950000>;
+				regulator-max-microvolt = <950000>;
+			};
+
+			s2mpb02_ldo2: s2mpb02-ldo2 {
+				regulator-name = "VDDD_CORE_1.0V_COMP";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1000000>;
+			};
+
+			s2mpb02_ldo3: s2mpb02-ldo3 {
+				regulator-name = "VDDD_1.2V_CAM";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			s2mpb02_ldo4: s2mpb02-ldo4 {
+				regulator-name = "VDDD_RET_1.0V_COMP";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			s2mpb02_ldo5: s2mpb02-ldo5 {
+				regulator-name = "VDDD_1.2V_VT";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			s2mpb02_ldo6: s2mpb02-ldo6 {
+				regulator-name = "VDDIO_1.8V_VT";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo7: s2mpb02-ldo7 {
+				regulator-name = "VDDIO_1.8V_CAM";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo8: s2mpb02-ldo8 {
+				regulator-name = "VDDIO_1.8V_COMP";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo9: s2mpb02-ldo9 {
+				regulator-name = "VDDA_1.8V_COMP";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo10: s2mpb02-ldo10 {
+				regulator-name = "VDDA_1.8V_CAM";
+				regulator-min-microvolt = <1875000>;
+				regulator-max-microvolt = <1875000>;
+			};
+
+			s2mpb02_ldo11: s2mpb02-ldo11 {
+				regulator-name = "VDDA_2.9V_CAM";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <2950000>;
+			};
+
+			s2mpb02_ldo12: s2mpb02-ldo12 {
+				regulator-name = "VDDAF_2.8V_CAM";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02_ldo13: s2mpb02-ldo13 {
+				regulator-name = "VDDA_2.9V_VT";
+				regulator-min-microvolt = <2900000>;
+				regulator-max-microvolt = <2900000>;
+			};
+
+			s2mpb02_ldo14: s2mpb02-ldo14 {
+				regulator-name = "OIS_VM_2.8V";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02_ldo15: s2mpb02-ldo15 {
+				regulator-name = "OIS_VDD_2.8V";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02_ldo16: s2mpb02-ldo16 {
+				regulator-name = "TOUCH_VDD_3.3V";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
+			};
+
+			s2mpb02_ldo17: s2mpb02-ldo17 {
+				regulator-name = "OIS_VDD_1.8V";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo18: s2mpb02-ldo18 {
+				regulator-name = "vmmc";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+		};
+	};
+};

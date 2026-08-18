@@ -279,6 +279,14 @@ config EXYNOS_IOMMU_DEBUG
 
 	  Say N unless you need kernel log message for IOMMU debugging.
 
+config EXYNOS8890_SYSMMU_OBSERVER
+	tristate "Read-only Exynos8890 System MMU observer"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	help
+	  Report a bootloader-configured Exynos8890 System MMU translation
+	  context and fault state without taking ownership of clocks, IRQs,
+	  power domains, IOMMU domains, page tables or client devices.
+
 config IPMMU_VMSA
 	bool "Renesas VMSA-compatible IPMMU"
 	depends on ARCH_RENESAS || COMPILE_TEST

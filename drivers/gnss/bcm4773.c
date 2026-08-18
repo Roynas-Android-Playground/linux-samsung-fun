@@ -366,9 +366,16 @@ static const struct of_device_id bcm4773_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, bcm4773_of_match);
 
+static const struct spi_device_id bcm4773_spi_ids[] = {
+	{ "bcm4773" },
+	{ }
+};
+MODULE_DEVICE_TABLE(spi, bcm4773_spi_ids);
+
 static struct spi_driver bcm4773_driver = {
 	.probe = bcm4773_probe,
 	.remove = bcm4773_remove,
+	.id_table = bcm4773_spi_ids,
 	.driver = {
 		.name = "gnss-bcm4773",
 		.of_match_table = bcm4773_of_match,
