@@ -495,7 +495,7 @@
 	vqmmc-supply = <&s2mps16_ldo2>;
 
 	samsung,dw-mshc-ciu-div = <3>;
-	samsung,dw-mshc-sdr-timing = <0 2>;
+	samsung,dw-mshc-sdr-timing = <0 3>;
 	samsung,dw-mshc-ddr-timing = <1 2>;
 
 	status = "okay";
@@ -570,4 +570,77 @@
 &serial_4 {
 	/* multiplexed over muic */
 	status = "okay";
+};
+&pinctrl_fsys1 {
+	pcie0_clkreq: pcie0-clkreq-pins {
+		samsung,pins = "gpj1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+};
+
+/ {
+	wlan_reg_on: regulator-wlan-reg-on {
+		compatible = "regulator-fixed";
+		regulator-name = "wlan-reg-on";
+
+		gpio = <&gpj1 3 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <200000>;
+	};
+};
+
+&soc {
+	pcie0: pcie@157a0000 {
+		compatible = "samsung,exynos8890-pcie";
+		device_type = "pci";
+
+		reg = <0x157a0000 0x1000>,
+		      <0x15660000 0x1000>,
+		      <0x1c000000 0x1000>,
+		      <0x15630000 0x1000>,
+		      <0x15601044 0x10>,
+		      <0x156f0000 0x128>;
+		reg-names = "dbi", "elbi", "config", "phy", "sysreg", "pcs";
+
+		interrupts = <GIC_SPI 204 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "msi";
+
+		clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_PCLK_PCIE_WIFI0>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_ACLK_PCIE_WIFI0_DBI>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_ACLK_PCIE_WIFI0_SLV>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_ACLK_PCIE_WIFI0_MSTR>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_ACLK_AHB2AXI_PCIE_WIFI0>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_ACLK_COMBO_PHY_PCS_PCLK_WIFI0>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_PCLK_COMBO_PHY_WIFI0>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_PHYCLK_PCIE_WIFI0_DIG_REFCLK>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_PHYCLK_PCIE_WIFI0_TX0>,
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_PHYCLK_PCIE_WIFI0_RX0>;
+		clock-names = "pcie", "dbi", "slv", "mstr", "ahb", "pcs",
+			      "phy-pclk", "phy-ref", "phy-tx", "phy-rx";
+
+		samsung,pmu-syscon = <&pmu_system_controller>;
+		reset-gpios = <&gpj1 2 GPIO_ACTIVE_LOW>;
+		vpcie-supply = <&wlan_reg_on>;
+
+		pinctrl-0 = <&pcie0_clkreq>;
+		pinctrl-names = "default";
+
+		#address-cells = <3>;
+		#size-cells = <2>;
+		#interrupt-cells = <1>;
+
+		bus-range = <0x00 0xff>;
+		num-lanes = <1>;
+		max-link-speed = <1>;
+
+		ranges = <0x81000000 0 0x00000000 0x1c001000 0 0x00010000>,
+			 <0x82000000 0 0x1c011000 0x1c011000 0 0x01feefff>;
+
+		interrupt-map-mask = <0 0 0 0>;
+		interrupt-map = <0 0 0 0 &gic GIC_SPI 204 IRQ_TYPE_LEVEL_HIGH>;
+
+		status = "okay";
+	};
 };
