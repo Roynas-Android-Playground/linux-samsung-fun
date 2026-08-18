@@ -19,6 +19,7 @@
 #include <linux/slab.h>
 
 #include <linux/mfd/arizona/core.h>
+#include <linux/mfd/arizona/moon-registers.h>
 #include <linux/mfd/arizona/registers.h>
 
 #include "arizona.h"
@@ -109,32 +110,29 @@ static irqreturn_t arizona_irq_thread(int irq, void *data)
 	do {
 		poll = false;
 
-		if (arizona->aod_irq_chip) {
-			/*
-			 * Check the AOD status register to determine whether
-			 * the nested IRQ handler should be called.
-			 */
-			ret = regmap_read(arizona->regmap,
-					  ARIZONA_AOD_IRQ1, &val);
+		if (arizona->aod_irq_chip && arizona->irq_chip) {
+			/* Only handle each legacy domain if it is asserted. */
+			ret = regmap_read(arizona->regmap, ARIZONA_AOD_IRQ1, &val);
 			if (ret)
 				dev_warn(arizona->dev,
 					"Failed to read AOD IRQ1 %d\n", ret);
 			else if (val)
 				handle_nested_irq(
 					irq_find_mapping(arizona->virq, 0));
-		}
 
-		/*
-		 * Check if one of the main interrupts is asserted and only
-		 * check that domain if it is.
-		 */
-		ret = regmap_read(arizona->regmap, ARIZONA_IRQ_PIN_STATUS,
-				  &val);
-		if (ret == 0 && val & ARIZONA_IRQ1_STS) {
+			ret = regmap_read(arizona->regmap, ARIZONA_IRQ_PIN_STATUS,
+					  &val);
+			if (ret == 0 && val & ARIZONA_IRQ1_STS)
+				handle_nested_irq(
+					irq_find_mapping(arizona->virq, 1));
+			else if (ret != 0)
+				dev_err(arizona->dev,
+					"Failed to read main IRQ status: %d\n", ret);
+		} else if (arizona->aod_irq_chip) {
+			/* Moon has one Clearwater-style interrupt bank. */
+			handle_nested_irq(irq_find_mapping(arizona->virq, 0));
+		} else if (arizona->irq_chip) {
 			handle_nested_irq(irq_find_mapping(arizona->virq, 1));
-		} else if (ret != 0) {
-			dev_err(arizona->dev,
-				"Failed to read main IRQ status: %d\n", ret);
 		}
 #ifdef CONFIG_GPIOLIB_LEGACY
 		/*
@@ -210,6 +208,7 @@ int arizona_irq_init(struct arizona *arizona)
 	const struct regmap_irq_chip *aod, *irq;
 	struct irq_data *irq_data;
 	unsigned int virq;
+	unsigned int irq_ctrl_reg = ARIZONA_IRQ_CTRL_1;
 
 	arizona->ctrlif_error = true;
 
@@ -248,6 +247,15 @@ int arizona_irq_init(struct arizona *arizona)
 		arizona->ctrlif_error = false;
 		break;
 #endif
+#ifdef CONFIG_MFD_MOON
+	case CS47L90:
+	case CS47L91:
+		aod = &moon_irq;
+		irq = NULL;
+		arizona->ctrlif_error = false;
+		irq_ctrl_reg = CLEARWATER_IRQ1_CTRL;
+		break;
+#endif
 #ifdef CONFIG_MFD_WM8997
 	case WM8997:
 		aod = &wm8997_aod;
@@ -270,8 +278,9 @@ int arizona_irq_init(struct arizona *arizona)
 		return -EINVAL;
 	}
 
-	/* Disable all wake sources by default */
-	regmap_write(arizona->regmap, ARIZONA_WAKE_CONTROL, 0);
+	/* Moon does not use the legacy Arizona wake-control register. */
+	if (arizona->type != CS47L90 && arizona->type != CS47L91)
+		regmap_write(arizona->regmap, ARIZONA_WAKE_CONTROL, 0);
 
 	/* Read the flags from the interrupt controller if not specified */
 	if (!arizona->pdata.irq_flags) {
@@ -300,7 +309,7 @@ int arizona_irq_init(struct arizona *arizona)
 
 	if (arizona->pdata.irq_flags & (IRQF_TRIGGER_HIGH |
 					IRQF_TRIGGER_RISING)) {
-		ret = regmap_update_bits(arizona->regmap, ARIZONA_IRQ_CTRL_1,
+		ret = regmap_update_bits(arizona->regmap, irq_ctrl_reg,
 					 ARIZONA_IRQ_POL, 0);
 		if (ret != 0) {
 			dev_err(arizona->dev, "Couldn't set IRQ polarity: %d\n",
@@ -336,18 +345,21 @@ int arizona_irq_init(struct arizona *arizona)
 		}
 	}
 
-	virq = irq_create_mapping(arizona->virq, ARIZONA_MAIN_IRQ_INDEX);
-	if (!virq) {
-		dev_err(arizona->dev, "Failed to map main IRQs\n");
-		ret = -EINVAL;
-		goto err_aod;
-	}
+	if (irq) {
+		virq = irq_create_mapping(arizona->virq, ARIZONA_MAIN_IRQ_INDEX);
+		if (!virq) {
+			dev_err(arizona->dev, "Failed to map main IRQs\n");
+			ret = -EINVAL;
+			goto err_aod;
+		}
 
-	ret = regmap_add_irq_chip(arizona->regmap, virq, IRQF_ONESHOT,
-				  0, irq, &arizona->irq_chip);
-	if (ret != 0) {
-		dev_err(arizona->dev, "Failed to add main IRQs: %d\n", ret);
-		goto err_map_main_irq;
+		ret = regmap_add_irq_chip(arizona->regmap, virq, IRQF_ONESHOT,
+					  0, irq, &arizona->irq_chip);
+		if (ret != 0) {
+			dev_err(arizona->dev,
+				"Failed to add main IRQs: %d\n", ret);
+			goto err_map_main_irq;
+		}
 	}
 
 #ifdef CONFIG_GPIOLIB_LEGACY
@@ -410,19 +422,23 @@ err_ctrlif:
 err_boot_done:
 	free_irq(arizona->irq, arizona);
 err_main_irq:
-	regmap_del_irq_chip(irq_find_mapping(arizona->virq,
-					     ARIZONA_MAIN_IRQ_INDEX),
-			    arizona->irq_chip);
+	if (arizona->irq_chip) {
+		virq = irq_find_mapping(arizona->virq, ARIZONA_MAIN_IRQ_INDEX);
+		regmap_del_irq_chip(virq, arizona->irq_chip);
+	}
 err_map_main_irq:
-	irq_dispose_mapping(irq_find_mapping(arizona->virq,
-					     ARIZONA_MAIN_IRQ_INDEX));
+	virq = irq_find_mapping(arizona->virq, ARIZONA_MAIN_IRQ_INDEX);
+	if (virq)
+		irq_dispose_mapping(virq);
 err_aod:
-	regmap_del_irq_chip(irq_find_mapping(arizona->virq,
-					     ARIZONA_AOD_IRQ_INDEX),
-			    arizona->aod_irq_chip);
+	if (arizona->aod_irq_chip) {
+		virq = irq_find_mapping(arizona->virq, ARIZONA_AOD_IRQ_INDEX);
+		regmap_del_irq_chip(virq, arizona->aod_irq_chip);
+	}
 err_map_aod:
-	irq_dispose_mapping(irq_find_mapping(arizona->virq,
-					     ARIZONA_AOD_IRQ_INDEX));
+	virq = irq_find_mapping(arizona->virq, ARIZONA_AOD_IRQ_INDEX);
+	if (virq)
+		irq_dispose_mapping(virq);
 err_domain:
 	irq_domain_remove(arizona->virq);
 err:
@@ -438,12 +454,16 @@ int arizona_irq_exit(struct arizona *arizona)
 	arizona_free_irq(arizona, ARIZONA_IRQ_BOOT_DONE, arizona);
 
 	virq = irq_find_mapping(arizona->virq, ARIZONA_MAIN_IRQ_INDEX);
-	regmap_del_irq_chip(virq, arizona->irq_chip);
-	irq_dispose_mapping(virq);
+	if (arizona->irq_chip)
+		regmap_del_irq_chip(virq, arizona->irq_chip);
+	if (virq)
+		irq_dispose_mapping(virq);
 
 	virq = irq_find_mapping(arizona->virq, ARIZONA_AOD_IRQ_INDEX);
-	regmap_del_irq_chip(virq, arizona->aod_irq_chip);
-	irq_dispose_mapping(virq);
+	if (arizona->aod_irq_chip)
+		regmap_del_irq_chip(virq, arizona->aod_irq_chip);
+	if (virq)
+		irq_dispose_mapping(virq);
 
 	irq_domain_remove(arizona->virq);
 

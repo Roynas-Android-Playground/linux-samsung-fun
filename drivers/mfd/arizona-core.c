@@ -24,6 +24,7 @@
 #include <linux/platform_device.h>
 
 #include <linux/mfd/arizona/core.h>
+#include <linux/mfd/arizona/moon-registers.h>
 #include <linux/mfd/arizona/registers.h>
 
 #include "arizona.h"
@@ -277,12 +278,23 @@ static int arizona_wait_for_boot(struct arizona *arizona)
 	 * we won't race with the interrupt handler as it'll be blocked on
 	 * runtime resume.
 	 */
-	ret = arizona_poll_reg(arizona, 30, ARIZONA_INTERRUPT_RAW_STATUS_5,
-			       ARIZONA_BOOT_DONE_STS, ARIZONA_BOOT_DONE_STS);
-
-	if (!ret)
-		regmap_write(arizona->regmap, ARIZONA_INTERRUPT_STATUS_5,
-			     ARIZONA_BOOT_DONE_STS);
+	if (arizona->type == CS47L90 || arizona->type == CS47L91) {
+		ret = arizona_poll_reg(arizona, 30,
+				       CLEARWATER_IRQ1_RAW_STATUS_1,
+				       CLEARWATER_BOOT_DONE_STS1,
+				       CLEARWATER_BOOT_DONE_STS1);
+		if (!ret)
+			regmap_write(arizona->regmap, CLEARWATER_IRQ1_STATUS_1,
+				     CLEARWATER_BOOT_DONE_EINT1);
+	} else {
+		ret = arizona_poll_reg(arizona, 30,
+				       ARIZONA_INTERRUPT_RAW_STATUS_5,
+				       ARIZONA_BOOT_DONE_STS,
+				       ARIZONA_BOOT_DONE_STS);
+		if (!ret)
+			regmap_write(arizona->regmap, ARIZONA_INTERRUPT_STATUS_5,
+				     ARIZONA_BOOT_DONE_STS);
+	}
 
 	pm_runtime_mark_last_busy(arizona->dev);
 
@@ -299,6 +311,11 @@ static void arizona_disable_reset(struct arizona *arizona)
 {
 	if (arizona->pdata.reset) {
 		switch (arizona->type) {
+		case CS47L90:
+		case CS47L91:
+			/* Match Moon's vendor reset-low requirement. */
+			msleep(20);
+			break;
 		case WM5110:
 		case WM8280:
 			/* Meet requirements for minimum reset duration */
@@ -526,6 +543,7 @@ static int arizona_is_jack_det_active(struct arizona *arizona)
 static int arizona_runtime_resume(struct device *dev)
 {
 	struct arizona *arizona = dev_get_drvdata(dev);
+	bool was_fully_powered_off = arizona->has_fully_powered_off;
 	int ret;
 
 	dev_dbg(arizona->dev, "Leaving AoD mode\n");
@@ -554,10 +572,11 @@ static int arizona_runtime_resume(struct device *dev)
 	if (arizona->has_fully_powered_off) {
 		arizona_disable_reset(arizona);
 		enable_irq(arizona->irq);
-		arizona->has_fully_powered_off = false;
 	}
 
 	regcache_cache_only(arizona->regmap, false);
+	if (arizona->regmap_32bit)
+		regcache_cache_only(arizona->regmap_32bit, false);
 
 	switch (arizona->type) {
 	case WM5102:
@@ -622,6 +641,12 @@ static int arizona_runtime_resume(struct device *dev)
 		if (ret != 0)
 			goto err;
 		break;
+	case CS47L90:
+	case CS47L91:
+		ret = arizona_wait_for_boot(arizona);
+		if (ret != 0)
+			goto err;
+		break;
 	default:
 		ret = arizona_wait_for_boot(arizona);
 		if (ret != 0)
@@ -640,12 +665,33 @@ static int arizona_runtime_resume(struct device *dev)
 		dev_err(arizona->dev, "Failed to restore register cache\n");
 		goto err;
 	}
+	if (arizona->regmap_32bit) {
+		ret = regcache_sync(arizona->regmap_32bit);
+		if (ret != 0) {
+			dev_err(arizona->dev,
+				"Failed to restore 32-bit register cache\n");
+			goto err;
+		}
+	}
 
+	arizona->has_fully_powered_off = false;
 	return 0;
 
 err:
 	regcache_cache_only(arizona->regmap, true);
+	regcache_mark_dirty(arizona->regmap);
+	if (arizona->regmap_32bit)
+		regcache_cache_only(arizona->regmap_32bit, true);
+	if (arizona->regmap_32bit)
+		regcache_mark_dirty(arizona->regmap_32bit);
 	regulator_disable(arizona->dcvdd);
+	if (was_fully_powered_off) {
+		arizona_enable_reset(arizona);
+		disable_irq_nosync(arizona->irq);
+		regulator_bulk_disable(arizona->num_core_supplies,
+				       arizona->core_supplies);
+		arizona->has_fully_powered_off = true;
+	}
 	return ret;
 }
 
@@ -708,6 +754,8 @@ static int arizona_runtime_suspend(struct device *dev)
 		break;
 	case WM1831:
 	case CS47L24:
+	case CS47L90:
+	case CS47L91:
 		break;
 	default:
 		jd_active = arizona_is_jack_det_active(arizona);
@@ -724,6 +772,10 @@ static int arizona_runtime_suspend(struct device *dev)
 
 	regcache_cache_only(arizona->regmap, true);
 	regcache_mark_dirty(arizona->regmap);
+	if (arizona->regmap_32bit) {
+		regcache_cache_only(arizona->regmap_32bit, true);
+		regcache_mark_dirty(arizona->regmap_32bit);
+	}
 	regulator_disable(arizona->dcvdd);
 
 	/* Allow us to completely power down if no jack detection */
@@ -900,6 +952,10 @@ static const struct mfd_cell cs47l24_devs[] = {
 	},
 };
 
+static const struct mfd_cell moon_devs[] = {
+	{ .name = "moon-codec" },
+};
+
 static const char * const wm8997_supplies[] = {
 	"MICVDD",
 	"DBVDD2",
@@ -964,6 +1020,8 @@ int arizona_dev_init(struct arizona *arizona)
 	}
 
 	regcache_cache_only(arizona->regmap, true);
+	if (arizona->regmap_32bit)
+		regcache_cache_only(arizona->regmap_32bit, true);
 
 	switch (arizona->type) {
 	case WM5102:
@@ -974,6 +1032,8 @@ int arizona_dev_init(struct arizona *arizona)
 	case WM1814:
 	case WM1831:
 	case CS47L24:
+	case CS47L90:
+	case CS47L91:
 		for (i = 0; i < ARRAY_SIZE(wm5102_core_supplies); i++)
 			arizona->core_supplies[i].supply
 				= wm5102_core_supplies[i];
@@ -991,6 +1051,8 @@ int arizona_dev_init(struct arizona *arizona)
 	switch (arizona->type) {
 	case WM1831:
 	case CS47L24:
+	case CS47L90:
+	case CS47L91:
 		break; /* No LDO1 regulator */
 	default:
 		ret = mfd_add_devices(arizona->dev, -1, early_devs,
@@ -1039,6 +1101,10 @@ int arizona_dev_init(struct arizona *arizona)
 		}
 	}
 
+	/* Vendor probe requires /RESET low before enabling Moon's supplies. */
+	if (arizona->type == CS47L90 || arizona->type == CS47L91)
+		msleep(20);
+
 	ret = regulator_bulk_enable(arizona->num_core_supplies,
 				    arizona->core_supplies);
 	if (ret != 0) {
@@ -1056,6 +1122,8 @@ int arizona_dev_init(struct arizona *arizona)
 	arizona_disable_reset(arizona);
 
 	regcache_cache_only(arizona->regmap, false);
+	if (arizona->regmap_32bit)
+		regcache_cache_only(arizona->regmap_32bit, false);
 
 	/* Verify that this is a chip we know about */
 	ret = regmap_read(arizona->regmap, ARIZONA_SOFTWARE_RESET, &reg);
@@ -1070,12 +1138,14 @@ int arizona_dev_init(struct arizona *arizona)
 	case 0x6349:
 	case 0x6363:
 	case 0x8997:
+	case 0x6364:
 		break;
 	default:
 		dev_err(arizona->dev, "Unknown device ID: %x\n", reg);
 		ret = -ENODEV;
 		goto err_reset;
 	}
+	dev_info(dev, "register 0x00 == 0x%04x\n", reg);
 
 	/* If we have a /RESET GPIO we'll already be reset */
 	if (!arizona->pdata.reset) {
@@ -1229,6 +1299,29 @@ int arizona_dev_init(struct arizona *arizona)
 			apply_patch = wm8998_patch;
 			subdevs = wm8998_devs;
 			n_subdevs = ARRAY_SIZE(wm8998_devs);
+		}
+		break;
+	case 0x6364:
+		if (IS_ENABLED(CONFIG_MFD_MOON)) {
+			switch (arizona->type) {
+			case CS47L90:
+				type_name = "CS47L90";
+				break;
+			case CS47L91:
+				type_name = "CS47L91";
+				break;
+			default:
+				type_name = "CS47L90";
+				dev_warn(arizona->dev,
+					 "Moon codec registered as %d\n",
+					 arizona->type);
+				arizona->type = CS47L90;
+				break;
+			}
+
+			apply_patch = moon_patch;
+			subdevs = moon_devs;
+			n_subdevs = ARRAY_SIZE(moon_devs);
 		}
 		break;
 	default:

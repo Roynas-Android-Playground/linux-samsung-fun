@@ -2100,6 +2100,12 @@ config MFD_CS47L24
 	help
 	  Support for Cirrus Logic CS47L24 and WM1831 low power audio SoC
 
+config MFD_MOON
+	bool "Cirrus Logic CS47L90 and CS47L91 (Moon)"
+	depends on MFD_ARIZONA
+	help
+	  Support for Cirrus Logic CS47L90 and CS47L91 Moon audio SoCs.
+
 config MFD_WM5102
 	bool "Wolfson Microelectronics WM5102"
 	depends on MFD_ARIZONA

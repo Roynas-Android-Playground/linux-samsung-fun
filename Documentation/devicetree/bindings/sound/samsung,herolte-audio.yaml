@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/samsung,herolte-audio.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Galaxy S7 audio with CS47L91 and MAX98506
+
+maintainers:
+  - Soo-Hwan Na <whiteshell2544@naver.com>
+
+allOf:
+  - $ref: sound-card-common.yaml#
+
+properties:
+  compatible:
+    const: samsung,herolte-audio
+
+  audio-codec:
+    description: Phandle to the CS47L91 codec.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  i2s-controller:
+    description: Phandle and DAI index for the Exynos8890 I2S0 controller.
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    items:
+      - items:
+          - description: Phandle to I2S0.
+          - description: Primary DAI index, normally zero.
+
+  speaker-codec:
+    description: Phandle to the MAX98506 speaker amplifier.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+required:
+  - compatible
+  - audio-codec
+  - audio-routing
+  - i2s-controller
+  - model
+  - speaker-codec
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    sound {
+        compatible = "samsung,herolte-audio";
+        model = "Samsung Galaxy S7";
+        audio-codec = <&audio_codec>;
+        speaker-codec = <&speaker_amp>;
+        i2s-controller = <&i2s0 0>;
+        audio-routing =
+            "HP", "HPOUT1L",
+            "HP", "HPOUT1R",
+            "RCV", "HPOUT3L",
+            "RCV", "HPOUT3R",
+            "SPK", "SPKOUT";
+    };

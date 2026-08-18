@@ -21,6 +21,8 @@ extern const struct regmap_config wm5110_i2c_regmap;
 extern const struct regmap_config wm5110_spi_regmap;
 
 extern const struct regmap_config cs47l24_spi_regmap;
+extern const struct regmap_config moon_16bit_spi_regmap;
+extern const struct regmap_config moon_32bit_spi_regmap;
 
 extern const struct regmap_config wm8997_i2c_regmap;
 
@@ -36,6 +38,7 @@ extern const struct regmap_irq_chip wm5110_irq;
 extern const struct regmap_irq_chip wm5110_revd_irq;
 
 extern const struct regmap_irq_chip cs47l24_irq;
+extern const struct regmap_irq_chip moon_irq;
 
 extern const struct regmap_irq_chip wm8997_aod;
 extern const struct regmap_irq_chip wm8997_irq;
