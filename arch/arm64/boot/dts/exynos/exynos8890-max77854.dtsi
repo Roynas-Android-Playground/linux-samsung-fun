@@ -9,6 +9,7 @@
 
 #include "exynos8890-herolte-audio.dtsi"
 #include "exynos8890-herolte-gnss.dtsi"
+#include "exynos8890-herolte-sysmmu.dtsi"
 
 &pinctrl_alive {
 	max77854_irq: max77854-irq-pins {
