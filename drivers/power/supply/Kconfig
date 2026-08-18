@@ -459,6 +459,16 @@ config BATTERY_MAX17042
 
 	  Driver can be build as a module (max17042_battery).
 
+config BATTERY_MAX77854
+	tristate "MAX77854 read-only fuel gauge"
+	depends on MFD_MAX77843
+	help
+	  Enable read-only battery presence, voltage, open-circuit voltage and
+	  raw state-of-charge reporting from the fuel-gauge block integrated in
+	  the Maxim MAX77854 companion PMIC. Model programming, learned state,
+	  current sensing, temperature compensation and fuel alerts are not
+	  enabled.
+
 config BATTERY_MAX1720X
 	tristate "Maxim MAX17201/MAX17205 Fuel Gauge"
 	depends on I2C

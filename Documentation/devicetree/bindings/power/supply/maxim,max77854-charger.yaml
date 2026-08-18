@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/maxim,max77854-charger.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX77854 battery charger
+
+maintainers:
+  - Soo-Hwan Na <whiteshell2544@naver.com>
+
+description: |
+  The MAX77854 companion PMIC contains a single-cell switch-mode charger.
+  The charger is exposed as a child of the MAX77843/MAX77854 MFD because its
+  secondary I2C address is owned and regmapped by the parent device.
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: maxim,max77854-charger
+
+required:
+  - compatible
+  - monitored-battery
+
+unevaluatedProperties: false
