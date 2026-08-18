@@ -29,8 +29,14 @@ properties:
   reg:
     maxItems: 1
 
+  charger:
+    $ref: /schemas/power/supply/maxim,max77854-charger.yaml
+
   extcon:
     $ref: /schemas/extcon/maxim,max77843.yaml
+
+  fuel-gauge:
+    $ref: /schemas/power/supply/maxim,max77854-fuel-gauge.yaml
 
   motor-driver:
     type: object

@@ -27,6 +27,7 @@ struct max77693_dev {
 	struct i2c_client *i2c_muic;	/* 0x4A , MUIC */
 	struct i2c_client *i2c_haptic;	/* MAX77693: 0x90 , Haptic */
 	struct i2c_client *i2c_chg;	/* MAX77843/MAX77854: 0xD2, Charger */
+	struct i2c_client *i2c_fg;	/* MAX77854: 0x6C, Fuel gauge */
 
 	enum max77693_types type;
 
@@ -34,6 +35,7 @@ struct max77693_dev {
 	struct regmap *regmap_muic;
 	struct regmap *regmap_haptic;	/* Only MAX77693 */
 	struct regmap *regmap_chg;	/* MAX77843/MAX77854 */
+	struct regmap *regmap_fg;	/* MAX77854 */
 	struct regmap *regmap_leds;	/* Only MAX77705 */
 
 	struct regmap_irq_chip_data *irq_data_led;

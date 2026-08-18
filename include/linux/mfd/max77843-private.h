@@ -110,6 +110,9 @@ enum max77843_fuelgauge {
 	MAX77843_FG_END,
 };
 
+#define MAX77843_FG_STATUS_POR			BIT(1)
+#define MAX77843_FG_STATUS_BATTERY_ABSENT	BIT(3)
+
 /* MUIC registers */
 enum max77843_muic_reg {
 	MAX77843_MUIC_REG_ID		= 0x00,

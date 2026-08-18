@@ -3,13 +3,31 @@
  * Samsung Galaxy S7 MAX77854 companion PMIC bring-up.
  *
  * MAX77854 reuses the upstream MAX77843-compatible MUIC, SAFEOUT and haptic
- * interfaces. Charger, fuel gauge and AFC/QC support are intentionally left
- * for later validation.
+ * interfaces. Basic conservative wired charging and read-only fuel-gauge
+ * reporting are enabled here; wireless charging and AFC/QC remain deferred.
  */
 
 #include "exynos8890-herolte-audio.dtsi"
 #include "exynos8890-herolte-gnss.dtsi"
 #include "exynos8890-herolte-sysmmu.dtsi"
+
+/ {
+	herolte_battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+
+		/* Stock herolte charger policy uses a 4.35 V float target. */
+		voltage-max-design-microvolt = <4350000>;
+		constant-charge-voltage-max-microvolt = <4350000>;
+
+		/*
+		 * Conservative first-stage limit until the battery temperature,
+		 * fuel gauge and cable/thermal policy are represented upstream.
+		 */
+		constant-charge-current-max-microamp = <450000>;
+		charge-term-current-microamp = <150000>;
+	};
+};
 
 &pinctrl_alive {
 	max77854_irq: max77854-irq-pins {
@@ -31,6 +49,15 @@
 
 		pinctrl-0 = <&max77854_irq>;
 		pinctrl-names = "default";
+
+		charger {
+			compatible = "maxim,max77854-charger";
+			monitored-battery = <&herolte_battery>;
+		};
+
+		fuel-gauge {
+			compatible = "maxim,max77854-fuel-gauge";
+		};
 
 		max77854_muic: extcon {
 			compatible = "maxim,max77843-muic";
