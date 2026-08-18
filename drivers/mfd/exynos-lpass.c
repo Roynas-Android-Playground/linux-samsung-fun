@@ -19,6 +19,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/soc/samsung/exynos-regs-pmu.h>
 #include <linux/types.h>
@@ -28,7 +29,6 @@
 #define  LPASS_SB_SW_RESET		BIT(11)
 #define  LPASS_UART_SW_RESET		BIT(10)
 #define  LPASS_PCM_SW_RESET		BIT(9)
-#define  LPASS_I2S_SW_RESET		BIT(8)
 #define  LPASS_WDT1_SW_RESET		BIT(4)
 #define  LPASS_WDT0_SW_RESET		BIT(3)
 #define  LPASS_TIMER_SW_RESET		BIT(2)
@@ -48,10 +48,15 @@
 #define  LPASS_INTR_UART		BIT(1)
 #define  LPASS_INTR_SFR			BIT(0)
 
+struct exynos_lpass_data {
+	unsigned int i2s_sw_reset;
+};
+
 struct exynos_lpass {
 	/* pointer to the LPASS TOP regmap */
 	struct regmap *top;
 	struct clk *sfr0_clk;
+	const struct exynos_lpass_data *data;
 };
 
 static void exynos_lpass_core_sw_reset(struct exynos_lpass *lpass, int mask)
@@ -81,7 +86,7 @@ static void exynos_lpass_enable(struct exynos_lpass *lpass)
 		     LPASS_INTR_SFR | LPASS_INTR_DMA | LPASS_INTR_I2S |
 		     LPASS_INTR_UART);
 
-	exynos_lpass_core_sw_reset(lpass, LPASS_I2S_SW_RESET);
+	exynos_lpass_core_sw_reset(lpass, lpass->data->i2s_sw_reset);
 	exynos_lpass_core_sw_reset(lpass, LPASS_DMA_SW_RESET);
 	exynos_lpass_core_sw_reset(lpass, LPASS_MEM_SW_RESET);
 	exynos_lpass_core_sw_reset(lpass, LPASS_UART_SW_RESET);
@@ -123,6 +128,10 @@ static int exynos_lpass_probe(struct platform_device *pdev)
 	lpass = devm_kzalloc(dev, sizeof(*lpass), GFP_KERNEL);
 	if (!lpass)
 		return -ENOMEM;
+
+	lpass->data = device_get_match_data(dev);
+	if (!lpass->data)
+		return -EINVAL;
 
 	base_top = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base_top))
@@ -175,8 +184,22 @@ static const struct dev_pm_ops lpass_pm_ops = {
 				     pm_runtime_force_resume)
 };
 
+static const struct exynos_lpass_data exynos5433_lpass_data = {
+	.i2s_sw_reset = BIT(8),
+};
+
+static const struct exynos_lpass_data exynos8890_lpass_data = {
+	.i2s_sw_reset = BIT(7),
+};
+
 static const struct of_device_id exynos_lpass_of_match[] = {
-	{ .compatible = "samsung,exynos5433-lpass" },
+	{
+		.compatible = "samsung,exynos5433-lpass",
+		.data = &exynos5433_lpass_data,
+	}, {
+		.compatible = "samsung,exynos8890-lpass",
+		.data = &exynos8890_lpass_data,
+	},
 	{ },
 };
 MODULE_DEVICE_TABLE(of, exynos_lpass_of_match);
