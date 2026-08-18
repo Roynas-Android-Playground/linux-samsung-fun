@@ -153,6 +153,10 @@
 		method = "smc";
 	};
 
+	fips_fmp {
+		compatible = "samsung,exynos-fips-fmp";
+	};
+
 	soc: soc@0 {
 		compatible = "simple-bus";
 		ranges = <0x0 0x0 0x0 0x20000000>;
