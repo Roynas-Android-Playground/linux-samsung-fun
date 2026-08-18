@@ -48,6 +48,20 @@
 					cpu = <&cpu3>;
 				};
 			};
+			cluster1 {
+				core0 {
+					cpu = <&cpu4>;
+				};
+				core1 {
+					cpu = <&cpu5>;
+				};
+				core2 {
+					cpu = <&cpu6>;
+				};
+				core3 {
+					cpu = <&cpu7>;
+				};
+			};
 		};
 
 		/*
@@ -81,6 +95,34 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			reg = <0x103>;
+			enable-method = "psci";
+		};
+
+		cpu4: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,mongoose-m1";
+			reg = <0x0>;
+			enable-method = "psci";
+		};
+
+		cpu5: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,mongoose-m1";
+			reg = <0x1>;
+			enable-method = "psci";
+		};
+
+		cpu6: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,mongoose-m1";
+			reg = <0x2>;
+			enable-method = "psci";
+		};
+
+		cpu7: cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,mongoose-m1";
+			reg = <0x3>;
 			enable-method = "psci";
 		};
 	};
@@ -1046,6 +1088,11 @@
 		 * configure CNTFRQ_EL0
 		 */
 		clock-frequency = <26000000>;
+	};
+
+	reboot {
+		compatible = "exynos8890,reboot";
+		pmu_base = <0x105C0000>;
 	};
 };
 
