@@ -22,6 +22,9 @@
 struct exynos_pm_domain_config {
 	/* Value for LOCAL_PWR_CFG and STATUS fields for each domain */
 	u32 local_pwr_cfg;
+	/* Value written to OPTION before powering the domain on, if non-zero */
+	u32 power_on_option;
+	unsigned int flags;
 };
 
 /*
@@ -31,6 +34,7 @@ struct exynos_pm_domain {
 	void __iomem *base;
 	struct generic_pm_domain pd;
 	u32 local_pwr_cfg;
+	u32 power_on_option;
 };
 
 static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
@@ -44,6 +48,8 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 	base = pd->base;
 
 	pwr = power_on ? pd->local_pwr_cfg : 0;
+	if (power_on && pd->power_on_option)
+		writel_relaxed(pd->power_on_option, base + 0x8);
 	writel_relaxed(pwr, base);
 
 	/* Wait max 1ms */
@@ -81,6 +87,16 @@ static const struct exynos_pm_domain_config exynos5433_cfg = {
 	.local_pwr_cfg		= 0xf,
 };
 
+/*
+ * Exynos8890 MFC needs OPTION=0x2 before LOCAL_PWR_CFG is asserted. Keep the
+ * domain on until the SoC-specific power-off/Q-channel sequence is supported.
+ */
+static const struct exynos_pm_domain_config exynos8890_mfc_cfg = {
+	.local_pwr_cfg		= 0xf,
+	.power_on_option	= 0x2,
+	.flags			= GENPD_FLAG_ALWAYS_ON,
+};
+
 static const struct of_device_id exynos_pm_domain_of_match[] = {
 	{
 		.compatible = "samsung,exynos4210-pd",
@@ -88,6 +104,9 @@ static const struct of_device_id exynos_pm_domain_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos5433-pd",
 		.data = &exynos5433_cfg,
+	}, {
+		.compatible = "samsung,exynos8890-mfc-pd",
+		.data = &exynos8890_mfc_cfg,
 	},
 	{ },
 };
@@ -126,7 +145,9 @@ static int exynos_pd_probe(struct platform_device *pdev)
 
 	pd->pd.power_off = exynos_pd_power_off;
 	pd->pd.power_on = exynos_pd_power_on;
+	pd->pd.flags = pm_domain_cfg->flags;
 	pd->local_pwr_cfg = pm_domain_cfg->local_pwr_cfg;
+	pd->power_on_option = pm_domain_cfg->power_on_option;
 
 	/*
 	 * Some Samsung platforms with bootloaders turning on the splash-screen
@@ -138,6 +159,18 @@ static int exynos_pd_probe(struct platform_device *pdev)
 		exynos_pd_power_off(&pd->pd);
 
 	on = readl_relaxed(pd->base + 0x4) & pd->local_pwr_cfg;
+
+	/*
+	 * An always-on domain still needs to be physically enabled before its
+	 * consumers probe. This is particularly important for Exynos8890 SYSMMU,
+	 * which reads its version register during probe before runtime PM starts.
+	 */
+	if (!on && (pd->pd.flags & GENPD_FLAG_ALWAYS_ON)) {
+		ret = exynos_pd_power_on(&pd->pd);
+		if (ret)
+			return ret;
+		on = readl_relaxed(pd->base + 0x4) & pd->local_pwr_cfg;
+	}
 
 	pm_genpd_init(&pd->pd, NULL, !on);
 	ret = of_genpd_add_provider_simple(np, &pd->pd);
