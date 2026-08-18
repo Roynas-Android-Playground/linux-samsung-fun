@@ -1035,6 +1035,30 @@
 			status = "disabled";
 		};
 
+		decon_f: display-controller@13960000 {
+			compatible = "samsung,exynos8890-decon";
+			reg = <0x13960000 0x10000>;
+			status = "disabled";
+		};
+
+		dsim0_observer: dsi-observer@13900000 {
+			compatible = "samsung,exynos8890-dsim-observer";
+			reg = <0x13900000 0x100>;
+			status = "disabled";
+		};
+
+		vpp_g1_observer: vpp-observer@13952000 {
+			compatible = "samsung,exynos8890-vpp-observer";
+			reg = <0x13952000 0x1000>;
+			status = "disabled";
+		};
+
+		sysmmu_disp01_observer: iommu-observer@13a10000 {
+			compatible = "samsung,exynos8890-sysmmu-observer";
+			reg = <0x13a10000 0x1000>;
+			status = "disabled";
+		};
+
 		tmuctrl_0: tmu@10060000 {
 			compatible = "samsung,exynos8890-tmu";
 			reg = <0x10060000 0x200>;

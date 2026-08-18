@@ -36,6 +36,28 @@ config DRM_EXYNOS7_DECON
 	help
 	  Choose this option if you want to use Exynos DECON for DRM.
 
+config DRM_EXYNOS8890_DECON_OBSERVER
+	tristate "Read-only Exynos8890 DECON observer"
+	help
+	  Build a non-destructive observer for bootloader-configured Exynos8890
+	  DECON state. It reads and reports controller state without registering
+	  a DRM CRTC or taking ownership of clocks, power domains, interrupts,
+	  IOMMUs, DSIM, PHY or panel hardware.
+
+config DRM_EXYNOS8890_DSIM_OBSERVER
+	tristate "Read-only Exynos8890 DSIM observer"
+	help
+	  Report the bootloader-configured Exynos8890 DSIM link, command-mode,
+	  compression, PLL, PHY and TE state without taking ownership of clocks,
+	  interrupts, power domains, PHYs, regulators, GPIOs or the panel.
+
+config DRM_EXYNOS8890_VPP_OBSERVER
+	tristate "Read-only Exynos8890 VPP observer"
+	help
+	  Report the bootloader-configured IDMA_G1/VPP source format, geometry,
+	  DMA address and ping-pong state without taking ownership of clocks,
+	  interrupts, power domains, IOMMUs or framebuffer memory.
+
 config DRM_EXYNOS_MIXER
 	bool "Mixer"
 	help
