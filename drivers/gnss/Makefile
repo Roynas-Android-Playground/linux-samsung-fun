@@ -6,6 +6,8 @@
 obj-$(CONFIG_GNSS)			+= gnss.o
 gnss-y := core.o
 
+obj-$(CONFIG_GNSS_BCM4773)		+= bcm4773.o
+
 obj-$(CONFIG_GNSS_SERIAL)		+= gnss-serial.o
 gnss-serial-y := serial.o
 

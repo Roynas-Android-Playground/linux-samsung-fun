@@ -16,6 +16,20 @@ if GNSS
 config GNSS_SERIAL
 	tristate
 
+config GNSS_BCM4773
+	tristate "Broadcom BCM4773 GNSS receiver support"
+	depends on SPI
+	help
+	  Say Y here if you have a Broadcom BCM4773 GNSS/sensor-hub device
+	  connected over Broadcom's SSI protocol on an SPI bus.
+
+	  The initial driver exposes the raw BBD transport stream through the
+	  Linux GNSS core. Sensor RPC demultiplexing and firmware patch loading
+	  are handled separately.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called bcm4773.
+
 config GNSS_MTK_SERIAL
 	tristate "Mediatek GNSS receiver support"
 	depends on SERIAL_DEV_BUS
