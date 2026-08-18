@@ -27,18 +27,18 @@
  */
 #define SDMMC_FORCE_CLK_STOP		0x0B0
 #define MMC_HWACG_CONTROL		BIT(4)
+#define SDMMC_AXI_BURST_LEN		0x0B4
+#define SDMMC_VOLTAGE_INT_EXTRA_MASK	GENMASK(26, 24)
 
 /*
  * exynos8890's SD/MMC data path runs through an inline FMP (Flash Memory
  * Protector) hardware block, sitting at a fixed +0x1000 offset from the
  * controller's own register base, that is left in a blocking/undefined
- * state by the bootloader. It must be explicitly told to pass data through
- * unmodified via an SMC call into EL3 firmware before any real data-phase
- * transfer will work; command-only exchanges never touch the FMP and are
- * unaffected either way, which is why identification always succeeds while
- * every first data transfer times out (DRTO) without this call.
+ * state by the bootloader. Program descriptor bypass through EL3 before the
+ * controller is powered for data transfers, matching Samsung's secure ABI.
  */
 #define EXYNOS8890_FMP_OFFSET		0x1000
+#define EXYNOS8890_SD_FIFOTH		0x300f0030
 #define SMC_CMD_FMP			0xC2001810
 #define FMP_SECURITY			0x8
 #define FMP_DESC_OFF			0x0
@@ -67,6 +67,7 @@
 
 /* Protector Register */
 #define SDMMC_EMMCP_BASE	0x1000
+#define SDMMC_MPSTAT		(SDMMC_EMMCP_BASE + 0x0008)
 #define SDMMC_MPSECURITY	(SDMMC_EMMCP_BASE + 0x0010)
 #define SDMMC_MPSBEGIN0		(SDMMC_EMMCP_BASE + 0x0200)
 #define SDMMC_MPSEND0		(SDMMC_EMMCP_BASE + 0x0204)
@@ -92,6 +93,7 @@
 
 /* Minimal required clock frequency for cclkin, unit: HZ */
 #define EXYNOS_CCLKIN_MIN	50000000
+#define EXYNOS8890_CCLKIN_MIN	25000000
 
 /* SD identification-mode clock ceiling, unit: HZ */
 #define EXYNOS_CCLKIN_MIN_IDENT	400000
