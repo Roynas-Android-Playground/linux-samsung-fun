@@ -1680,6 +1680,16 @@ static const struct s5p_mfc_variant mfc_drvdata_v10 = {
 	.fw_name[0]     = "s5p-mfc-v10.fw",
 };
 
+static const struct s5p_mfc_variant mfc_drvdata_v10_8890 = {
+	.version        = MFC_VERSION_V10,
+	.version_bit    = MFC_V10_BIT,
+	.port_num       = MFC_NUM_PORTS_V10,
+	.buf_size       = &buf_size_v10,
+	.fw_name[0]     = "mfc_fw.bin",
+	.clk_names      = { "mfc" },
+	.num_clocks     = 1,
+};
+
 static struct s5p_mfc_buf_size_v6 mfc_buf_size_v12 = {
 	.dev_ctx        = MFC_CTX_BUF_SIZE_V12,
 	.h264_dec_ctx   = MFC_H264_DEC_CTX_BUF_SIZE_V12,
@@ -1707,6 +1717,9 @@ static struct s5p_mfc_variant mfc_drvdata_v12 = {
 
 static const struct of_device_id exynos_mfc_match[] = {
 	{
+		.compatible = "samsung,exynos8890-mfc",
+		.data = &mfc_drvdata_v10_8890,
+	}, {
 		.compatible = "samsung,mfc-v5",
 		.data = &mfc_drvdata_v5,
 	}, {

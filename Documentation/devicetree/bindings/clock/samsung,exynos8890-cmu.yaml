@@ -45,6 +45,7 @@ properties:
       - samsung,exynos8890-cmu-mif2
       - samsung,exynos8890-cmu-mif3
       - samsung,exynos8890-cmu-mngs
+      - samsung,exynos8890-cmu-mfc
       - samsung,exynos8890-cmu-peric0
       - samsung,exynos8890-cmu-peric1
       - samsung,exynos8890-cmu-peris
@@ -64,6 +65,9 @@ properties:
   reg:
     maxItems: 1
 
+  power-domains:
+    maxItems: 1
+
 required:
   - compatible
   - clocks
@@ -72,6 +76,24 @@ required:
   - "#clock-cells"
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8890-cmu-mfc
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: External reference clock (76.8 MHz)
+            - description: CMU_MFC ACLK 600MHz clock (from CMU_TOP)
+
+        clock-names:
+          items:
+            - const: oscclk
+            - const: aclk_mfc_600
+
   - if:
       properties:
         compatible:
