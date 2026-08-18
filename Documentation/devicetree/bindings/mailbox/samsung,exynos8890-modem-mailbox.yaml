@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mailbox/samsung,exynos8890-modem-mailbox.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 modem mailbox client
+
+maintainers:
+  - Samsung SoC Team <linux-samsung-soc@vger.kernel.org>
+
+description: |
+  Compatibility client which connects the SS310 modem interface to all
+  sixteen channels of the generic Exynos mailbox controller. Shared mailbox
+  words are accessed through the controller syscon while doorbells and
+  receive callbacks use the mailbox framework.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-modem-mailbox
+
+  samsung,mbox-syscon:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Exynos8890 mailbox controller shared-register syscon.
+
+  mboxes:
+    minItems: 16
+    maxItems: 16
+
+required:
+  - compatible
+  - samsung,mbox-syscon
+  - mboxes
+
+additionalProperties: false

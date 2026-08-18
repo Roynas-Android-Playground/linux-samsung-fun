@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/samsung/sec-modem,modem-pdata.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung SIPC5 SS310 modem interface
+
+maintainers:
+  - Samsung SoC Team <linux-samsung-soc@vger.kernel.org>
+
+description: |
+  Board data for the Exynos8890 integrated SS310 cellular processor, including
+  its PMU and SYSRAM resources, mailbox word/interrupt assignments and SIPC5
+  userspace endpoints.
+
+properties:
+  compatible:
+    const: sec_modem,modem_pdata
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    minItems: 2
+    maxItems: 2
+
+  samsung,syscon-phandle:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Exynos PMU syscon used for CP power and reset control.
+
+  gpios:
+    minItems: 4
+    maxItems: 4
+
+  status: true
+
+  mif,name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: Modem model name.
+  mif,link_name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: Shared-memory link name.
+
+  mif,ap_clk_table:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Supported application-processor QoS rates in kHz.
+  mif,mif_clk_table:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Supported memory-interface QoS rates in kHz.
+  mif,int_clk_table:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Supported internal-bus QoS rates in kHz.
+
+  iodevs:
+    type: object
+    additionalProperties: false
+    patternProperties:
+      '^io_device_[0-9]+$':
+        type: object
+        additionalProperties: false
+        properties:
+          iod,name:
+            $ref: /schemas/types.yaml#/definitions/string
+            description: SIPC endpoint name.
+          iod,app:
+            $ref: /schemas/types.yaml#/definitions/string
+            description: Userspace endpoint owner.
+          iod,option_region:
+            $ref: /schemas/types.yaml#/definitions/string
+            description: Optional sales-region restriction.
+        patternProperties:
+          '^iod,(id|format|io_type|links|attrs|ul_num_buffers|ul_buffer_size|dl_num_buffers|dl_buffer_size)$':
+            $ref: /schemas/types.yaml#/definitions/uint32
+        required:
+          - iod,name
+          - iod,id
+          - iod,format
+          - iod,io_type
+          - iod,links
+          - iod,attrs
+
+patternProperties:
+  '^mif,(int_ap2cp|irq_cp2ap)_[a-z0-9_]+$':
+    $ref: /schemas/types.yaml#/definitions/uint32
+  '^mif,(modem_net|modem_type|use_handover|ipc_version|link_types|link_attrs|num_iodevs)$':
+    $ref: /schemas/types.yaml#/definitions/uint32
+  '^mbx_(ap2cp|cp2ap)_[a-z0-9_]+$':
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - samsung,syscon-phandle
+  - gpios
+  - mif,name
+  - mif,modem_type
+  - mif,ipc_version
+  - mif,link_types
+  - mif,num_iodevs
+  - iodevs
+
+additionalProperties: false

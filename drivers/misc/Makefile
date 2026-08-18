@@ -74,3 +74,5 @@ obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
 obj-y				+= keba/
 obj-y				+= amd-sbi/
 obj-$(CONFIG_MISC_RP1)		+= rp1/
+obj-$(CONFIG_MCU_IPC)           += mcu_ipc/
+obj-$(CONFIG_SEC_SIPC_MODEM_IF) += modem_v1/

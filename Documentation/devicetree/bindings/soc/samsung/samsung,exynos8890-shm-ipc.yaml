@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/samsung/samsung,exynos8890-shm-ipc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 cellular modem shared memory
+
+maintainers:
+  - Samsung SoC Team <linux-samsung-soc@vger.kernel.org>
+
+properties:
+  compatible:
+    const: samsung,exynos8890-shm_ipc
+
+  memory-region:
+    maxItems: 1
+
+  shmem,ipc_offset:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Offset of the runtime IPC window within the CP reservation.
+    const: 0x08000000
+
+  shmem,ipc_size:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Size of the runtime IPC window.
+    const: 0x00800000
+
+required:
+  - compatible
+  - memory-region
+  - shmem,ipc_offset
+  - shmem,ipc_size
+
+additionalProperties: false
