@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 (herolte) Exynos8890 embedded UFS bring-up.
+ *
+ * The UFS host is close enough to the Exynos7 block to reuse the upstream
+ * host variant for initial bring-up.  Exynos8890 has a separate UniPro config
+ * clock; expose that as core_clk so the existing host timing calculations use
+ * the vendor PCLK, while keeping the real UFS link ACLK enabled as an extra
+ * clock managed by the generic UFS clock list.
+ */
+
+&soc {
+	ufs: ufs@155a0000 {
+		compatible = "samsung,exynos8890-ufs";
+		reg = <0x155a0000 0x100>,
+		      <0x155a0100 0x200>,
+		      <0x155a1000 0x800>,
+		      <0x155a2000 0x300>;
+		reg-names = "hci", "vs_hci", "unipro", "ufsp";
+
+		interrupts = <GIC_SPI 209 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_fsys0 CLK_GOUT_FSYS0_SCLK_UFSUNIPRO_EMBEDDED_CFG>,
+			 <&cmu_fsys0 CLK_GOUT_FSYS0_SCLK_UFSUNIPRO_EMBEDDED>,
+			 <&cmu_fsys0 CLK_GOUT_FSYS0_ACLK_UFS_LINK_EMBEDDED>;
+		clock-names = "core_clk", "sclk_unipro_main", "aclk";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&ufs_rst_n &ufs_refclk_out>;
+
+		phys = <&ufs_phy>;
+		phy-names = "ufs-phy";
+
+		lanes-per-direction = <1>;
+		limit-hs-gear = <3>;
+		limit-gear-rate = "rate-b";
+
+		dma-coherent;
+		status = "okay";
+	};
+
+	ufs_phy: phy@155a1800 {
+		compatible = "samsung,exynos8890-ufs-phy";
+		reg = <0x155a1800 0x800>;
+		reg-names = "phy-pma";
+
+		/* Vendor PMU UFS PHY isolation/control register is 0x105c0724. */
+		samsung,pmu-syscon = <&pmu_system_controller 0x724>;
+
+		clocks = <&oscclk>,
+			 <&cmu_fsys0 CLK_GOUT_FSYS0_PHYCLK_UFS_RX0_SYMBOL>,
+			 <&cmu_fsys0 CLK_GOUT_FSYS0_PHYCLK_UFS_TX0_SYMBOL>;
+		clock-names = "ref_clk", "rx0_symbol_clk", "tx0_symbol_clk";
+
+		#phy-cells = <0>;
+	};
+};
