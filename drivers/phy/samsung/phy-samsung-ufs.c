@@ -92,6 +92,10 @@ static int samsung_ufs_phy_calibrate(struct phy *phy)
 		goto out;
 
 	for_each_phy_cfg(cfg) {
+		if (ufs_phy->drvdata->is_cfg_valid &&
+		    !ufs_phy->drvdata->is_cfg_valid(ufs_phy, cfg))
+			continue;
+
 		for_each_phy_lane(ufs_phy, i) {
 			samsung_ufs_phy_config(ufs_phy, cfg, i);
 		}
@@ -123,6 +127,12 @@ static int samsung_ufs_phy_calibrate(struct phy *phy)
 	 * calibration value can be programed
 	 */
 out:
+	if (err) {
+		if (ufs_phy->ufs_phy_state == CFG_POST_PWR_HS)
+			ufs_phy->ufs_phy_state = CFG_PRE_PWR_HS;
+		return err;
+	}
+
 	switch (ufs_phy->ufs_phy_state) {
 	case CFG_PRE_INIT:
 		ufs_phy->ufs_phy_state = CFG_POST_INIT;
@@ -176,18 +186,35 @@ static int samsung_ufs_phy_power_on(struct phy *phy)
 	struct samsung_ufs_phy *ss_phy = get_samsung_ufs_phy(phy);
 	int ret;
 
-	samsung_ufs_phy_ctrl_isol(ss_phy, false);
+	ret = samsung_ufs_phy_ctrl_isol(ss_phy, false);
+	if (ret)
+		return ret;
 
 	ret = clk_bulk_prepare_enable(ss_phy->drvdata->num_clks, ss_phy->clks);
 	if (ret) {
 		dev_err(ss_phy->dev, "failed to enable ufs phy clocks\n");
+		samsung_ufs_phy_ctrl_isol(ss_phy, true);
 		return ret;
+	}
+
+	if (ss_phy->drvdata->power_on) {
+		ret = ss_phy->drvdata->power_on(phy);
+		if (ret) {
+			clk_bulk_disable_unprepare(ss_phy->drvdata->num_clks,
+						   ss_phy->clks);
+			samsung_ufs_phy_ctrl_isol(ss_phy, true);
+			return ret;
+		}
 	}
 
 	if (ss_phy->ufs_phy_state == CFG_PRE_INIT) {
 		ret = samsung_ufs_phy_calibrate(phy);
-		if (ret)
+		if (ret) {
 			dev_err(ss_phy->dev, "ufs phy calibration failed\n");
+			clk_bulk_disable_unprepare(ss_phy->drvdata->num_clks,
+						   ss_phy->clks);
+			samsung_ufs_phy_ctrl_isol(ss_phy, true);
+		}
 	}
 
 	return ret;
@@ -199,9 +226,7 @@ static int samsung_ufs_phy_power_off(struct phy *phy)
 
 	clk_bulk_disable_unprepare(ss_phy->drvdata->num_clks, ss_phy->clks);
 
-	samsung_ufs_phy_ctrl_isol(ss_phy, true);
-
-	return 0;
+	return samsung_ufs_phy_ctrl_isol(ss_phy, true);
 }
 
 static int samsung_ufs_phy_set_mode(struct phy *generic_phy,
@@ -210,9 +235,12 @@ static int samsung_ufs_phy_set_mode(struct phy *generic_phy,
 	struct samsung_ufs_phy *ss_phy = get_samsung_ufs_phy(generic_phy);
 
 	ss_phy->mode = PHY_MODE_INVALID;
+	ss_phy->submode = 0;
 
-	if (mode > 0)
+	if (mode > 0) {
 		ss_phy->mode = mode;
+		ss_phy->submode = submode;
+	}
 
 	return 0;
 }
@@ -234,13 +262,22 @@ static int samsung_ufs_phy_notify_state(struct phy *phy,
 	else
 		goto err_out;
 
-	for_each_phy_cfg(cfg) {
-		for_each_phy_lane(ufs_phy, i) {
-			samsung_ufs_phy_config(ufs_phy, cfg, i);
+	/* SoC data may provide calibration for only one Hibern8 transition. */
+	if (cfg) {
+		for_each_phy_cfg(cfg) {
+			if (ufs_phy->drvdata->is_cfg_valid &&
+			    !ufs_phy->drvdata->is_cfg_valid(ufs_phy, cfg))
+				continue;
+
+			for_each_phy_lane(ufs_phy, i)
+				samsung_ufs_phy_config(ufs_phy, cfg, i);
 		}
 	}
 
 	if (state.ufs_state == PHY_UFS_HIBERN8_EXIT) {
+		if (ufs_phy->ufs_phy_state == CFG_POST_INIT)
+			ufs_phy->ufs_phy_state = CFG_PRE_PWR_HS;
+
 		for_each_phy_lane(ufs_phy, i) {
 			if (ufs_phy->drvdata->wait_for_cdr) {
 				err = ufs_phy->drvdata->wait_for_cdr(phy, i);
@@ -360,6 +397,9 @@ static const struct of_device_id samsung_ufs_phy_match[] = {
 	}, {
 		.compatible = "samsung,exynos7-ufs-phy",
 		.data = &exynos7_ufs_phy,
+	}, {
+		.compatible = "samsung,exynos8890-ufs-phy",
+		.data = &exynos8890_ufs_phy,
 	}, {
 		.compatible = "samsung,exynosautov9-ufs-phy",
 		.data = &exynosautov9_ufs_phy,
