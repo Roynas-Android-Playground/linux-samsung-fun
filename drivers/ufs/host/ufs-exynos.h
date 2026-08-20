@@ -19,6 +19,7 @@
  * UNIPRO registers
  */
 #define UNIPRO_DBG_FORCE_DME_CTRL_STATE		0x150
+#define UNIPRO_DME_PACP_CNFBIT			0xc8
 
 /*
  * MIBs for PA debug registers
@@ -182,17 +183,22 @@ struct exynos_ufs_drv_data {
 	unsigned int quirks;
 	unsigned int opts;
 	u32 iocc_mask;
+	u32 pclk_avail_max;
 	/* SoC's specific operations */
 	int (*drv_init)(struct exynos_ufs *ufs);
 	int (*pre_link)(struct exynos_ufs *ufs);
+	int (*post_phy_init)(struct exynos_ufs *ufs);
 	int (*post_link)(struct exynos_ufs *ufs);
 	int (*pre_pwr_change)(struct exynos_ufs *ufs,
 				struct ufs_pa_layer_attr *pwr);
+	int (*post_phy_calibrate)(struct exynos_ufs *ufs,
+				  struct ufs_pa_layer_attr *pwr);
 	int (*post_pwr_change)(struct exynos_ufs *ufs,
 			       const struct ufs_pa_layer_attr *pwr);
 	int (*pre_hce_enable)(struct exynos_ufs *ufs);
 	int (*post_hce_enable)(struct exynos_ufs *ufs);
 	int (*suspend)(struct exynos_ufs *ufs);
+	int (*resume)(struct exynos_ufs *ufs);
 };
 
 struct ufs_phy_time_cfg {
@@ -245,6 +251,13 @@ struct exynos_ufs {
 #define EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR	BIT(5)
 #define EXYNOS_UFS_OPT_UFSPR_SECURE		BIT(6)
 #define EXYNOS_UFS_OPT_TIMER_TICK_SELECT	BIT(7)
+#define EXYNOS_UFS_OPT_SKIP_FMP_INIT		BIT(8)
+#define EXYNOS_UFS_OPT_PACP_CNFBIT		BIT(9)
+#define EXYNOS_UFS_OPT_DEV_RESET_PRE_LINK	BIT(10)
+#define EXYNOS_UFS_OPT_FORCE_PRDT_PREFETCH	BIT(11)
+#define EXYNOS_UFS_OPT_LEGACY_UTRD_CMD_TYPE	BIT(12)
+#define EXYNOS_UFS_OPT_FORCE_32BIT_DMA		BIT(13)
+#define EXYNOS_UFS_OPT_LEGACY_L2_TIMERS		BIT(14)
 };
 
 #define for_each_ufs_rx_lane(ufs, i) \

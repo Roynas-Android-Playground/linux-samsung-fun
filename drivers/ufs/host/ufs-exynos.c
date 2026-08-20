@@ -11,6 +11,7 @@
 #include <linux/unaligned.h>
 #include <crypto/aes.h>
 #include <linux/arm-smccc.h>
+#include <linux/dma-mapping.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -29,6 +30,18 @@
 #include "ufs-exynos.h"
 
 #define DATA_UNIT_SIZE		4096
+
+#define EXYNOS8890_UFS_FMP_BASE	0x155a2000
+#define EXYNOS8890_FMP_SECURITY	0x8
+#define SMC_CMD_FMP_SECURITY_8890	\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_64, \
+			   ARM_SMCCC_OWNER_SIP, 0x1810)
+#define SMC_CMD_SMU_8890	\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_64, \
+			   ARM_SMCCC_OWNER_SIP, 0x1820)
+#define SMC_CMD_RESUME_8890	\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_64, \
+			   ARM_SMCCC_OWNER_SIP, 0x1830)
 
 /*
  * Exynos's Vendor specific registers for UFSHCI
@@ -59,6 +72,22 @@
 #define HCI_V2P1_CTRL		0x8C
 #define IA_TICK_SEL		BIT(16)
 #define HCI_CLKSTOP_CTRL	0xB0
+
+#define EXYNOS8890_UNIPRO_LOCAL_L2_TIMER0	0x098
+#define EXYNOS8890_UNIPRO_LOCAL_L2_TIMER1	0x09c
+#define EXYNOS8890_UNIPRO_LOCAL_L2_TIMER2	0x0a0
+#define EXYNOS8890_UNIPRO_REMOTE_L2_TIMER0	0x0a4
+#define EXYNOS8890_UNIPRO_REMOTE_L2_TIMER1	0x0a8
+#define EXYNOS8890_UNIPRO_REMOTE_L2_TIMER2	0x0ac
+
+#define EXYNOS8890_LOCAL_FC0_PROT_TIMEOUT	8000
+#define EXYNOS8890_LOCAL_TC0_REPLAY_TIMEOUT	28000
+#define EXYNOS8890_LOCAL_AFC0_REQ_TIMEOUT	20000
+#define EXYNOS8890_REMOTE_FC0_PROT_TIMEOUT	12000
+#define EXYNOS8890_REMOTE_TC0_REPLAY_TIMEOUT	32000
+#define EXYNOS8890_REMOTE_AFC0_REQ_TIMEOUT	16000
+#define EXYNOS8890_TX_HIBERN8TIME_CAP		0x0f
+#define EXYNOS8890_TX_ADV_GRANULARITY_CAP	0x10
 #define REFCLKOUT_STOP		BIT(4)
 #define MPHY_APBCLK_STOP	BIT(3)
 #define REFCLK_STOP		BIT(2)
@@ -421,6 +450,183 @@ static int exynos7_ufs_post_pwr_change(struct exynos_ufs *ufs,
 	return 0;
 }
 
+static int exynos8890_ufs_secure_init(struct exynos_ufs *ufs)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(SMC_CMD_FMP_SECURITY_8890, EXYNOS8890_FMP_SECURITY,
+		      EXYNOS8890_UFS_FMP_BASE, 0, 0, 0, 0, 0, &res);
+	if (res.a0) {
+		dev_err(ufs->hba->dev,
+			"failed to disable UFS FMP descriptor mode: %ld\n",
+			res.a0);
+		return -EIO;
+	}
+
+	arm_smccc_smc(SMC_CMD_SMU_8890, 0, 0, 0, 0, 0, 0, 0, &res);
+	if (res.a0) {
+		dev_err(ufs->hba->dev,
+			"failed to initialize UFS SMU bypass: %ld\n", res.a0);
+		return -EIO;
+	}
+
+	return exynos_ufs_shareability(ufs);
+}
+
+static int exynos8890_ufs_pre_link(struct exynos_ufs *ufs)
+{
+	struct ufs_hba *hba = ufs->hba;
+
+	return ufshcd_dme_set(hba, UIC_ARG_MIB(0x155e), 0x0);
+}
+
+static int exynos8890_ufs_post_phy_init(struct exynos_ufs *ufs)
+{
+	struct ufs_hba *hba = ufs->hba;
+	int i, ret, disable_ret;
+
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_DBG_OV_TM), true);
+	if (ret)
+		return ret;
+
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(0x401), 0x09);
+	if (ret)
+		goto disable_ov_tm;
+
+	for_each_ufs_rx_lane(ufs, i) {
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x27a, i), 0x10);
+		if (ret)
+			goto disable_ov_tm;
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x30e, i), 0x01);
+		if (ret)
+			goto disable_ov_tm;
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x31f, i), 0x04);
+		if (ret)
+			goto disable_ov_tm;
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x32c, i), 0x00);
+		if (ret)
+			goto disable_ov_tm;
+
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_HS_G1_SYNC_LENGTH_CAP, i),
+				SYNC_LEN_COARSE(0xf));
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_HS_G2_SYNC_LENGTH_CAP, i),
+				SYNC_LEN_COARSE(0xf));
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_HS_G3_SYNC_LENGTH_CAP, i),
+				SYNC_LEN_COARSE(0xf));
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_HS_G1_PREP_LENGTH_CAP, i),
+				PREP_LEN(0xf));
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_HS_G2_PREP_LENGTH_CAP, i),
+				PREP_LEN(0xf));
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_HS_G3_PREP_LENGTH_CAP, i),
+				PREP_LEN(0xf));
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_ADV_GRANULARITY_CAP, i), 0);
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(
+					EXYNOS8890_TX_ADV_GRANULARITY_CAP, i), 0);
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_MIN_ACTIVATETIME_CAPABILITY, i),
+				3);
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(RX_HIBERN8TIME_CAP, i), 2);
+		ufshcd_dme_set(hba,
+				UIC_ARG_MIB_SEL(EXYNOS8890_TX_HIBERN8TIME_CAP, i),
+				2);
+	}
+
+disable_ov_tm:
+	disable_ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_DBG_OV_TM), false);
+	return ret ?: disable_ret;
+}
+
+static int exynos8890_ufs_post_link(struct exynos_ufs *ufs)
+{
+	struct ufs_hba *hba = ufs->hba;
+	u32 peer_rx_min_actv_time_cap;
+	u32 max_rx_hibern8_time_cap;
+	int ret, disable_ret;
+
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_DBG_MODE), 0x1);
+	if (ret)
+		return ret;
+
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_SAVECONFIGTIME), 0x7d0);
+	disable_ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_DBG_MODE), 0x0);
+
+	ret = ret ?: disable_ret;
+	if (ret)
+		return ret;
+
+	ret = ufshcd_dme_get(hba, UIC_ARG_MIB(PA_TACTIVATE),
+			     &peer_rx_min_actv_time_cap);
+	if (ret)
+		return ret;
+	ret = ufshcd_dme_get(hba, UIC_ARG_MIB(PA_HIBERN8TIME),
+			     &max_rx_hibern8_time_cap);
+	if (ret)
+		return ret;
+
+	if (peer_rx_min_actv_time_cap >= 3) {
+		ret = ufshcd_dme_peer_set(hba, UIC_ARG_MIB(PA_TACTIVATE),
+					  peer_rx_min_actv_time_cap + 1);
+		if (ret)
+			return ret;
+	}
+
+	return ufshcd_dme_set(hba, UIC_ARG_MIB(PA_HIBERN8TIME),
+			      max_rx_hibern8_time_cap + 1);
+}
+
+static int exynos8890_ufs_post_phy_calibrate(struct exynos_ufs *ufs,
+						    struct ufs_pa_layer_attr *pwr)
+{
+	struct ufs_hba *hba = ufs->hba;
+	int i, ret, disable_ret;
+
+	if (!ufshcd_is_hs_mode(pwr) ||
+	    max_t(u32, pwr->gear_rx, pwr->gear_tx) != UFS_HS_G3)
+		return 0;
+
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_DBG_OV_TM), true);
+	if (ret)
+		return ret;
+
+	for_each_ufs_rx_lane(ufs, i) {
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x41a, i), 0x01);
+		if (ret)
+			break;
+	}
+
+	disable_ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_DBG_OV_TM), false);
+	return ret ?: disable_ret;
+}
+
+static int exynos8890_ufs_resume(struct exynos_ufs *ufs)
+{
+	struct arm_smccc_res res;
+	int ret;
+
+	ret = exynos8890_ufs_secure_init(ufs);
+	if (ret)
+		return ret;
+
+	arm_smccc_smc(SMC_CMD_RESUME_8890, 0, EXYNOS8890_UFS_FMP_BASE, 0,
+		      0, 0, 0, 0, &res);
+	if (res.a0) {
+		dev_err(ufs->hba->dev, "failed to restore UFS protector: %ld\n",
+			res.a0);
+		return -EIO;
+	}
+
+	return 0;
+}
+
 static int exynosautov920_ufs_pre_link(struct exynos_ufs *ufs)
 {
 	struct ufs_hba *hba = ufs->hba;
@@ -616,7 +822,7 @@ static void exynos_ufs_set_pwm_clk_div(struct exynos_ufs *ufs)
 		UIC_ARG_MIB(CMN_PWM_CLK_CTRL), attr->cmn_pwm_clk_ctrl);
 }
 
-static void exynos_ufs_calc_pwm_clk_div(struct exynos_ufs *ufs)
+static int exynos_ufs_calc_pwm_clk_div(struct exynos_ufs *ufs)
 {
 	struct ufs_hba *hba = ufs->hba;
 	struct exynos_ufs_uic_attr *attr = ufs->drv_data->uic_attr;
@@ -625,7 +831,7 @@ static void exynos_ufs_calc_pwm_clk_div(struct exynos_ufs *ufs)
 	const unsigned long pwm_max = 9 * 1000 * 1000;
 	const int divs[] = {32, 16, 8, 4};
 	unsigned long clk = 0, _clk, clk_period;
-	int i = 0, clk_idx = -1;
+	int i = 0, clk_idx = -1, ret;
 
 	clk_period = UNIPRO_PCLK_PERIOD(ufs);
 	for (i = 0; i < ARRAY_SIZE(divs); i++) {
@@ -639,12 +845,16 @@ static void exynos_ufs_calc_pwm_clk_div(struct exynos_ufs *ufs)
 	}
 
 	if (clk_idx == -1) {
-		ufshcd_dme_get(hba, UIC_ARG_MIB(CMN_PWM_CLK_CTRL), &clk_idx);
+		ret = ufshcd_dme_get(hba, UIC_ARG_MIB(CMN_PWM_CLK_CTRL),
+				     &clk_idx);
+		if (ret)
+			return ret;
 		dev_err(hba->dev,
 			"failed to decide pwm clock divider, will not change\n");
 	}
 
 	attr->cmn_pwm_clk_ctrl = clk_idx & PWM_CLK_CTRL_MASK;
+	return 0;
 }
 
 long exynos_ufs_calc_time_cntr(struct exynos_ufs *ufs, long period)
@@ -923,24 +1133,72 @@ static int exynos_ufs_pre_pwr_mode(struct ufs_hba *hba,
 		goto out;
 	}
 
-	if (ufs->drv_data->pre_pwr_change)
-		ufs->drv_data->pre_pwr_change(ufs, dev_req_params);
+	/* Program Exynos8890's complete timer contract before PHY calibration. */
+	if (ufs->opts & EXYNOS_UFS_OPT_LEGACY_L2_TIMERS) {
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_FC0PROTTIMEOUTVAL),
+				EXYNOS8890_LOCAL_FC0_PROT_TIMEOUT);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_TC0REPLAYTIMEOUTVAL),
+				EXYNOS8890_LOCAL_TC0_REPLAY_TIMEOUT);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_AFC0REQTIMEOUTVAL),
+				EXYNOS8890_LOCAL_AFC0_REQ_TIMEOUT);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA0),
+				EXYNOS8890_REMOTE_FC0_PROT_TIMEOUT);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA1),
+				EXYNOS8890_REMOTE_TC0_REPLAY_TIMEOUT);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA2),
+				EXYNOS8890_REMOTE_AFC0_REQ_TIMEOUT);
+
+		unipro_writel(ufs, EXYNOS8890_LOCAL_FC0_PROT_TIMEOUT,
+				EXYNOS8890_UNIPRO_LOCAL_L2_TIMER0);
+		unipro_writel(ufs, EXYNOS8890_LOCAL_TC0_REPLAY_TIMEOUT,
+				EXYNOS8890_UNIPRO_LOCAL_L2_TIMER1);
+		unipro_writel(ufs, EXYNOS8890_LOCAL_AFC0_REQ_TIMEOUT,
+				EXYNOS8890_UNIPRO_LOCAL_L2_TIMER2);
+		unipro_writel(ufs, EXYNOS8890_REMOTE_FC0_PROT_TIMEOUT,
+				EXYNOS8890_UNIPRO_REMOTE_L2_TIMER0);
+		unipro_writel(ufs, EXYNOS8890_REMOTE_TC0_REPLAY_TIMEOUT,
+				EXYNOS8890_UNIPRO_REMOTE_L2_TIMER1);
+		unipro_writel(ufs, EXYNOS8890_REMOTE_AFC0_REQ_TIMEOUT,
+				EXYNOS8890_UNIPRO_REMOTE_L2_TIMER2);
+	} else {
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_FC0PROTTIMEOUTVAL), 8064);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_TC0REPLAYTIMEOUTVAL), 28224);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_AFC0REQTIMEOUTVAL), 20160);
+	}
+
+	if (ufs->drv_data->pre_pwr_change) {
+		ret = ufs->drv_data->pre_pwr_change(ufs, dev_req_params);
+		if (ret)
+			goto out;
+	}
 
 	if (ufshcd_is_hs_mode(dev_req_params)) {
+		enum phy_mode mode = dev_req_params->hs_rate == PA_HS_MODE_A ?
+			PHY_MODE_UFS_HS_A : PHY_MODE_UFS_HS_B;
+		int gear = max_t(u32, dev_req_params->gear_rx,
+				 dev_req_params->gear_tx);
+
+		ret = phy_set_mode_ext(generic_phy, mode, gear);
+		if (ret)
+			goto out;
+
 		exynos_ufs_config_sync_pattern_mask(ufs, dev_req_params);
 
 		switch (dev_req_params->hs_rate) {
 		case PA_HS_MODE_A:
 		case PA_HS_MODE_B:
-			phy_calibrate(generic_phy);
+			ret = phy_calibrate(generic_phy);
+			if (ret)
+				goto out;
+			if (ufs->drv_data->post_phy_calibrate) {
+				ret = ufs->drv_data->post_phy_calibrate(ufs,
+									dev_req_params);
+				if (ret)
+					goto out;
+			}
 			break;
 		}
 	}
-
-	/* setting for three timeout values for traffic class #0 */
-	ufshcd_dme_set(hba, UIC_ARG_MIB(DL_FC0PROTTIMEOUTVAL), 8064);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(DL_TC0REPLAYTIMEOUTVAL), 28224);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(DL_AFC0REQTIMEOUTVAL), 20160);
 
 	return 0;
 out:
@@ -956,6 +1214,7 @@ static int exynos_ufs_post_pwr_mode(struct ufs_hba *hba,
 	int gear = max_t(u32, pwr_req->gear_rx, pwr_req->gear_tx);
 	int lanes = max_t(u32, pwr_req->lane_rx, pwr_req->lane_tx);
 	char pwr_str[PWR_MODE_STR_LEN] = "";
+	int ret;
 
 	/* let default be PWM Gear 1, Lane 1 */
 	if (!gear)
@@ -964,14 +1223,19 @@ static int exynos_ufs_post_pwr_mode(struct ufs_hba *hba,
 	if (!lanes)
 		lanes = 1;
 
-	if (ufs->drv_data->post_pwr_change)
-		ufs->drv_data->post_pwr_change(ufs, pwr_req);
+	if (ufs->drv_data->post_pwr_change) {
+		ret = ufs->drv_data->post_pwr_change(ufs, pwr_req);
+		if (ret)
+			return ret;
+	}
 
 	if ((ufshcd_is_hs_mode(pwr_req))) {
 		switch (pwr_req->hs_rate) {
 		case PA_HS_MODE_A:
 		case PA_HS_MODE_B:
-			phy_calibrate(generic_phy);
+			ret = phy_calibrate(generic_phy);
+			if (ret)
+				return ret;
 			break;
 		}
 
@@ -992,7 +1256,11 @@ static void exynos_ufs_specify_nexus_t_xfer_req(struct ufs_hba *hba,
 						int tag, bool is_scsi_cmd)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	struct utp_transfer_req_desc *utrdlp = hba->utrdl_base_addr;
 	u32 type;
+
+	if (ufs->opts & EXYNOS_UFS_OPT_LEGACY_UTRD_CMD_TYPE)
+		utrdlp[tag].header.command_type = is_scsi_cmd ? 0 : 2;
 
 	type =  hci_readl(ufs, HCI_UTRL_NEXUS_TYPE);
 
@@ -1000,6 +1268,20 @@ static void exynos_ufs_specify_nexus_t_xfer_req(struct ufs_hba *hba,
 		hci_writel(ufs, type | (1 << tag), HCI_UTRL_NEXUS_TYPE);
 	else
 		hci_writel(ufs, type & ~(1 << tag), HCI_UTRL_NEXUS_TYPE);
+}
+
+static int exynos_ufs_set_dma_mask(struct ufs_hba *hba)
+{
+	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+
+	if (ufs->opts & EXYNOS_UFS_OPT_FORCE_32BIT_DMA)
+		return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
+
+	if (hba->capabilities & MASK_64_ADDRESSING_SUPPORT &&
+	    !dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(64)))
+		return 0;
+
+	return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
 }
 
 static void exynos_ufs_specify_nexus_t_tm_req(struct ufs_hba *hba,
@@ -1066,25 +1348,42 @@ out_exit_phy:
 	return ret;
 }
 
-static void exynos_ufs_config_unipro(struct exynos_ufs *ufs)
+static int exynos_ufs_config_unipro(struct exynos_ufs *ufs)
 {
 	struct exynos_ufs_uic_attr *attr = ufs->drv_data->uic_attr;
 	struct ufs_hba *hba = ufs->hba;
+	int ret;
 
-	if (attr->pa_dbg_clk_period_off)
-		ufshcd_dme_set(hba, UIC_ARG_MIB(attr->pa_dbg_clk_period_off),
-			       DIV_ROUND_UP(NSEC_PER_SEC, ufs->mclk_rate));
+	if (ufs->opts & EXYNOS_UFS_OPT_PACP_CNFBIT)
+		unipro_writel(ufs, 1, UNIPRO_DME_PACP_CNFBIT);
 
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_TXTRAILINGCLOCKS),
-			ufs->drv_data->uic_attr->tx_trailingclks);
+	if (attr->pa_dbg_clk_period_off) {
+		ret = ufshcd_dme_set(hba,
+				     UIC_ARG_MIB(attr->pa_dbg_clk_period_off),
+				     DIV_ROUND_UP(NSEC_PER_SEC, ufs->mclk_rate));
+		if (ret)
+			return ret;
+	}
 
-	if (attr->pa_dbg_opt_suite1_off)
-		ufshcd_dme_set(hba, UIC_ARG_MIB(attr->pa_dbg_opt_suite1_off),
-			       attr->pa_dbg_opt_suite1_val);
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_TXTRAILINGCLOCKS),
+			     attr->tx_trailingclks);
+	if (ret)
+		return ret;
+
+	if (attr->pa_dbg_opt_suite1_off) {
+		ret = ufshcd_dme_set(hba,
+				     UIC_ARG_MIB(attr->pa_dbg_opt_suite1_off),
+				     attr->pa_dbg_opt_suite1_val);
+		if (ret)
+			return ret;
+	}
 
 	if (attr->pa_dbg_opt_suite2_off)
-		ufshcd_dme_set(hba, UIC_ARG_MIB(attr->pa_dbg_opt_suite2_off),
-			       attr->pa_dbg_opt_suite2_val);
+		return ufshcd_dme_set(hba,
+				      UIC_ARG_MIB(attr->pa_dbg_opt_suite2_off),
+				      attr->pa_dbg_opt_suite2_val);
+
+	return 0;
 }
 
 static void exynos_ufs_config_intr(struct exynos_ufs *ufs, u32 errs, u8 index)
@@ -1132,6 +1431,7 @@ static int exynos_ufs_setup_clocks(struct ufs_hba *hba, bool on,
 static int exynos_ufs_pre_link(struct ufs_hba *hba)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	int ret;
 
 	/* hci */
 	exynos_ufs_config_intr(ufs, DFES_DEF_L2_ERRS, UNIPRO_L2);
@@ -1142,13 +1442,25 @@ static int exynos_ufs_pre_link(struct ufs_hba *hba)
 	exynos_ufs_setup_clocks(hba, true, PRE_CHANGE);
 
 	/* unipro */
-	exynos_ufs_config_unipro(ufs);
+	ret = exynos_ufs_config_unipro(ufs);
+	if (ret)
+		return ret;
 
-	if (ufs->drv_data->pre_link)
-		ufs->drv_data->pre_link(ufs);
+	if (ufs->drv_data->pre_link) {
+		ret = ufs->drv_data->pre_link(ufs);
+		if (ret)
+			return ret;
+	}
 
 	/* m-phy */
-	exynos_ufs_phy_init(ufs);
+	ret = exynos_ufs_phy_init(ufs);
+	if (ret)
+		return ret;
+	if (ufs->drv_data->post_phy_init) {
+		ret = ufs->drv_data->post_phy_init(ufs);
+		if (ret)
+			return ret;
+	}
 	if (!(ufs->opts & EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR)) {
 		exynos_ufs_config_phy_time_attr(ufs);
 		exynos_ufs_config_phy_cap_attr(ufs);
@@ -1178,13 +1490,15 @@ static int exynos_ufs_post_link(struct ufs_hba *hba)
 	struct phy *generic_phy = ufs->phy;
 	struct exynos_ufs_uic_attr *attr = ufs->drv_data->uic_attr;
 	u32 val = ilog2(DATA_UNIT_SIZE);
+	int ret;
 
 	exynos_ufs_establish_connt(ufs);
 	exynos_ufs_fit_aggr_timeout(ufs);
 
 	hci_writel(ufs, 0xa, HCI_DATA_REORDER);
 
-	if (hba->caps & UFSHCD_CAP_CRYPTO)
+	if ((hba->caps & UFSHCD_CAP_CRYPTO) ||
+	    (ufs->opts & EXYNOS_UFS_OPT_FORCE_PRDT_PREFETCH))
 		val |= PRDT_PREFETCH_EN;
 	hci_writel(ufs, val, HCI_TXPRDT_ENTRY_SIZE);
 
@@ -1197,7 +1511,8 @@ static int exynos_ufs_post_link(struct ufs_hba *hba)
 		ufshcd_dme_set(hba,
 			UIC_ARG_MIB(T_DBG_SKIP_INIT_HIBERN8_EXIT), true);
 
-	if (attr->pa_granularity) {
+	if (!(ufs->opts & EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR) &&
+	    attr->pa_granularity) {
 		exynos_ufs_enable_dbg_mode(hba);
 		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_GRANULARITY),
 				attr->pa_granularity);
@@ -1212,7 +1527,8 @@ static int exynos_ufs_post_link(struct ufs_hba *hba)
 					attr->pa_hibern8time);
 	}
 
-	if (ufs->opts & EXYNOS_UFS_OPT_USE_SW_HIBERN8_TIMER) {
+	if (!(ufs->opts & EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR) &&
+	    (ufs->opts & EXYNOS_UFS_OPT_USE_SW_HIBERN8_TIMER)) {
 		if (!attr->pa_granularity)
 			ufshcd_dme_get(hba, UIC_ARG_MIB(PA_GRANULARITY),
 					&attr->pa_granularity);
@@ -1234,10 +1550,12 @@ static int exynos_ufs_post_link(struct ufs_hba *hba)
 		}
 	}
 
-	phy_calibrate(generic_phy);
+	ret = phy_calibrate(generic_phy);
+	if (ret)
+		return ret;
 
 	if (ufs->drv_data->post_link)
-		ufs->drv_data->post_link(ufs);
+		return ufs->drv_data->post_link(ufs);
 
 	return 0;
 }
@@ -1280,7 +1598,8 @@ static int exynos_ufs_parse_dt(struct device *dev, struct exynos_ufs *ufs)
 		ufs->iocc_val = 0;
 
 	ufs->pclk_avail_min = PCLK_AVAIL_MIN;
-	ufs->pclk_avail_max = PCLK_AVAIL_MAX;
+	ufs->pclk_avail_max = ufs->drv_data->pclk_avail_max ?:
+				  PCLK_AVAIL_MAX;
 
 	attr->rx_adv_fine_gran_sup_en = RX_ADV_FINE_GRAN_SUP_EN;
 	attr->rx_adv_fine_gran_step = RX_ADV_FINE_GRAN_STEP_VAL;
@@ -1364,6 +1683,9 @@ static void exynos_ufs_fmp_init(struct ufs_hba *hba, struct exynos_ufs *ufs)
 	struct blk_crypto_profile *profile = &hba->crypto_profile;
 	struct arm_smccc_res res;
 	int err;
+
+	if (ufs->opts & EXYNOS_UFS_OPT_SKIP_FMP_INIT)
+		return;
 
 	/*
 	 * Check for the standard crypto support bit, since it's available even
@@ -1726,7 +2048,9 @@ static int exynos_ufs_hce_enable_notify(struct ufs_hba *hba,
 		exynos_ufs_dev_hw_reset(hba);
 		break;
 	case POST_CHANGE:
-		exynos_ufs_calc_pwm_clk_div(ufs);
+		ret = exynos_ufs_calc_pwm_clk_div(ufs);
+		if (ret)
+			return ret;
 		if (!(ufs->opts & EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL))
 			exynos_ufs_enable_auto_ctrl_hcc(ufs);
 
@@ -1742,10 +2066,13 @@ static int exynos_ufs_hce_enable_notify(struct ufs_hba *hba,
 static int exynos_ufs_link_startup_notify(struct ufs_hba *hba,
 					  enum ufs_notify_change_status status)
 {
+	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
 	int ret = 0;
 
 	switch (status) {
 	case PRE_CHANGE:
+		if (ufs->opts & EXYNOS_UFS_OPT_DEV_RESET_PRE_LINK)
+			exynos_ufs_dev_hw_reset(hba);
 		ret = exynos_ufs_pre_link(hba);
 		break;
 	case POST_CHANGE:
@@ -1767,7 +2094,7 @@ static int exynos_ufs_negotiate_pwr_mode(struct ufs_hba *hba,
 	/* This driver only support symmetric gear setting e.g. hs_tx_gear == hs_rx_gear */
 	host_params.hs_tx_gear = exynos_ufs_get_hs_gear(hba);
 	host_params.hs_rx_gear = exynos_ufs_get_hs_gear(hba);
-
+	ufshcd_parse_gear_limits(hba, &host_params);
 	return ufshcd_negotiate_pwr_params(&host_params, dev_max_params, dev_req_params);
 }
 
@@ -1813,15 +2140,19 @@ static int exynos_ufs_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
 	enum ufs_notify_change_status status)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	int ret;
 
 	if (status == PRE_CHANGE)
 		return 0;
 
-	if (ufs->drv_data->suspend)
-		ufs->drv_data->suspend(ufs);
+	if (ufs->drv_data->suspend) {
+		ret = ufs->drv_data->suspend(ufs);
+		if (ret)
+			return ret;
+	}
 
 	if (!ufshcd_is_link_active(hba))
-		phy_power_off(ufs->phy);
+		return phy_power_off(ufs->phy);
 
 	return 0;
 }
@@ -1829,12 +2160,28 @@ static int exynos_ufs_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
 static int exynos_ufs_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	bool powered_on = false;
+	int ret;
 
-	if (!ufshcd_is_link_active(hba))
-		phy_power_on(ufs->phy);
+	if (!ufshcd_is_link_active(hba)) {
+		ret = phy_power_on(ufs->phy);
+		if (ret)
+			return ret;
+		powered_on = true;
+	}
 
 	exynos_ufs_config_smu(ufs);
-	exynos_ufs_fmp_resume(hba);
+	if (ufs->drv_data->resume) {
+		ret = ufs->drv_data->resume(ufs);
+		if (ret) {
+			if (powered_on)
+				phy_power_off(ufs->phy);
+			return ret;
+		}
+	} else {
+		exynos_ufs_fmp_resume(hba);
+	}
+
 	return 0;
 }
 
@@ -2101,6 +2448,7 @@ static int gs101_ufs_pre_pwr_change(struct exynos_ufs *ufs,
 	return 0;
 }
 
+
 static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
 	.name				= "exynos_ufs",
 	.init				= exynos_ufs_init,
@@ -2116,6 +2464,7 @@ static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
 	.suspend			= exynos_ufs_suspend,
 	.resume				= exynos_ufs_resume,
 	.fill_crypto_prdt		= exynos_ufs_fmp_fill_prdt,
+	.set_dma_mask			= exynos_ufs_set_dma_mask,
 };
 
 static struct ufs_hba_variant_ops ufs_hba_exynosauto_vh_ops = {
@@ -2201,6 +2550,46 @@ static const struct exynos_ufs_drv_data exynosauto_ufs_vh_drvs = {
 				  UFSHCD_QUIRK_SKIP_PH_CONFIGURATION |
 				  UFSHCD_QUIRK_SKIP_DEF_UNIPRO_TIMEOUT_SETTING,
 	.opts			= EXYNOS_UFS_OPT_BROKEN_RX_SEL_IDX,
+};
+
+static struct exynos_ufs_uic_attr exynos8890_uic_attr = {
+	.tx_trailingclks		= 0x10,
+	.pa_dbg_clk_period_off		= PA_DBG_CLK_PERIOD,
+	.pa_dbg_opt_suite1_val		= 0x2e030103,
+	.pa_dbg_opt_suite1_off		= PA_DBG_OPTION_SUITE,
+};
+
+static const struct exynos_ufs_drv_data exynos8890_ufs_drvs = {
+	.uic_attr		= &exynos8890_uic_attr,
+	.quirks			= UFSHCD_QUIRK_PRDT_BYTE_GRAN |
+				  UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR |
+				  UFSHCI_QUIRK_BROKEN_HCE |
+				  UFSHCI_QUIRK_SKIP_RESET_INTR_AGGR |
+				  UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR |
+				  UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL |
+				  UFSHCD_QUIRK_SKIP_DEF_UNIPRO_TIMEOUT_SETTING,
+	.opts			= EXYNOS_UFS_OPT_HAS_APB_CLK_CTRL |
+				  EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL |
+				  EXYNOS_UFS_OPT_BROKEN_RX_SEL_IDX |
+				  EXYNOS_UFS_OPT_SKIP_CONNECTION_ESTAB |
+				  EXYNOS_UFS_OPT_USE_SW_HIBERN8_TIMER |
+				  EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR |
+				  EXYNOS_UFS_OPT_UFSPR_SECURE |
+				  EXYNOS_UFS_OPT_SKIP_FMP_INIT |
+				  EXYNOS_UFS_OPT_PACP_CNFBIT |
+				  EXYNOS_UFS_OPT_DEV_RESET_PRE_LINK |
+				  EXYNOS_UFS_OPT_FORCE_PRDT_PREFETCH |
+				  EXYNOS_UFS_OPT_LEGACY_UTRD_CMD_TYPE |
+				  EXYNOS_UFS_OPT_FORCE_32BIT_DMA |
+				  EXYNOS_UFS_OPT_LEGACY_L2_TIMERS,
+	.iocc_mask		= GENMASK(17, 16),
+	.pclk_avail_max		= 133000000,
+	.drv_init		= exynos8890_ufs_secure_init,
+	.pre_link		= exynos8890_ufs_pre_link,
+	.post_phy_init		= exynos8890_ufs_post_phy_init,
+	.post_link		= exynos8890_ufs_post_link,
+	.post_phy_calibrate	= exynos8890_ufs_post_phy_calibrate,
+	.resume			= exynos8890_ufs_resume,
 };
 
 static const struct exynos_ufs_drv_data exynos_ufs_drvs = {
@@ -2312,6 +2701,8 @@ static const struct exynos_ufs_drv_data exynosautov920_ufs_drvs = {
 static const struct of_device_id exynos_ufs_of_match[] = {
 	{ .compatible = "google,gs101-ufs",
 	  .data	      = &gs101_ufs_drvs },
+	{ .compatible = "samsung,exynos8890-ufs",
+	  .data	      = &exynos8890_ufs_drvs },
 	{ .compatible = "samsung,exynos7-ufs",
 	  .data	      = &exynos_ufs_drvs },
 	{ .compatible = "samsung,exynosautov9-ufs",

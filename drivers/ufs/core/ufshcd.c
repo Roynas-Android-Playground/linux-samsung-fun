@@ -5358,8 +5358,10 @@ static int ufshcd_verify_dev_init(struct ufs_hba *hba)
 
 	ufshcd_dev_man_unlock(hba);
 
-	if (err)
+	if (err) {
 		dev_err(hba->dev, "%s: NOP OUT failed %d\n", __func__, err);
+		ufshcd_print_host_state(hba);
+	}
 	return err;
 }
 

@@ -17,6 +17,7 @@ properties:
     enum:
       - google,gs101-ufs-phy
       - samsung,exynos7-ufs-phy
+      - samsung,exynos8890-ufs-phy
       - samsung,exynosautov9-ufs-phy
       - samsung,exynosautov920-ufs-phy
       - tesla,fsd-ufs-phy
@@ -85,14 +86,33 @@ allOf:
             - const: tx0_symbol_clk
 
     else:
-      properties:
-        clocks:
-          items:
-            - description: PLL reference clock
+      if:
+        properties:
+          compatible:
+            contains:
+              const: samsung,exynos8890-ufs-phy
+      then:
+        properties:
+          clocks:
+            items:
+              - description: PLL reference clock
+              - description: symbol clock for input symbol
+              - description: symbol clock for output symbol
 
-        clock-names:
-          items:
-            - const: ref_clk
+          clock-names:
+            items:
+              - const: ref_clk
+              - const: rx0_symbol_clk
+              - const: tx0_symbol_clk
+      else:
+        properties:
+          clocks:
+            items:
+              - description: PLL reference clock
+
+          clock-names:
+            items:
+              - const: ref_clk
 
 additionalProperties: false
 

@@ -17,6 +17,7 @@ properties:
     enum:
       - google,gs101-ufs
       - samsung,exynos7-ufs
+      - samsung,exynos8890-ufs
       - samsung,exynosautov9-ufs
       - samsung,exynosautov9-ufs-vh
       - samsung,exynosautov920-ufs
@@ -51,7 +52,7 @@ properties:
     items:
       - const: core_clk
       - const: sclk_unipro_main
-      - const: fmp
+      - enum: [fmp, aclk]
       - const: aclk
       - const: pclk
       - const: sysreg
@@ -101,12 +102,29 @@ allOf:
           minItems: 6
 
     else:
-      properties:
-        clocks:
-          maxItems: 2
+      if:
+        properties:
+          compatible:
+            contains:
+              const: samsung,exynos8890-ufs
+      then:
+        properties:
+          clocks:
+            minItems: 3
+            maxItems: 3
 
-        clock-names:
-          maxItems: 2
+          clock-names:
+            items:
+              - const: core_clk
+              - const: sclk_unipro_main
+              - const: aclk
+      else:
+        properties:
+          clocks:
+            maxItems: 2
+
+          clock-names:
+            maxItems: 2
 
 unevaluatedProperties: false
 
