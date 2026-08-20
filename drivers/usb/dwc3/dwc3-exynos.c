@@ -250,7 +250,7 @@ static int dwc3_exynos_resume(struct device *dev)
 	ret = regulator_enable(exynos->vdd10);
 	if (ret) {
 		dev_err(dev, "Failed to enable VDD10 supply\n");
-		return ret;
+		goto disable_vdd33;
 	}
 
 	for (i = 0; i < exynos->num_clks; i++) {
@@ -258,11 +258,17 @@ static int dwc3_exynos_resume(struct device *dev)
 		if (ret) {
 			while (i-- > 0)
 				clk_disable_unprepare(exynos->clks[i]);
-			return ret;
+			goto disable_regulators;
 		}
 	}
 
 	return 0;
+
+disable_regulators:
+	regulator_disable(exynos->vdd10);
+disable_vdd33:
+	regulator_disable(exynos->vdd33);
+	return ret;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(dwc3_exynos_dev_pm_ops,
