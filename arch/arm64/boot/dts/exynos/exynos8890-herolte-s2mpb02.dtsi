@@ -10,6 +10,12 @@
 		compatible = "samsung,s2mpb02";
 		reg = <0x59>;
 
+		torch {
+			compatible = "samsung,s2mpb02-torch";
+			max-current-microamp = <100000>;
+			torch-enable-gpios = <&gpc0 3 GPIO_ACTIVE_HIGH>;
+		};
+
 		regulators {
 			s2mpb02_buck1: s2mpb02-buck1 {
 				regulator-name = "VDD_1P3_EXT";
