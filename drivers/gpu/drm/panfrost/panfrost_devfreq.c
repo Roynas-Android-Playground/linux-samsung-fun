@@ -165,7 +165,10 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 
 	cur_freq = clk_get_rate(pfdev->clock);
 
-	opp = devfreq_recommended_opp(dev, &cur_freq, 0);
+	if (pfdev->comp->devfreq_require_exact_opp)
+		opp = dev_pm_opp_find_freq_exact(dev, cur_freq, true);
+	else
+		opp = devfreq_recommended_opp(dev, &cur_freq, 0);
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
 
@@ -206,6 +209,7 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	pfdevfreq->gov_data.downdifferential = 5;
 
 	devfreq = devm_devfreq_add_device(dev, &panfrost_devfreq_profile,
+					  pfdev->comp->devfreq_governor ?:
 					  DEVFREQ_GOV_SIMPLE_ONDEMAND,
 					  &pfdevfreq->gov_data);
 	if (IS_ERR(devfreq)) {

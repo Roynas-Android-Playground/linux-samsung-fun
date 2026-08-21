@@ -12,6 +12,7 @@ config DRM_PANFROST
 	select DRM_GEM_SHMEM_HELPER
 	select PM_DEVFREQ
 	select DEVFREQ_GOV_SIMPLE_ONDEMAND
+	select DEVFREQ_GOV_USERSPACE
 	select WANT_DEV_COREDUMP
 	help
 	  DRM driver for ARM Mali Midgard (T6xx, T7xx, T8xx) and

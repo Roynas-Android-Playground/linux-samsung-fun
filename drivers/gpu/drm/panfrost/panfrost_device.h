@@ -115,6 +115,10 @@ struct panfrost_compatible {
 
 	/* GPU configuration quirks */
 	u8 gpu_quirks;
+
+	/* Optional platform policy for conservative initial devfreq bring-up. */
+	const char *devfreq_governor;
+	bool devfreq_require_exact_opp;
 };
 
 /**
