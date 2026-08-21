@@ -136,7 +136,7 @@ static const struct regmap_config s2mps16_regmap_config = {
 
 	.max_register = S2MPS16_REG_VTH_OFFSET,
 	.volatile_reg = s2mps11_volatile,
-	.cache_type = REGCACHE_FLAT,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static const struct regmap_config s2mpu02_regmap_config = {

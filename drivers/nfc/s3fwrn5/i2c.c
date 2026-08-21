@@ -11,6 +11,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
 #include <linux/module.h>
+#include <linux/pm_wakeirq.h>
+#include <linux/regulator/consumer.h>
 
 #include <net/nfc/nfc.h>
 
@@ -22,9 +24,66 @@ struct s3fwrn5_i2c_phy {
 	struct phy_common common;
 	struct i2c_client *i2c_dev;
 	struct clk *clk;
+	struct gpio_desc *gpio_clk_req;
+	int clk_req_irq;
+	bool clk_enabled;
 
 	unsigned int irq_skip:1;
 };
+
+static int s3fwrn5_i2c_set_clock(struct s3fwrn5_i2c_phy *phy, bool enable)
+{
+	int ret = 0;
+
+	if (!phy->clk || enable == phy->clk_enabled)
+		return 0;
+	if (enable)
+		ret = clk_prepare_enable(phy->clk);
+	else
+		clk_disable_unprepare(phy->clk);
+	if (!ret)
+		phy->clk_enabled = enable;
+	return ret;
+}
+
+static void s3fwrn5_i2c_disable_clock(void *data)
+{
+	s3fwrn5_i2c_set_clock(data, false);
+}
+
+static irqreturn_t s3fwrn5_i2c_clk_req_irq(int irq, void *data)
+{
+	struct s3fwrn5_i2c_phy *phy = data;
+	int requested;
+
+	mutex_lock(&phy->common.mutex);
+	requested = gpiod_get_value_cansleep(phy->gpio_clk_req);
+	if (requested >= 0)
+		s3fwrn5_i2c_set_clock(phy, requested);
+	mutex_unlock(&phy->common.mutex);
+	return IRQ_HANDLED;
+}
+
+static int s3fwrn5_i2c_suspend(struct device *dev)
+{
+	struct s3fwrn5_i2c_phy *phy = i2c_get_clientdata(to_i2c_client(dev));
+
+	if (device_may_wakeup(dev) && phy->clk_req_irq > 0)
+		return enable_irq_wake(phy->clk_req_irq);
+	return 0;
+}
+
+static int s3fwrn5_i2c_resume(struct device *dev)
+{
+	struct s3fwrn5_i2c_phy *phy = i2c_get_clientdata(to_i2c_client(dev));
+
+	if (device_may_wakeup(dev) && phy->clk_req_irq > 0)
+		disable_irq_wake(phy->clk_req_irq);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(s3fwrn5_i2c_pm_ops, s3fwrn5_i2c_suspend,
+				 s3fwrn5_i2c_resume);
 
 static void s3fwrn5_i2c_set_mode(void *phy_id, enum s3fwrn5_mode mode)
 {
@@ -160,6 +219,11 @@ static int s3fwrn5_i2c_probe(struct i2c_client *client)
 	phy->i2c_dev = client;
 	i2c_set_clientdata(client, phy);
 
+	ret = devm_regulator_get_enable_optional(&client->dev, "vdd");
+	if (ret && ret != -ENODEV)
+		return dev_err_probe(&client->dev, ret,
+				     "failed to enable VDD supply\n");
+
 	phy->common.gpio_en = devm_gpiod_get(&client->dev, "en", GPIOD_OUT_HIGH);
 	if (IS_ERR(phy->common.gpio_en))
 		return PTR_ERR(phy->common.gpio_en);
@@ -174,10 +238,41 @@ static int s3fwrn5_i2c_probe(struct i2c_client *client)
 	 * oscillator or some external clock that must be explicitly enabled.
 	 * Make sure the clock is running before starting S3FWRN5.
 	 */
-	phy->clk = devm_clk_get_optional_enabled(&client->dev, NULL);
+	phy->clk = devm_clk_get_optional(&client->dev, NULL);
 	if (IS_ERR(phy->clk))
 		return dev_err_probe(&client->dev, PTR_ERR(phy->clk),
 				     "failed to get clock\n");
+	phy->gpio_clk_req = devm_gpiod_get_optional(&client->dev, "clk-req",
+						     GPIOD_IN);
+	if (IS_ERR(phy->gpio_clk_req))
+		return PTR_ERR(phy->gpio_clk_req);
+	ret = devm_add_action_or_reset(&client->dev, s3fwrn5_i2c_disable_clock,
+				       phy);
+	if (ret)
+		return ret;
+	if (phy->gpio_clk_req) {
+		phy->clk_req_irq = gpiod_to_irq(phy->gpio_clk_req);
+		if (phy->clk_req_irq < 0)
+			return phy->clk_req_irq;
+		ret = devm_request_threaded_irq(&client->dev, phy->clk_req_irq, NULL,
+						s3fwrn5_i2c_clk_req_irq,
+						IRQF_ONESHOT | IRQF_TRIGGER_RISING |
+						IRQF_TRIGGER_FALLING,
+						"s3fwrn5-clk-req", phy);
+		if (ret)
+			return ret;
+		mutex_lock(&phy->common.mutex);
+		ret = gpiod_get_value_cansleep(phy->gpio_clk_req);
+		if (ret >= 0)
+			ret = s3fwrn5_i2c_set_clock(phy, ret);
+		mutex_unlock(&phy->common.mutex);
+		if (ret < 0)
+			return ret;
+	} else {
+		ret = s3fwrn5_i2c_set_clock(phy, true);
+		if (ret)
+			return ret;
+	}
 
 	ret = s3fwrn5_probe(&phy->common.ndev, phy, &phy->i2c_dev->dev,
 			    &i2c_phy_ops);
@@ -220,6 +315,7 @@ static struct i2c_driver s3fwrn5_i2c_driver = {
 	.driver = {
 		.name = S3FWRN5_I2C_DRIVER_NAME,
 		.of_match_table = of_match_ptr(of_s3fwrn5_i2c_match),
+		.pm = pm_sleep_ptr(&s3fwrn5_i2c_pm_ops),
 	},
 	.probe = s3fwrn5_i2c_probe,
 	.remove = s3fwrn5_i2c_remove,

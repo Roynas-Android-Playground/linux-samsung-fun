@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/idt,p9220.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: IDT P9220 wireless power receiver
+
+maintainers:
+  - Linux PM list <linux-pm@vger.kernel.org>
+
+description: |
+  The initial binding describes only safe receiver enumeration through the
+  physical pad-detect signal. Receiver programming, charging policy and
+  firmware update are outside this contract.
+
+properties:
+  compatible:
+    const: idt,p9220
+
+  reg:
+    maxItems: 1
+
+  detect-gpios:
+    maxItems: 1
+    description: Active-high indication that a wireless charging pad is present.
+
+required:
+  - compatible
+  - reg
+  - detect-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        wireless-charger@61 {
+            compatible = "idt,p9220";
+            reg = <0x61>;
+            detect-gpios = <&gpio 5 GPIO_ACTIVE_HIGH>;
+        };
+    };
