@@ -43,7 +43,7 @@ CONFIG_ARCH_EXYNOS=y
 # CONFIG_QCOM_QDF2400_ERRATUM_0065 is not set
 # CONFIG_QCOM_FALKOR_ERRATUM_E1041 is not set
 CONFIG_NR_CPUS=8
-CONFIG_CMDLINE="earlycon=exynos4210,0x14c50000 console=ttySAC0,115200n8 clk_ignore_unused pd_ignore_unused"
+CONFIG_CMDLINE="earlycon=exynos4210,0x14c50000 console=ttySAC0,115200n8 clk_ignore_unused pd_ignore_unused cpuidle.off=1 nohlt"
 # CONFIG_CMDLINE="earlycon=exynos4210,0x14c50000 console=ttySAC0,115200n8 clk_ignore_unused pd_ignore_unused kgdboc=ttySAC1,115200 kgdboc_earlycon nokaslr rodata=off"
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_EFI is not set
