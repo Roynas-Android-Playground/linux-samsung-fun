@@ -1148,6 +1148,13 @@
 		compatible = "exynos8890,reboot";
 		pmu_base = <0x105C0000>;
 	};
+
+	exynos8890_cpuidle_test: cpuidle-test {
+		compatible = "samsung,exynos8890-cpuidle-test";
+		samsung,pmu-syscon = <&pmu_system_controller>;
+		samsung,psci-suspend-param = <0x00010000>;
+		status = "disabled";
+	};
 };
 
 #include "exynos8890-pinctrl.dtsi"

@@ -33,6 +33,16 @@ config EXYNOS8890_ECT
 	  fuse values. Validate table versions, groups, SSA adjustments and CPU
 	  voltage ordering. Malformed or incomplete firmware data is rejected.
 
+config EXYNOS8890_CPUIDLE
+	bool "Exynos8890 opt-in local-core C2 diagnostics"
+	depends on ARM64 && ARCH_EXYNOS && CPU_IDLE && ARM_PSCI_FW
+	depends on !ARM_PSCI_CPUIDLE
+	help
+	  Build a deliberately opt-in Exynos8890 local-core power-down driver.
+	  It excludes cluster and system idle, starts C2 disabled, and requires
+	  both exynos8890.c2=1 and explicit per-CPU sysfs enablement. This is a
+	  hardware diagnostic and must not be enabled as production policy.
+
 config EXYNOS_USI
 	tristate "Exynos USI (Universal Serial Interface) driver"
 	default ARCH_EXYNOS && ARM64

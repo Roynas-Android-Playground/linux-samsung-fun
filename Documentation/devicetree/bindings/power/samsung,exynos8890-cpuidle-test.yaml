@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/samsung,exynos8890-cpuidle-test.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 opt-in local-core C2 diagnostics
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Diagnostic-only controller for validating affinity-level-0 CPU power-down on
+  Exynos8890. The driver is disabled unless selected in Kconfig, enabled in the
+  device tree, opted in on the kernel command line, and enabled per CPU through
+  cpuidle sysfs. Cluster and system power-down are not supported.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-cpuidle-test
+
+  samsung,pmu-syscon:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the Exynos8890 PMU system controller.
+
+  samsung,psci-suspend-param:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    const: 0x00010000
+    description: PSCI original-format affinity-level-0 power-down state.
+
+required:
+  - compatible
+  - samsung,pmu-syscon
+  - samsung,psci-suspend-param
+
+additionalProperties: false
+
+examples:
+  - |
+    cpuidle-test {
+        compatible = "samsung,exynos8890-cpuidle-test";
+        samsung,pmu-syscon = <&pmu_system_controller>;
+        samsung,psci-suspend-param = <0x00010000>;
+        status = "disabled";
+    };
