@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/firmware/samsung,exynos8890-ect.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 Embedded Configuration Table
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  S-Boot places an Embedded Configuration Table in reserved DRAM. It contains
+  characterized DVFS clock rows and per-table-version ASV voltage data. Secure
+  per-die fuse words are read through the Exynos legacy register-read SMC.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-ect
+
+  memory-region:
+    maxItems: 1
+
+  method:
+    const: smc
+
+required:
+  - compatible
+  - memory-region
+  - method
+
+additionalProperties: false
+
+examples:
+  - |
+    firmware {
+        ect {
+            compatible = "samsung,exynos8890-ect";
+            memory-region = <&ect_reserved>;
+            method = "smc";
+        };
+    };

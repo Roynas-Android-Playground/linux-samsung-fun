@@ -124,6 +124,11 @@
 		#size-cells = <1>;
 		ranges;
 
+		ect_reserved: ect@a0000000 {
+			reg = <0x0 0xa0000000 0x19000>;
+			no-map;
+		};
+
 		tima@b1000000 {
 			reg = <0x0 0xb1000000 0x200000>;
 			no-map;
@@ -179,6 +184,14 @@
 		cont_splash_mem: framebuffer@e2a00000 {
 			reg = <0x0 0xe2a00000 (1440 * 2560 * 4)>;
 			no-map;
+		};
+	};
+
+	firmware {
+		ect {
+			compatible = "samsung,exynos8890-ect";
+			memory-region = <&ect_reserved>;
+			method = "smc";
 		};
 	};
 
