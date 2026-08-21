@@ -443,6 +443,18 @@ asmlinkage void noinstr el1h_64_sync_handler(struct pt_regs *regs)
 {
 	unsigned long esr = read_sysreg(esr_el1);
 
+	/*
+	 * Mongoose M1 can report a transient TLB conflict for an otherwise
+	 * valid EL1 translation. Samsung's Exynos8890 workaround invalidates
+	 * the stage-1 TLB and retries the faulting instruction unchanged.
+	 */
+	if (unlikely((ESR_ELx_EC(esr) == ESR_ELx_EC_DABT_CUR ||
+		      ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_CUR) &&
+		     (esr & ESR_ELx_FSC) == ESR_ELx_FSC_TLB_CONFLICT)) {
+		asm volatile("tlbi vmalle1\n	dsb nsh" : : : "memory");
+		return;
+	}
+
 	switch (ESR_ELx_EC(esr)) {
 	case ESR_ELx_EC_DABT_CUR:
 	case ESR_ELx_EC_IABT_CUR:

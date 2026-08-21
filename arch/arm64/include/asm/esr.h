@@ -125,6 +125,7 @@
 #define ESR_ELx_FSC_SECC	(0x18)
 #define ESR_ELx_FSC_SECC_TTW(n)	(0x1c + (n))
 #define ESR_ELx_FSC_EXCL_ATOMIC	(0x35)
+#define ESR_ELx_FSC_TLB_CONFLICT	(0x30)
 #define ESR_ELx_FSC_ADDRSZ	(0x00)
 
 /*
