@@ -7,11 +7,14 @@
 
 /dts-v1/;
 #include "exynos8890.dtsi"
-#include "exynos8890-max77854.dtsi"
+#include <dt-bindings/clock/samsung,s2mps11.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
-#include "exynos8890-herolte-s2mpb02.dtsi"
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/sound/madera.h>
+#include <dt-bindings/thermal/thermal.h>
 
 / {
 	model = "Samsung Galaxy S7 (SM-G930F)";
@@ -89,27 +92,122 @@
 
 	thermal-zones {
 		mngs-thermal {
-			polling-delay-passive = <0>;
+			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 			thermal-sensors = <&tmuctrl_0>;
+
+			trips {
+				mngs_passive: trip-passive {
+					temperature = <76000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+				mngs_hot: trip-hot {
+					temperature = <96000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+				mngs_critical: trip-critical {
+					temperature = <115000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&mngs_passive>;
+					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
 		};
 
 		apollo-thermal {
-			polling-delay-passive = <0>;
+			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 			thermal-sensors = <&tmuctrl_1>;
+
+			trips {
+				apollo_passive: trip-passive {
+					temperature = <76000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+				apollo_hot: trip-hot {
+					temperature = <96000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+				apollo_critical: trip-critical {
+					temperature = <115000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&apollo_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
 		};
 
 		gpu-thermal {
-			polling-delay-passive = <0>;
+			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 			thermal-sensors = <&tmuctrl_2>;
+
+			trips {
+				gpu_passive: trip-passive {
+					temperature = <66000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+				gpu_hot: trip-hot {
+					temperature = <96000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+				gpu_critical: trip-critical {
+					temperature = <115000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&gpu_passive>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT
+							      THERMAL_NO_LIMIT>;
+				};
+			};
 		};
 
 		isp-thermal {
-			polling-delay-passive = <0>;
+			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 			thermal-sensors = <&tmuctrl_3>;
+
+			trips {
+				isp_hot: trip-hot {
+					temperature = <96000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+				isp_critical: trip-critical {
+					temperature = <110000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
 		};
 	};
 
@@ -164,7 +262,8 @@
 			no-map;
 		};
 
-		modem@f0000000 {
+		modem_reserved: modem@f0000000 {
+			compatible = "exynos,modem_if";
 			reg = <0x0 0xf0000000 0x8800000>;
 			no-map;
 		};
@@ -205,6 +304,15 @@
 		regulator-max-microvolt = <2800000>;
 		regulator-min-microvolt = <2800000>;
 		regulator-name = "vdd_fixed_mmc";
+	};
+
+	ufs_supply: regulator-fixed-ufs {
+		compatible = "regulator-fixed";
+		regulator-name = "ufs-xbootldo0";
+		gpio = <&gpg0 0 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		startup-delay-us = <2000>;
 	};
 
 	gpu_opp_table: opp-table-gpu {
@@ -268,6 +376,7 @@
 
 	mali-supply = <&s2mps16_buck6>;
 	operating-points-v2 = <&gpu_opp_table>;
+	#cooling-cells = <2>;
 
 	status = "okay";
 };
@@ -679,6 +788,7 @@
 
 &mmc {
 	bus-width = <4>;
+	cap-sd-highspeed;
 
 	card-detect-delay = <200>;
 	cd-gpios = <&gpa1 5 GPIO_ACTIVE_LOW>;
@@ -690,8 +800,8 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&sd2_clk &sd2_cmd &sd2_bus1 &sd2_bus4 &sd2_cd>;
 
-	sd-uhs-sdr50;
-	sd-uhs-sdr104;
+//	sd-uhs-sdr50;
+//	sd-uhs-sdr104;
 
 	vmmc-supply = <&vdd_fixed_mmc>;
 	vqmmc-supply = <&s2mps16_ldo2>;
@@ -848,6 +958,14 @@
 			 <&cmu_fsys1 CLK_GOUT_FSYS1_PHYCLK_PCIE_WIFI0_RX0>;
 		clock-names = "pcie", "dbi", "slv", "mstr", "ahb", "pcs",
 			      "phy-pclk", "phy-ref", "phy-tx", "phy-rx";
+		assigned-clocks =
+			<&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_DIG_REFCLK_USER>,
+			<&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_TX0_USER>,
+			<&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_RX0_USER>;
+		assigned-clock-parents =
+			<&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_DIG_REFCLK_PHY>,
+			<&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_TX0_PHY>,
+			<&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_RX0_PHY>;
 
 		samsung,pmu-syscon = <&pmu_system_controller>;
 		reset-gpios = <&gpj1 2 GPIO_ACTIVE_LOW>;
@@ -891,4 +1009,1060 @@
                 clocks = <&s2mps16_osc S2MPS11_CLK_BT>;
                 clock-names = "lpo";
         };
+};
+
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 (herolte) basic CS47L91 audio bring-up.
+ *
+ * This covers the AP AIF1 PCM path and a conservative AIF4-to-MAX98506
+ * speaker path. Modem voice, compressed/offload audio and voice control are
+ * left for separate follow-up work.
+ */
+
+&pinctrl_alive {
+	codec_irq: codec-irq-pins {
+		samsung,pins = "gpa2-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+&pinctrl_peric1 {
+	codec_reset: codec-reset-pins {
+		samsung,pins = "gpe6-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+};
+
+&soc {
+	lpass: audio-subsystem@11400000 {
+		compatible = "samsung,exynos8890-lpass";
+		reg = <0x11400000 0x100>,
+		      <0x03000000 0x24000>,
+		      <0x11500000 0x100>;
+
+		clocks = <&cmu_aud CLK_GOUT_AUD_PCLK_SFR0>;
+		clock-names = "sfr0_ctrl";
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		/* AUD power-domain ownership is not established yet. */
+		status = "disabled";
+
+		adma: dma-controller@11420000 {
+			compatible = "arm,pl330", "arm,primecell";
+			reg = <0x11420000 0x1000>;
+			interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL_HIGH>;
+
+			clocks = <&cmu_aud CLK_GOUT_AUD_ACLK_DMAC>;
+			clock-names = "apb_pclk";
+
+			#dma-cells = <1>;
+			dma-channels = <8>;
+			dma-requests = <16>;
+			arm,primecell-periphid = <0x341330>;
+		};
+
+		i2s0: i2s@11440000 {
+			compatible = "samsung,exynos7-i2s";
+			reg = <0x11440000 0x100>;
+			interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
+
+			dmas = <&adma 0>, <&adma 2>;
+			dma-names = "tx", "rx";
+
+			clocks = <&cmu_aud CLK_GOUT_AUD_PCLK_I2S>,
+				 <&cmu_aud CLK_GOUT_AUD_SCLK_I2S>,
+				 <&cmu_aud CLK_GOUT_AUD_SCLK_I2S_BCLK>;
+			clock-names = "iis", "i2s_opclk0", "i2s_opclk1";
+
+			#clock-cells = <1>;
+			#sound-dai-cells = <1>;
+
+			pinctrl-0 = <&i2s0_bus>;
+			pinctrl-names = "default";
+		};
+	};
+
+	spi_0: spi@14d20000 {
+		compatible = "samsung,exynos7-spi";
+		reg = <0x14d20000 0x100>;
+		interrupts = <GIC_SPI 448 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_peric1 CLK_GOUT_PERIC1_PCLK_SPI0>,
+			 <&cmu_peric1 CLK_GOUT_PERIC1_SCLK_SPI0>;
+		clock-names = "spi", "spi_busclk0";
+		samsung,spi-src-clk = <0>;
+
+		pinctrl-0 = <&spi0_bus &spi0_cs &codec_irq &codec_reset>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+		num-cs = <1>;
+		fifo-depth = <64>;
+		cs-gpios = <&gpe2 1 GPIO_ACTIVE_LOW>;
+		status = "okay";
+
+		audio_codec: codec@0 {
+			compatible = "cirrus,cs47l91";
+			reg = <0>;
+			spi-max-frequency = <25000000>;
+
+			interrupt-parent = <&gpa2>;
+			interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+
+			gpio-controller;
+			#gpio-cells = <2>;
+			#sound-dai-cells = <1>;
+
+			/* Madera drives this legacy /RESET descriptor with raw values. */
+			reset-gpios = <&gpe6 5 GPIO_ACTIVE_HIGH>;
+
+			AVDD-supply = <&s2mps16_ldo30>;
+			DBVDD1-supply = <&s2mps16_ldo30>;
+			DBVDD2-supply = <&s2mps16_ldo30>;
+			DBVDD3-supply = <&s2mps16_ldo30>;
+			DBVDD4-supply = <&s2mps16_ldo30>;
+			CPVDD1-supply = <&s2mps16_ldo30>;
+			CPVDD2-supply = <&s2mps16_ldo30>;
+			DCVDD-supply = <&s2mps16_ldo31>;
+
+			clocks = <&s2mps16_osc S2MPS11_CLK_AP>;
+			clock-names = "mclk2";
+
+			cirrus,dmic-ref = <MADERA_DMIC_REF_MICBIAS2
+					    MADERA_DMIC_REF_MICBIAS1>;
+			cirrus,max-channels-clocked = <2 0 0 0>;
+			cirrus,out-mono = <0 1 1>;
+
+			pinctrl-0 = <&audio_codec_pins>;
+			pinctrl-names = "default";
+
+			audio_codec_pins: pin-settings {
+				aif1-pins {
+					groups = "aif1";
+					function = "aif1";
+				};
+
+				aif4-pins {
+					groups = "aif4";
+					function = "aif4";
+				};
+			};
+		};
+	};
+};
+
+&hsi2c_0 {
+	status = "okay";
+
+	speaker_amp: amplifier@31 {
+		compatible = "maxim,max98506";
+		reg = <0x31>;
+		#sound-dai-cells = <0>;
+	};
+};
+
+/ {
+	sound {
+		compatible = "samsung,herolte-audio";
+		model = "Samsung Galaxy S7";
+
+		audio-codec = <&audio_codec>;
+		speaker-codec = <&speaker_amp>;
+		i2s-controller = <&i2s0 0>;
+		status = "okay";
+
+		audio-routing =
+			"HP", "HPOUT1L",
+			"HP", "HPOUT1R",
+			"RCV", "HPOUT3L",
+			"RCV", "HPOUT3R",
+			"SPK", "SPKOUT",
+			"Main Mic", "MICBIAS2A",
+			"IN1ARN", "Main Mic",
+			"IN1ARP", "Main Mic",
+			"Headset Mic", "MICBIAS1A",
+			"IN2BLN", "Headset Mic",
+			"IN2BLP", "Headset Mic",
+			"Sub Mic", "MICBIAS2B",
+			"DMICCLK3", "Sub Mic",
+			"DMICDAT3", "Sub Mic";
+	};
+};
+
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 (herolte) BCM4773 GNSS transport bring-up.
+ *
+ * BCM4773 also hosts Samsung's SSP sensor path. This file intentionally only
+ * wires the shared SPI/SSI transport and GNSS power GPIO; BBD sensor RPC
+ * demultiplexing is left for follow-up work.
+ */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	aliases {
+		spi1 = &spi_1;
+	};
+};
+
+&pinctrl_alive {
+	ssp_host_req: ssp-host-req-pins {
+		samsung,pins = "gpa3-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+};
+
+&pinctrl_peric0 {
+	gps_power_en: gps-power-en-pins {
+		samsung,pins = "gpb1-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+};
+
+&pinctrl_peric1 {
+	/* Match Samsung's herolte electrical configuration for the SSP bus. */
+	ssp_spi1_bus: ssp-spi1-bus-pins {
+		samsung,pins = "gpe2-7", "gpe2-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
+	ssp_spi1_miso: ssp-spi1-miso-pins {
+		samsung,pins = "gpe2-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
+	ssp_spi1_cs: ssp-spi1-cs-pins {
+		samsung,pins = "gpe2-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
+	ssp_mcu_req: ssp-mcu-req-pins {
+		samsung,pins = "gpe6-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
+	ssp_mcu_resp: ssp-mcu-resp-pins {
+		samsung,pins = "gpg0-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+};
+
+&soc {
+	spi_1: spi@14d30000 {
+		compatible = "samsung,exynos7-spi";
+		reg = <0x14d30000 0x100>;
+		interrupts = <GIC_SPI 449 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_peric1 CLK_GOUT_PERIC1_PCLK_SPI1>,
+			 <&cmu_peric1 CLK_GOUT_PERIC1_SCLK_SPI1>;
+		clock-names = "spi", "spi_busclk0";
+		samsung,spi-src-clk = <0>;
+
+		pinctrl-0 = <&ssp_spi1_bus &ssp_spi1_miso &ssp_spi1_cs>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+		num-cs = <1>;
+		cs-gpios = <&gpe2 5 GPIO_ACTIVE_LOW>;
+
+		status = "okay";
+
+		gnss@0 {
+			compatible = "brcm,bcm4773";
+			reg = <0>;
+			spi-max-frequency = <26000000>;
+			spi-cpol;
+			spi-cpha;
+
+			enable-gpios = <&gpb1 1 GPIO_ACTIVE_HIGH>;
+			host-request-gpios = <&gpa3 4 GPIO_ACTIVE_HIGH>;
+			mcu-request-gpios = <&gpe6 4 GPIO_ACTIVE_HIGH>;
+			mcu-response-gpios = <&gpg0 2 GPIO_ACTIVE_HIGH>;
+
+			pinctrl-0 = <&ssp_host_req &gps_power_en
+				     &ssp_mcu_req &ssp_mcu_resp>;
+			pinctrl-names = "default";
+		};
+	};
+};
+
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 (herolte) MFC bring-up.
+ *
+ * Keep the MFC power domain on while the Exynos8890-specific power-off and
+ * local CMU/Q-channel sequencing is still being brought upstream.
+ */
+
+#include <dt-bindings/clock/samsung,exynos8890-cmu-mfc.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+&soc {
+	pd_mfc: power-domain@105c4180 {
+		compatible = "samsung,exynos8890-mfc-pd";
+		reg = <0x105c4180 0x20>;
+		#power-domain-cells = <0>;
+		label = "MFC";
+	};
+
+	cmu_mfc: clock-controller@15280000 {
+		compatible = "samsung,exynos8890-cmu-mfc";
+		reg = <0x15280000 0x8000>;
+		#clock-cells = <1>;
+		clocks = <&oscclk>,
+			 <&cmu_top CLK_GOUT_TOP_ACLK_MFC_600>;
+		clock-names = "oscclk", "aclk_mfc_600";
+		power-domains = <&pd_mfc>;
+	};
+
+	mfc: codec@152e0000 {
+		compatible = "samsung,exynos8890-mfc", "samsung,mfc-v10";
+		reg = <0x152e0000 0x10000>;
+		interrupts = <GIC_SPI 302 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_mfc CLK_GOUT_MFC_ACLK_MFC>;
+		clock-names = "mfc";
+		power-domains = <&pd_mfc>;
+
+		iommus = <&sysmmu_mfc0_0>, <&sysmmu_mfc0_1>;
+		iommu-names = "left", "right";
+	};
+
+	sysmmu_mfc0_0: iommu@15200000 {
+		compatible = "samsung,exynos-sysmmu";
+		reg = <0x15200000 0x1000>;
+		interrupts = <GIC_SPI 296 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_mfc CLK_GOUT_MFC_ACLK_SMMU_MFC_0>,
+			 <&cmu_mfc CLK_GOUT_MFC_PCLK_SMMU_MFC_0>;
+		clock-names = "aclk", "pclk";
+		power-domains = <&pd_mfc>;
+
+		#iommu-cells = <0>;
+	};
+
+	sysmmu_mfc0_1: iommu@15220000 {
+		compatible = "samsung,exynos-sysmmu";
+		reg = <0x15220000 0x1000>;
+		interrupts = <GIC_SPI 298 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_mfc CLK_GOUT_MFC_ACLK_SMMU_MFC_1>,
+			 <&cmu_mfc CLK_GOUT_MFC_PCLK_SMMU_MFC_1>;
+		clock-names = "aclk", "pclk";
+		power-domains = <&pd_mfc>;
+
+		#iommu-cells = <0>;
+	};
+};
+
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 (herolte) Exynos8890 embedded UFS bring-up.
+ *
+ * The UFS host is close enough to the Exynos7 block to reuse the upstream
+ * host variant for initial bring-up.  Exynos8890 has a separate UniPro config
+ * clock; expose that as core_clk so the existing host timing calculations use
+ * the vendor PCLK, while keeping the real UFS link ACLK enabled as an extra
+ * clock managed by the generic UFS clock list.
+ */
+
+&soc {
+	ufs_sysreg: syscon@10e50700 {
+		compatible = "syscon";
+		reg = <0x10e50700 0x4>;
+	};
+
+	ufs: ufs@155a0000 {
+		compatible = "samsung,exynos8890-ufs";
+		reg = <0x155a0000 0x100>,
+		      <0x155a0100 0x200>,
+		      <0x155a1000 0x800>,
+		      <0x155a2000 0x300>;
+		reg-names = "hci", "vs_hci", "unipro", "ufsp";
+
+		interrupts = <GIC_SPI 209 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_fsys0 CLK_GOUT_FSYS0_SCLK_UFSUNIPRO_EMBEDDED_CFG>,
+			 <&cmu_fsys0 CLK_GOUT_FSYS0_SCLK_UFSUNIPRO_EMBEDDED>,
+			 <&cmu_fsys0 CLK_GOUT_FSYS0_ACLK_UFS_LINK_EMBEDDED>;
+		clock-names = "core_clk", "sclk_unipro_main", "aclk";
+		freq-table-hz = <0 0>, <0 0>, <0 0>;
+
+		vcc-supply = <&ufs_supply>;
+		vccq-supply = <&ufs_supply>;
+		vccq2-supply = <&ufs_supply>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&ufs_rst_n &ufs_refclk_out>;
+
+		phys = <&ufs_phy>;
+		phy-names = "ufs-phy";
+
+		lanes-per-direction = <1>;
+		limit-hs-gear = <3>;
+		limit-gear-rate = "rate-b";
+
+		samsung,sysreg = <&ufs_sysreg 0x0>;
+		dma-coherent;
+		status = "okay";
+	};
+
+	ufs_phy: phy@155a1800 {
+		compatible = "samsung,exynos8890-ufs-phy";
+		reg = <0x155a1800 0x800>;
+		reg-names = "phy-pma";
+
+		/* Vendor PMU UFS PHY isolation/control register is 0x105c0724. */
+		samsung,pmu-syscon = <&pmu_system_controller 0x724>;
+
+		clocks = <&oscclk>,
+			 <&cmu_fsys0 CLK_GOUT_FSYS0_PHYCLK_UFS_RX0_SYMBOL>,
+			 <&cmu_fsys0 CLK_GOUT_FSYS0_PHYCLK_UFS_TX0_SYMBOL>;
+		clock-names = "ref_clk", "rx0_symbol_clk", "tx0_symbol_clk";
+
+		#phy-cells = <0>;
+	};
+};
+
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 MAX77854 companion PMIC bring-up.
+ *
+ * MAX77854 reuses the upstream MAX77843-compatible MUIC, SAFEOUT and haptic
+ * interfaces. Basic conservative wired charging and read-only fuel-gauge
+ * reporting are enabled here; wireless charging and AFC/QC remain deferred.
+ */
+
+
+/ {
+	herolte_battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+
+		/* Stock herolte charger policy uses a 4.35 V float target. */
+		voltage-max-design-microvolt = <4350000>;
+		constant-charge-voltage-max-microvolt = <4350000>;
+
+		/*
+		 * Conservative first-stage limit until the battery temperature,
+		 * fuel gauge and cable/thermal policy are represented upstream.
+		 */
+		constant-charge-current-max-microamp = <450000>;
+		charge-term-current-microamp = <150000>;
+	};
+};
+
+&pinctrl_alive {
+	max77854_irq: max77854-irq-pins {
+		samsung,pins = "gpa1-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+&hsi2c_1 {
+	status = "okay";
+
+	max77854: pmic@66 {
+		compatible = "maxim,max77854";
+		reg = <0x66>;
+
+		interrupt-parent = <&gpa1>;
+		interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+
+		pinctrl-0 = <&max77854_irq>;
+		pinctrl-names = "default";
+
+		charger {
+			compatible = "maxim,max77854-charger";
+			monitored-battery = <&herolte_battery>;
+		};
+
+		fuel-gauge {
+			compatible = "maxim,max77854-fuel-gauge";
+		};
+
+		leds {
+			compatible = "maxim,max77854-led";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led@1 {
+				reg = <1>;
+				color = <LED_COLOR_ID_RED>;
+				function = LED_FUNCTION_STATUS;
+			};
+
+			led@2 {
+				reg = <2>;
+				color = <LED_COLOR_ID_GREEN>;
+				function = LED_FUNCTION_STATUS;
+			};
+
+			led@3 {
+				reg = <3>;
+				color = <LED_COLOR_ID_BLUE>;
+				function = LED_FUNCTION_STATUS;
+			};
+		};
+
+		max77854_muic: extcon {
+			compatible = "maxim,max77843-muic";
+
+			connector {
+				compatible = "samsung,usb-connector-11pin",
+					     "usb-b-connector";
+				label = "micro-USB";
+				type = "micro";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						status = "disabled";
+					};
+				};
+			};
+		};
+
+		regulators {
+			compatible = "maxim,max77843-regulator";
+
+			max77854_safeout1: SAFEOUT1 {
+				regulator-name = "safeout1_range";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <4900000>;
+				regulator-boot-on;
+			};
+
+			max77854_safeout2: SAFEOUT2 {
+				regulator-name = "safeout2_range";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <4900000>;
+			};
+		};
+
+		motor-driver {
+			compatible = "maxim,max77843-haptic";
+			haptic-supply = <&s2mps16_ldo34>;
+			pwms = <&pwm 1 37950 0>;
+		};
+	};
+};
+
+&pwm {
+	pinctrl-0 = <&pwm_tout1>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S7 (herolte) S2MPB02 sub-PMIC.
+ */
+
+&hsi2c_9 {
+	status = "okay";
+
+	s2mpb02: pmic@59 {
+		compatible = "samsung,s2mpb02";
+		reg = <0x59>;
+
+		torch {
+			compatible = "samsung,s2mpb02-torch";
+			max-current-microamp = <100000>;
+			torch-enable-gpios = <&gpc0 3 GPIO_ACTIVE_HIGH>;
+		};
+
+		regulators {
+			s2mpb02_buck1: s2mpb02-buck1 {
+				regulator-name = "VDD_1P3_EXT";
+				regulator-min-microvolt = <1300000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			s2mpb02_buck2: s2mpb02-buck2 {
+				regulator-name = "VDDD_CORE_0.8V_COMP";
+				regulator-min-microvolt = <650000>;
+				regulator-max-microvolt = <850000>;
+			};
+
+			s2mpb02_bb: s2mpb02-bb {
+				regulator-name = "VDD_BB_EXT";
+				regulator-min-microvolt = <2600000>;
+				regulator-max-microvolt = <4000000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			s2mpb02_ldo1: s2mpb02-ldo1 {
+				regulator-name = "VDDD_NORET_0.9V_COMP";
+				regulator-min-microvolt = <950000>;
+				regulator-max-microvolt = <950000>;
+			};
+
+			s2mpb02_ldo2: s2mpb02-ldo2 {
+				regulator-name = "VDDD_CORE_1.0V_COMP";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1000000>;
+			};
+
+			s2mpb02_ldo3: s2mpb02-ldo3 {
+				regulator-name = "VDDD_1.2V_CAM";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			s2mpb02_ldo4: s2mpb02-ldo4 {
+				regulator-name = "VDDD_RET_1.0V_COMP";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			s2mpb02_ldo5: s2mpb02-ldo5 {
+				regulator-name = "VDDD_1.2V_VT";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			s2mpb02_ldo6: s2mpb02-ldo6 {
+				regulator-name = "VDDIO_1.8V_VT";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo7: s2mpb02-ldo7 {
+				regulator-name = "VDDIO_1.8V_CAM";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo8: s2mpb02-ldo8 {
+				regulator-name = "VDDIO_1.8V_COMP";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo9: s2mpb02-ldo9 {
+				regulator-name = "VDDA_1.8V_COMP";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo10: s2mpb02-ldo10 {
+				regulator-name = "VDDA_1.8V_CAM";
+				regulator-min-microvolt = <1875000>;
+				regulator-max-microvolt = <1875000>;
+			};
+
+			s2mpb02_ldo11: s2mpb02-ldo11 {
+				regulator-name = "VDDA_2.9V_CAM";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <2950000>;
+			};
+
+			s2mpb02_ldo12: s2mpb02-ldo12 {
+				regulator-name = "VDDAF_2.8V_CAM";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02_ldo13: s2mpb02-ldo13 {
+				regulator-name = "VDDA_2.9V_VT";
+				regulator-min-microvolt = <2900000>;
+				regulator-max-microvolt = <2900000>;
+			};
+
+			s2mpb02_ldo14: s2mpb02-ldo14 {
+				regulator-name = "OIS_VM_2.8V";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02_ldo15: s2mpb02-ldo15 {
+				regulator-name = "OIS_VDD_2.8V";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02_ldo16: s2mpb02-ldo16 {
+				regulator-name = "TOUCH_VDD_3.3V";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
+			};
+
+			s2mpb02_ldo17: s2mpb02-ldo17 {
+				regulator-name = "OIS_VDD_1.8V";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02_ldo18: s2mpb02-ldo18 {
+				regulator-name = "vmmc";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+		};
+	};
+};
+
+/ {
+	/* modem_interface_driver: Samsung Electronics Jungfrau */
+	modem: modem@20c7800 {
+		compatible = "sec_modem,modem_pdata";
+		status = "okay";
+		reg = <0x0 0x020c7800 0x800>;
+		interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 96 IRQ_TYPE_LEVEL_HIGH>;
+		samsung,syscon-phandle = <&pmu_system_controller>;
+		gpios = <&gpe4 4 GPIO_ACTIVE_HIGH>,
+			<&gpe4 5 GPIO_ACTIVE_HIGH>,
+			<&gpe4 6 GPIO_ACTIVE_HIGH>,
+			<&gpe4 7 GPIO_ACTIVE_HIGH>;
+
+		mif,ap_clk_table = <1898000 1794000 1690000 1586000 1482000
+			1378000 1274000 1170000 1066000 962000 858000
+			754000 650000 546000 442000>;
+		mif,mif_clk_table = <1794000 1716000 1539200 1352000 1144000
+			1014000 845000 676000 546000 420875>;
+		mif,int_clk_table = <690000 680000 670000 660000 650000 640000
+			630000 620000 610000 600000 468000 400000 336000 255000>;
+
+		mif,int_ap2cp_msg = <0>;
+		mif,int_ap2cp_wakeup = <1>;
+		mif,int_ap2cp_status = <2>;
+		mif,int_ap2cp_active = <3>;
+
+		mif,irq_cp2ap_msg = <0>;
+		mif,irq_cp2ap_wakeup = <1>;
+		mif,irq_cp2ap_status = <2>;
+		mif,irq_cp2ap_perf_req = <3>;
+		mif,irq_cp2ap_active = <4>;
+		mif,irq_cp2ap_perf_req_cpu = <5>;
+		mif,irq_cp2ap_perf_req_mif = <6>;
+		mif,irq_cp2ap_perf_req_int = <7>;
+		mif,irq_cp2ap_wakelock = <8>;
+		mif,irq_cp2ap_pcie_l1ss_disable = <9>;
+
+		mbx_ap2cp_msg = <0>;
+		mbx_cp2ap_msg = <1>;
+		mbx_ap2cp_wakeup = <2>;
+		mbx_cp2ap_wakeup = <3>;
+		mbx_ap2cp_status = <4>;
+		mbx_cp2ap_status = <5>;
+		mbx_ap2cp_active = <6>;
+		mbx_cp2ap_dvfsreq = <7>;
+		mbx_cp2ap_wakelock = <8>;
+		mbx_cp2ap_active = <9>;
+		mbx_cp2ap_dvfsreq_cpu = <10>;
+		mbx_cp2ap_dvfsreq_mif = <11>;
+		mbx_cp2ap_dvfsreq_int = <12>;
+		mbx_ap2cp_mif_value = <13>;
+		mbx_ap2cp_sec = <14>;
+		mbx_ap2cp_usec = <15>;
+		mbx_cp2ap_pcie_l1ss_disable = <17>;
+		mbx_ap2cp_et_dac_cal = <32>;
+		mbx_ap2cp_info_value = <33>;
+		mbx_ap2cp_lock_value = <39>;
+
+		mif,name = "ss335ap";
+		mif,modem_net = <0>;		/* UMTS_NETWORK */
+		mif,modem_type = <10>;		/* SEC_SS310AP */
+		mif,use_handover = <0>;		/* not used */
+		mif,ipc_version = <50>;		/* SIPC 5.0 */
+		mif,link_types = <0x200>;	/* LINKDEV_SHMEM */
+		mif,link_name = "shmem";
+		mif,link_attrs = <0x7C9>;	/* XMIT_BTDLR(0x400) | DUMP_ALIGNED (0x200) | BOOT_ALIGNED (0x100) | MEM_DUMP (0x80) | MEM_BOOT (0x40) | DPRAM_MAGIC (0x08) | SBD_IPC (0x01) */
+		mif,num_iodevs = <20>;
+		iodevs {
+			io_device_0 {
+				iod,name = "umts_ipc0";
+				iod,id = <235>;
+				iod,format = <0>;		/* IPC_FMT */
+				iod,io_type = <0>;		/* IODEV_MISC */
+				iod,links = <0x200>;		/* LINKDEV_SHMEM */
+				iod,attrs = <0x82>;		/* ATTR_SBD_IPC | ATTR_SIPC5 */
+				iod,app = "RIL";
+				iod,ul_num_buffers = <16>;
+				iod,ul_buffer_size = <4096>;
+				iod,dl_num_buffers = <32>;
+				iod,dl_buffer_size = <4096>;
+			};
+			io_device_1 {
+				iod,name = "umts_ipc1";
+				iod,id = <236>;
+				iod,format = <0>;		/* IPC_FMT */
+				iod,io_type = <0>;		/* IODEV_MISC */
+				iod,links = <0x200>;		/* LINKDEV_SHMEM */
+				iod,attrs = <0x82>;		/* ATTR_SBD_IPC | ATTR_SIPC5 */
+				iod,app = "RIL";
+				iod,ul_num_buffers = <16>;
+				iod,ul_buffer_size = <4096>;
+				iod,dl_num_buffers = <32>;
+				iod,dl_buffer_size = <4096>;
+			};
+			io_device_2 {
+				iod,name = "umts_rfs0";
+				iod,id = <245>;
+				iod,format = <2>;		/* IPC_RFS */
+				iod,io_type = <0>;
+				iod,links = <0x200>;
+				iod,attrs = <0x82>;
+				iod,app = "RFS";
+				iod,ul_num_buffers = <16>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <512>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_3 {
+				iod,name = "umts_csd";
+				iod,id = <1>;
+				iod,format = <1>;
+				iod,io_type = <0>;
+				iod,links = <0x200>;
+				iod,attrs = <0x82>;
+				iod,app = "CSVT";
+				iod,ul_num_buffers = <32>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <64>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_4 {
+				iod,name = "umts_router";
+				iod,id = <25>;
+				iod,format = <1>;
+				iod,io_type = <0>;
+				iod,links = <0x200>;
+				iod,attrs = <0x82>;
+				iod,app = "Data Router";
+				iod,ul_num_buffers = <16>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <16>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_5 {
+				iod,name = "umts_dm0";
+				iod,id = <28>;
+				iod,format = <1>;
+				iod,io_type = <0>;
+				iod,links = <0x200>;
+				iod,attrs = <0x82>;
+				iod,app = "DIAG";
+				iod,ul_num_buffers = <16>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <128>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_6 {
+				iod,name = "rmnet0";
+				iod,id = <10>;
+				iod,format = <1>;
+				iod,io_type = <1>;		/* IODEV_NET */
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;		/* ATTR_SBD_IPC (0x80) | ATTR_NO_LINK_HDR(0x100) */
+				iod,app = "NET";
+				iod,ul_num_buffers = <0>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <0>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_7 {
+				iod,name = "rmnet1";
+				iod,id = <11>;
+				iod,format = <1>;
+				iod,io_type = <1>;
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul_num_buffers = <0>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <0>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_8 {
+				iod,name = "rmnet2";
+				iod,id = <12>;
+				iod,format = <1>;
+				iod,io_type = <1>;
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul_num_buffers = <0>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <0>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_9 {
+				iod,name = "rmnet3";
+				iod,id = <13>;
+				iod,format = <1>;
+				iod,io_type = <1>;
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul_num_buffers = <0>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <0>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_10 {
+				iod,name = "rmnet4";
+				iod,id = <14>;
+				iod,format = <1>;
+				iod,io_type = <1>;
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;	/* ATTR_NO_LINK_HDR(0x100) | ATTR_SBD_IPC (0x80) */
+				iod,ul_num_buffers = <0>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <0>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_11 {
+				iod,name = "rmnet5";
+				iod,id = <15>;
+				iod,format = <1>;
+				iod,io_type = <1>;
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;
+				iod,ul_num_buffers = <0>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <0>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_12 {
+				iod,name = "rmnet6";
+				iod,id = <16>;
+				iod,format = <1>;
+				iod,io_type = <1>;
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;
+				iod,ul_num_buffers = <0>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <0>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_13 {
+				iod,name = "rmnet7";
+				iod,id = <17>;
+				iod,format = <1>;
+				iod,io_type = <1>;
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;
+				iod,ul_num_buffers = <0>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <0>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_14 {
+				iod,name = "multipdp_hiprio";
+				iod,id = <0>;
+				iod,format = <3>;		/* IPC_MULTI_RAW */
+				iod,io_type = <2>;		/* IODEV_DUMMY */
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;
+				iod,app = "RIL";
+				iod,ul_num_buffers = <256>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <256>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_15 {
+				iod,name = "multipdp";
+				iod,id = <0>;
+				iod,format = <3>;		/* IPC_MULTI_RAW */
+				iod,io_type = <2>;		/* IODEV_DUMMY */
+				iod,links = <0x200>;
+				iod,attrs = <0x180>;
+				iod,app = "RIL";
+				iod,ul_num_buffers = <512>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <1024>;
+				iod,dl_buffer_size = <2048>;
+			};
+			io_device_16 {
+				iod,name = "umts_boot0";
+				iod,id = <215>;
+				iod,format = <4>;		/* IPC_BOOT */
+				iod,io_type = <0>;
+				iod,links = <0x200>;
+				iod,attrs = <0x02>;
+				iod,app = "CBD";
+			};
+			io_device_17 {
+				iod,name = "umts_ramdump0";
+				iod,id = <225>;
+				iod,format = <5>;		/* IPC_DUMP */
+				iod,io_type = <0>;
+				iod,links = <0x200>;
+				iod,attrs = <0x202>;		/* ATTR_NO_CHECK_MAXQ | ATTR_SIPC5 */
+				iod,app = "CBD";
+			};
+			io_device_18 {
+				iod,name = "smd4";
+				iod,id = <33>;
+				iod,format = <1>;
+				iod,io_type = <0>;
+				iod,links = <0x200>;
+				iod,attrs = <0x882>;
+				iod,ul_num_buffers = <16>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <128>;
+				iod,dl_buffer_size = <2048>;
+				iod,option_region = "kor_skt";
+			};
+			io_device_19 {
+				iod,name = "umts_ciq0";
+				iod,id = <26>;
+				iod,format = <1>;
+				iod,io_type = <0>;
+				iod,links = <0x200>;
+				iod,attrs = <0x882>;
+				iod,ul_num_buffers = <16>;
+				iod,ul_buffer_size = <2048>;
+				iod,dl_num_buffers = <128>;
+				iod,dl_buffer_size = <2048>;
+				iod,option_region = "usa_att";
+			};
+		}; /* end of iodevs */
+	}; /* end of mif_pdata */
+
+	shmem: shmem {
+		compatible = "samsung,exynos8890-shm_ipc";
+
+		memory-region = <&modem_reserved>;
+
+		shmem,ipc_offset = <0x8000000>;
+		shmem,ipc_size = <0x800000>;
+	};
 };
