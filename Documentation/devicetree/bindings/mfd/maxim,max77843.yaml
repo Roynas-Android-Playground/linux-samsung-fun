@@ -38,6 +38,9 @@ properties:
   fuel-gauge:
     $ref: /schemas/power/supply/maxim,max77854-fuel-gauge.yaml
 
+  leds:
+    $ref: /schemas/leds/maxim,max77854.yaml
+
   motor-driver:
     type: object
     additionalProperties: false

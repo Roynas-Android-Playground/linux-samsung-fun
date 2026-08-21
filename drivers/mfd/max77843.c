@@ -53,6 +53,9 @@ static const struct mfd_cell max77854_devs[] = {
 		.name = "max77854-fuel-gauge",
 		.of_compatible = "maxim,max77854-fuel-gauge",
 	}, {
+		.name = "max77854-led",
+		.of_compatible = "maxim,max77854-led",
+	}, {
 		.name = "max77843-haptic",
 		.of_compatible = "maxim,max77843-haptic",
 	},

@@ -801,6 +801,16 @@ config LEDS_MAX77705
 	help
 	  LED driver for MAX77705 PMIC from Maxim Integrated.
 
+config LEDS_MAX77854
+	tristate "LED support for MAX77854 PMIC"
+	depends on LEDS_CLASS
+	depends on MFD_MAX77843
+	help
+	  This option enables conservative steady-brightness control of the
+	  red, green and blue notification LEDs driven by a MAX77854 PMIC.
+	  Brightness is limited to the PMIC's low raw current codes. Hardware
+	  blinking, ramps and the service output are not exposed.
+
 config LEDS_S2MPB02
 	bool "LED support for the S2MPB02"
 	depends on LEDS_CLASS
