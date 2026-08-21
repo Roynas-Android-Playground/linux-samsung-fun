@@ -220,6 +220,8 @@ static int max77843_probe(struct i2c_client *i2c)
 		dev_err(&i2c->dev, "Failed to configure interrupt sources\n");
 		goto err_pmic_id;
 	}
+	max77843->dev->coherent_dma_mask = 0;
+	max77843->dev->dma_mask = &max77843->dev->coherent_dma_mask;
 
 	ret = mfd_add_devices(max77843->dev, -1, cells, cells_size,
 			      NULL, 0, NULL);

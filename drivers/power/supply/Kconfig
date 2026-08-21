@@ -469,6 +469,14 @@ config BATTERY_MAX77854
 	  current sensing, temperature compensation and fuel alerts are not
 	  enabled.
 
+config CHARGER_P9220_ENUM
+	tristate "IDT P9220 wireless receiver enumeration"
+	depends on I2C && GPIOLIB
+	help
+	  Register the fitted IDT P9220 receiver as a read-only wireless power
+	  supply using its pad-detect GPIO. This intentionally performs no I2C
+	  register access, firmware update or charging policy.
+
 config BATTERY_MAX1720X
 	tristate "Maxim MAX17201/MAX17205 Fuel Gauge"
 	depends on I2C

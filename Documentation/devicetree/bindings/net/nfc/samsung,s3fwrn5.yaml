@@ -29,6 +29,15 @@ properties:
   clocks:
     maxItems: 1
 
+  clk-req-gpios:
+    maxItems: 1
+    description: Active-high controller request for the external reference clock.
+
+  vdd-supply:
+    description: Regulator supplying the NFC controller I/O and core rail.
+
+  wakeup-source: true
+
   wake-gpios:
     maxItems: 1
     description:

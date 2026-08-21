@@ -38,11 +38,10 @@
 #endif /* CONFIG_OF */
 
 static struct mfd_cell s2mpb02_devs[] = {
-#ifdef CONFIG_LEDS_S2MPB02
 	{
 		.name = "s2mpb02-led",
+		.of_compatible = "samsung,s2mpb02-torch",
 	},
-#endif /* CONFIG_LEDS_S2MPB02 */
 	{
 		.name = "s2mpb02-regulator",
 	},
@@ -235,6 +234,8 @@ static int s2mpb02_i2c_probe(struct i2c_client *i2c)
 	if (ret < 0)
 		goto err_irq_descs;
 	irq_initialized = s2mpb02->irq > 0;
+	s2mpb02->dev->coherent_dma_mask = 0;
+	s2mpb02->dev->dma_mask = &s2mpb02->dev->coherent_dma_mask;
 
 	ret = mfd_add_devices(s2mpb02->dev, -1, s2mpb02_devs,
 			      ARRAY_SIZE(s2mpb02_devs), NULL, 0, NULL);

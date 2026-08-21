@@ -26,6 +26,9 @@ properties:
 
   wakeup-source: true
 
+  torch:
+    $ref: /schemas/leds/samsung,s2mpb02-torch.yaml#
+
   regulators:
     type: object
     additionalProperties: false

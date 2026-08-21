@@ -812,16 +812,12 @@ config LEDS_MAX77854
 	  blinking, ramps and the service output are not exposed.
 
 config LEDS_S2MPB02
-	bool "LED support for the S2MPB02"
-	depends on LEDS_CLASS
+	tristate "Conservative torch support for the S2MPB02"
+	depends on LEDS_CLASS && MFD_S2MPB02
 	help
-	  This option enables support for the LEDs on the S2MPB02.
-
-config LEDS_S2MPB02_MULTI_TORCH_REAR2
-	bool "LED support for second multi flash"
-	help
-	  If you say yes here you will get support for
-	  for second multi flash.
+	  Expose the primary S2MPB02 output as a low-current torch LED. Flash
+	  strobe mode, the secondary output and vendor camera sysfs controls are
+	  deliberately not implemented.
 
 config LEDS_MAX8997
 	tristate "LED support for MAX8997 PMIC"

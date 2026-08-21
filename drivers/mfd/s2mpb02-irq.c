@@ -145,8 +145,7 @@ int s2mpb02_irq_init(struct s2mpb02_dev *s2mpb02)
 	int ret;
 
 	if (s2mpb02->irq <= 0) {
-		pr_warn("%s:%s No interrupt specified.\n",
-					MFD_DEV_NAME, __func__);
+		dev_info(s2mpb02->dev, "no interrupt specified\n");
 		s2mpb02->irq_base = -1;
 		return 0;
 	}
