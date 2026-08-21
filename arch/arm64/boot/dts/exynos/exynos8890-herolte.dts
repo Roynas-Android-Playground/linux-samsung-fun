@@ -381,6 +381,10 @@
 	status = "okay";
 };
 
+&exynos8890_cpuidle_test {
+	status = "okay";
+};
+
 &hsi2c_7 {
 	status = "okay";
 
