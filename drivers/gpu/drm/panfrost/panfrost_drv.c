@@ -7,6 +7,7 @@
 #include <asm/arch_timer.h>
 #endif
 
+#include <linux/devfreq.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/pagemap.h>
@@ -1078,6 +1079,14 @@ static const struct panfrost_compatible default_data = {
 	.pm_domain_names = NULL,
 };
 
+static const struct panfrost_compatible exynos8890_data = {
+	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
+	.supply_names = default_supplies,
+	.num_pm_domains = 1,
+	.devfreq_governor = DEVFREQ_GOV_USERSPACE,
+	.devfreq_require_exact_opp = true,
+};
+
 static const struct panfrost_compatible default_pm_rt_data = {
 	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
 	.supply_names = default_supplies,
@@ -1154,6 +1163,7 @@ static const struct panfrost_compatible mediatek_mt8370_data = {
 
 static const struct of_device_id dt_match[] = {
 	/* Set first to probe before the generic compatibles */
+	{ .compatible = "samsung,exynos8890-mali", .data = &exynos8890_data },
 	{ .compatible = "amlogic,meson-gxm-mali",
 	  .data = &amlogic_data, },
 	{ .compatible = "amlogic,meson-g12a-mali",
@@ -1197,4 +1207,4 @@ module_platform_driver(panfrost_driver);
 MODULE_AUTHOR("Panfrost Project Developers");
 MODULE_DESCRIPTION("Panfrost DRM Driver");
 MODULE_LICENSE("GPL v2");
-MODULE_SOFTDEP("pre: governor_simpleondemand");
+MODULE_SOFTDEP("pre: governor_simpleondemand governor_userspace");

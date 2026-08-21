@@ -193,6 +193,20 @@
 		regulator-min-microvolt = <2800000>;
 		regulator-name = "vdd_fixed_mmc";
 	};
+
+	gpu_opp_table: opp-table-gpu {
+		compatible = "operating-points-v2";
+
+		opp-227500000 {
+			opp-hz = /bits/ 64 <227500000>;
+			opp-microvolt = <1000000>;
+		};
+
+		opp-455000000 {
+			opp-hz = /bits/ 64 <455000000>;
+			opp-microvolt = <1000000>;
+		};
+	};
 };
 
 &tmuctrl_0 {
@@ -233,6 +247,7 @@
 	assigned-clock-rates = <455000000>;
 
 	mali-supply = <&s2mps16_buck6>;
+	operating-points-v2 = <&gpu_opp_table>;
 
 	status = "okay";
 };

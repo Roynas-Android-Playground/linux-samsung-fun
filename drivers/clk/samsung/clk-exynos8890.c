@@ -6732,7 +6732,7 @@ static const struct samsung_div_clock g3d_div_clks[] __initconst = {
 
 static const struct samsung_gate_clock g3d_gate_clks[] __initconst = {
 	GATE(CLK_GOUT_G3D_ACLK_G3D, "gout_g3d_aclk_g3d", "dout_g3d_aclk_g3d",
-	     CLK_ENABLE_ACLK_G3D, 0, 0, 0),
+	     CLK_ENABLE_ACLK_G3D, 0, CLK_SET_RATE_PARENT, 0),
 	GATE(CLK_GOUT_G3D_ACLK_GRAY_DEC, "gout_g3d_aclk_gray_dec",
 	     "dout_g3d_aclk_g3d", CLK_ENABLE_ACLK_G3D_BUS, 10,
 	     CLK_IGNORE_UNUSED, 0),
