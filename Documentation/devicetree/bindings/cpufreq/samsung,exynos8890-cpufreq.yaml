@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/cpufreq/samsung,exynos8890-cpufreq.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 dual-cluster CPU frequency scaling
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Exynos8890 CPU frequency transitions coordinate Apollo and Mongoose PLLs,
+  BUS-PLL switch paths, characterized ECT divider rows, S2MPS16 voltage rails,
+  CPU EMA controls and MIF minimum-frequency constraints. The driver refuses
+  to operate while the APM Cortex-M3 still owns closed-loop DVFS.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-cpufreq
+
+  clocks:
+    minItems: 14
+    maxItems: 46
+
+  clock-names:
+    minItems: 14
+    maxItems: 46
+    items:
+      - const: apollo-pll
+      - const: apollo-pll-user
+      - const: apollo-bus-user
+      - const: apollo-mux
+      - const: apollo-root
+      - const: apollo-switch-div
+      - const: apollo-switch-gate
+      - const: mongoose-pll
+      - const: mongoose-pll-user
+      - const: mongoose-bus-user
+      - const: mongoose-mux
+      - const: mongoose-root
+      - const: mongoose-switch-div
+      - const: mongoose-switch-gate
+    additionalItems: true
+
+  apollo-supply: true
+  mongoose-supply: true
+
+  samsung,apollo-sysreg:
+    description: Phandle to the Apollo cluster system-register syscon.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,mongoose-sysreg:
+    description: Phandle to the Mongoose cluster system-register syscon.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,pmu:
+    description: Phandle to the Exynos PMU syscon used to verify APM ownership.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,apm:
+    description: Phandle to the APM ownership provider kept in direct-PMIC mode.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,mif-devfreq:
+    description: Phandle to the MIF devfreq provider receiving CPU floor votes.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+required:
+  - compatible
+  - clocks
+  - clock-names
+  - apollo-supply
+  - mongoose-supply
+  - samsung,apollo-sysreg
+  - samsung,mongoose-sysreg
+  - samsung,pmu
+  - samsung,apm
+  - samsung,mif-devfreq
+
+additionalProperties: false
