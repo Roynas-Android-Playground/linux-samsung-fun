@@ -5,6 +5,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/firmware.h>
 #include <linux/pci.h>
 #include <linux/vmalloc.h>
@@ -347,6 +348,7 @@ struct brcmf_pciedev_info {
 	wait_queue_head_t mbdata_resp_wait;
 	bool mbdata_completed;
 	bool irq_allocated;
+	bool msi_enabled;
 	bool wowl_enabled;
 	u8 dma_idx_sz;
 	void *idxbuf;
@@ -969,16 +971,35 @@ static int brcmf_pcie_request_irq(struct brcmf_pciedev_info *devinfo)
 {
 	struct pci_dev *pdev = devinfo->pdev;
 	struct brcmf_bus *bus = dev_get_drvdata(&pdev->dev);
+	struct device *dev;
+	bool use_msi = true;
 
 	brcmf_pcie_intr_disable(devinfo);
 
 	brcmf_dbg(PCIE, "Enter\n");
 
-	pci_enable_msi(pdev);
+	if (pdev->device == BRCM_PCIE_43596_DEVICE_ID) {
+		for (dev = &pdev->dev; dev; dev = dev->parent) {
+			if (dev->of_node && of_device_is_compatible(dev->of_node,
+								 "samsung,exynos8890-pcie")) {
+				use_msi = false;
+				break;
+			}
+		}
+	}
+
+	if (use_msi && !pci_enable_msi(pdev))
+		devinfo->msi_enabled = true;
+	else if (!use_msi)
+		brcmf_info("using legacy INTx on Exynos8890\n");
+
 	if (request_threaded_irq(pdev->irq, brcmf_pcie_quick_check_isr,
 				 brcmf_pcie_isr_thread, IRQF_SHARED,
 				 "brcmf_pcie_intr", devinfo)) {
-		pci_disable_msi(pdev);
+		if (devinfo->msi_enabled) {
+			pci_disable_msi(pdev);
+			devinfo->msi_enabled = false;
+		}
 		brcmf_err(bus, "Failed to request IRQ %d\n", pdev->irq);
 		return -EIO;
 	}
@@ -999,7 +1020,10 @@ static void brcmf_pcie_release_irq(struct brcmf_pciedev_info *devinfo)
 
 	brcmf_pcie_intr_disable(devinfo);
 	free_irq(pdev->irq, devinfo);
-	pci_disable_msi(pdev);
+	if (devinfo->msi_enabled) {
+		pci_disable_msi(pdev);
+		devinfo->msi_enabled = false;
+	}
 
 	msleep(50);
 	count = 0;
@@ -2251,6 +2275,13 @@ brcmf_pcie_prepare_fw_request(struct brcmf_pciedev_info *devinfo)
 				       fwnames, ARRAY_SIZE(fwnames));
 	if (!fwreq)
 		return NULL;
+
+	/* Herolte uses the common BCM4359 NVRAM with the BCM4359C firmware. */
+	if (devinfo->ci->chip == BRCM_CC_4359_CHIP_ID &&
+	    of_machine_is_compatible("samsung,herolte"))
+		strscpy(devinfo->nvram_name,
+			BRCMF_FW_DEFAULT_PATH "brcmfmac4359-pcie.txt",
+			sizeof(devinfo->nvram_name));
 
 	fwreq->items[BRCMF_PCIE_FW_CODE].type = BRCMF_FW_TYPE_BINARY;
 	fwreq->items[BRCMF_PCIE_FW_NVRAM].type = BRCMF_FW_TYPE_NVRAM;
