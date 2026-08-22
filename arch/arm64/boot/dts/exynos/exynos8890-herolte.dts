@@ -13,7 +13,6 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
-#include <dt-bindings/sound/madera.h>
 #include <dt-bindings/thermal/thermal.h>
 
 / {
@@ -1115,7 +1114,7 @@
 		status = "okay";
 
 		audio_codec: codec@0 {
-			compatible = "cirrus,cs47l91";
+			compatible = "samsung,herolte-cs47l91";
 			reg = <0>;
 			spi-max-frequency = <25000000>;
 
@@ -1126,42 +1125,21 @@
 
 			gpio-controller;
 			#gpio-cells = <2>;
-			#sound-dai-cells = <1>;
 
-			/* Madera drives this legacy /RESET descriptor with raw values. */
-			reset-gpios = <&gpe6 5 GPIO_ACTIVE_HIGH>;
+			wlf,reset = <&gpe6 5 GPIO_ACTIVE_HIGH>;
 
 			AVDD-supply = <&s2mps16_ldo30>;
+			DCVDD-supply = <&s2mps16_ldo31>;
 			DBVDD1-supply = <&s2mps16_ldo30>;
 			DBVDD2-supply = <&s2mps16_ldo30>;
 			DBVDD3-supply = <&s2mps16_ldo30>;
 			DBVDD4-supply = <&s2mps16_ldo30>;
-			CPVDD1-supply = <&s2mps16_ldo30>;
-			CPVDD2-supply = <&s2mps16_ldo30>;
-			DCVDD-supply = <&s2mps16_ldo31>;
+			CPVDD-supply = <&s2mps16_ldo30>;
+			SPKVDDL-supply = <&s2mps16_ldo30>;
+			SPKVDDR-supply = <&s2mps16_ldo30>;
 
 			clocks = <&s2mps16_osc S2MPS11_CLK_AP>;
 			clock-names = "mclk2";
-
-			cirrus,dmic-ref = <MADERA_DMIC_REF_MICBIAS2
-					    MADERA_DMIC_REF_MICBIAS1>;
-			cirrus,max-channels-clocked = <2 0 0 0>;
-			cirrus,out-mono = <0 1 1>;
-
-			pinctrl-0 = <&audio_codec_pins>;
-			pinctrl-names = "default";
-
-			audio_codec_pins: pin-settings {
-				aif1-pins {
-					groups = "aif1";
-					function = "aif1";
-				};
-
-				aif4-pins {
-					groups = "aif4";
-					function = "aif4";
-				};
-			};
 		};
 	};
 };
@@ -1173,34 +1151,6 @@
 		compatible = "maxim,max98506";
 		reg = <0x31>;
 		#sound-dai-cells = <0>;
-	};
-};
-
-/ {
-	sound {
-		compatible = "samsung,herolte-audio";
-		model = "Samsung Galaxy S7";
-
-		audio-codec = <&audio_codec>;
-		speaker-codec = <&speaker_amp>;
-		i2s-controller = <&i2s0 0>;
-		status = "okay";
-
-		audio-routing =
-			"HP", "HPOUT1L",
-			"HP", "HPOUT1R",
-			"RCV", "HPOUT3L",
-			"RCV", "HPOUT3R",
-			"SPK", "SPKOUT",
-			"Main Mic", "MICBIAS2A",
-			"IN1ARN", "Main Mic",
-			"IN1ARP", "Main Mic",
-			"Headset Mic", "MICBIAS1A",
-			"IN2BLN", "Headset Mic",
-			"IN2BLP", "Headset Mic",
-			"Sub Mic", "MICBIAS2B",
-			"DMICCLK3", "Sub Mic",
-			"DMICDAT3", "Sub Mic";
 	};
 };
 
