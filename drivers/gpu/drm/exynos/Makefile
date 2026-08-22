@@ -10,6 +10,7 @@ exynosdrm-$(CONFIG_DRM_FBDEV_EMULATION) += exynos_drm_fbdev.o
 exynosdrm-$(CONFIG_DRM_EXYNOS_FIMD)	+= exynos_drm_fimd.o
 exynosdrm-$(CONFIG_DRM_EXYNOS5433_DECON)	+= exynos5433_drm_decon.o
 exynosdrm-$(CONFIG_DRM_EXYNOS7_DECON)	+= exynos7_drm_decon.o
+obj-$(CONFIG_DRM_EXYNOS8890_DECON) += exynos8890_drm_decon.o
 obj-$(CONFIG_DRM_EXYNOS8890_DECON_OBSERVER) += exynos8890-decon-observer.o
 obj-$(CONFIG_DRM_EXYNOS8890_DSIM_OBSERVER) += exynos8890-dsim-observer.o
 obj-$(CONFIG_DRM_EXYNOS8890_VPP_OBSERVER) += exynos8890-vpp-observer.o
