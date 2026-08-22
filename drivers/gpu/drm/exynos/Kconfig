@@ -36,6 +36,16 @@ config DRM_EXYNOS7_DECON
 	help
 	  Choose this option if you want to use Exynos DECON for DRM.
 
+config DRM_EXYNOS8890_DECON
+	bool "Minimal Exynos8890 inherited DECON/G1 takeover"
+	depends on ARM64
+	select DRM_GEM_DMA_HELPER
+	help
+	  Build the fixed-mode Exynos8890 DECON-F and IDMA_G1 takeover driver.
+	  Probe only validates the exact bootloader state. Hardware ownership starts
+	  on the first explicit atomic commit; DECON, MIC, DSIM and panel state are
+	  preserved and no fbdev client is created.
+
 config DRM_EXYNOS8890_DECON_OBSERVER
 	tristate "Read-only Exynos8890 DECON observer"
 	help

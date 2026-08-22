@@ -36,6 +36,7 @@
 		framebuffer@e2a00000 {
 			compatible = "simple-framebuffer";
 			reg = <0x0 0xe2a00000 (1440 * 2560 * 4)>;
+			display = <&decon_f>;
 
 			width = <1440>;
 			height = <2560>;
@@ -354,6 +355,8 @@
 };
 
 &decon_f {
+	vci-supply = <&max77838_ldo1>;
+	vdd3-supply = <&max77838_ldo3>;
 	status = "okay";
 };
 
@@ -362,7 +365,7 @@
 };
 
 &vpp_g1_observer {
-	status = "okay";
+	status = "disabled";
 };
 
 &sysmmu_disp01_observer {

@@ -1062,8 +1062,11 @@
 		};
 
 		decon_f: display-controller@13960000 {
-			compatible = "samsung,exynos8890-decon";
-			reg = <0x13960000 0x10000>;
+			compatible = "samsung,exynos8890-decon-g1-takeover";
+			reg = <0x13960000 0x10000>,
+			      <0x13952000 0x1000>,
+			      <0x13a10000 0x1000>;
+			reg-names = "decon", "vpp-g1", "sysmmu-disp01";
 			status = "disabled";
 		};
 

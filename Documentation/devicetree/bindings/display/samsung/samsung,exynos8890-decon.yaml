@@ -4,34 +4,58 @@
 $id: http://devicetree.org/schemas/display/samsung/samsung,exynos8890-decon.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Samsung Exynos8890 Display and Enhancement Controller
+title: Samsung Exynos8890 inherited DECON-F and IDMA_G1 takeover
 
 maintainers:
   - Inki Dae <inki.dae@samsung.com>
   - Seung-Woo Kim <sw0312.kim@samsung.com>
 
 description: |
-  DECON is the Exynos8890 display controller. Initial mainline support only
-  observes the bootloader-configured controller state and does not yet take
-  ownership of clocks, power domains, interrupts, IOMMUs, VPP channels, DSIM,
-  PHY or panel hardware.
+  A deliberately fixed-function DRM driver for an exact bootloader-inherited
+  Exynos8890 command-mode display pipeline. The first region is DECON-F, the
+  second is IDMA_G1/VPP1, and the third is the DISP01 System MMU. Probe only
+  reads and validates these regions. Hardware programming is deferred until an
+  explicit atomic commit and preserves the inherited MIC, DSIM, PHY and panel.
 
 properties:
   compatible:
-    const: samsung,exynos8890-decon
+    const: samsung,exynos8890-decon-g1-takeover
 
   reg:
-    maxItems: 1
+    items:
+      - description: DECON-F registers
+      - description: IDMA_G1/VPP1 registers
+      - description: DISP01 System MMU registers, read-only for physical-mode validation
+
+  reg-names:
+    items:
+      - const: decon
+      - const: vpp-g1
+      - const: sysmmu-disp01
+
+  vci-supply:
+    description: Panel analog supply retained across simplefb handoff
+
+  vdd3-supply:
+    description: Panel interface supply retained across simplefb handoff
 
 required:
   - compatible
   - reg
+  - reg-names
+  - vci-supply
+  - vdd3-supply
 
 additionalProperties: false
 
 examples:
   - |
     display-controller@13960000 {
-        compatible = "samsung,exynos8890-decon";
-        reg = <0x13960000 0x10000>;
+        compatible = "samsung,exynos8890-decon-g1-takeover";
+        reg = <0x13960000 0x10000>,
+              <0x13952000 0x1000>,
+              <0x13a10000 0x1000>;
+        reg-names = "decon", "vpp-g1", "sysmmu-disp01";
+        vci-supply = <&vci_reg>;
+        vdd3-supply = <&vdd3_reg>;
     };
