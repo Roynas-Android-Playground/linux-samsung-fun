@@ -67,6 +67,13 @@
 					 TL_FLAG_IGNORE_SEQID)
 
 #define BCM4773_RPC_SENSOR_RESPONSE	0x21
+#define BCM4773_RPC_GET_VERSION_REQ	0x00
+#define BCM4773_RPC_SLEEP_CYCLES_REQ	0x02
+
+/* TransportLayer sequence window — [VENDOR] bbd_rpc_lh.c */
+#define TL_MAX_INCOMING_SEQS		150
+#define TL_RELIABLE_RETRY_MS		1000
+#define TL_RELIABLE_MAX_RETRY		10
 
 /* Parser states */
 #define TL_STATE_WAIT_ESC_SOP		0
@@ -79,9 +86,19 @@ struct tl_parser {
 	unsigned int state;
 	unsigned int rx_len;
 	u8 last_rx_seqid;
+
+	/* Sequence tracking — [VENDOR] transport_layer_c.c */
 	u32 valid_frames;
 	u32 malformed_frames;
+	u16 packets_received;
+	u16 remote_packet_lost;
+	u16 local_packet_lost;
+	u16 remote_garbage_detected;
+	u8 expected_seqid;
+
+	/* Statistics — [VENDOR] bbd_rpc_lh.c */
 	u32 sensor_responses;
+
 	u8 rx_buf[TL_MAX_INCOMING + TL_MAX_HEADER_SIZE];
 };
 
@@ -161,6 +178,7 @@ static void tl_parser_init(struct tl_parser *tl)
 	memset(tl, 0, sizeof(*tl));
 	tl->state = TL_STATE_WAIT_ESC_SOP;
 	tl->last_rx_seqid = 0xFF;
+	tl->expected_seqid = 0x01; /* start expecting seqId=1 */
 }
 
 /*
@@ -231,6 +249,7 @@ static bool tl_handle_frame(struct device *dev, struct tl_parser *tl)
 	unsigned int len;
 	u16 flags;
 	u16 payload_len;
+	u8 seqid;
 	unsigned int bit;
 	u8 crc = 0;
 
@@ -244,9 +263,9 @@ static bool tl_handle_frame(struct device *dev, struct tl_parser *tl)
 		return false;
 	}
 
-	data = tl->rx_buf;
-	len = tl->rx_len - 1;
-	data++;
+	seqid = tl->rx_buf[0];
+	data = &tl->rx_buf[1];
+	len = tl->rx_len - 2; /* exclude CRC byte */
 	payload_len = *data++;
 	flags = *data++;
 	len -= 3;
@@ -267,13 +286,64 @@ static bool tl_handle_frame(struct device *dev, struct tl_parser *tl)
 			flags |= (u16)detail << 8;
 	}
 
+	if (!(flags & TL_FLAG_IGNORE_SEQID)) {
+		u8 expected = tl->expected_seqid;
+		u32 gap = (seqid - expected) & 0xFF;
+
+		if (gap > 0 && !(flags & TL_FLAG_INTERNAL_PACKET)) {
+			tl->local_packet_lost += gap;
+			tl->remote_packet_lost += gap;
+		}
+	}
+
+	if (!(flags & TL_FLAG_MSG_GARBAGE))
+		tl->packets_received++;
+
+	if (flags & TL_FLAG_PACKET_ACK && !(flags & TL_FLAG_RELIABLE_PACKET)) {
+		u8 ack_seqid;
+		ack_seqid = *(data - 1); /* detail already consumed */
+		tl->last_rx_seqid = ack_seqid;
+	}
+
+	for (bit = 0; bit < 16; bit++) {
+		u16 flag = BIT(bit);
+		if (!(flags & flag))
+			continue;
+		switch (flag) {
+		case TL_FLAG_PACKET_ACK:
+			break;
+		case TL_FLAG_RELIABLE_PACKET:
+			tl->last_rx_seqid = data[-1];
+			break;
+		case TL_FLAG_RELIABLE_ACK:
+			tl->last_rx_seqid = data[-1];
+			break;
+		case TL_FLAG_RELIABLE_NACK:
+			tl->local_packet_lost++;
+			break;
+		default:
+			break;
+		}
+	}
+
 	if (payload_len != len)
 		return false;
-	if (!(flags & TL_FLAG_INTERNAL_PACKET) &&
-	    !tl_parse_rpc_payload(tl, data, len))
-		return false;
 
-	tl->last_rx_seqid = tl->rx_buf[0];
+	if (!(flags & TL_FLAG_INTERNAL_PACKET)) {
+		data = (const u8 *)((u16 *)data - 2);
+		for (bit = 0; bit < 16; bit++) {
+			u16 flag = BIT(bit);
+			if ((flags & flag) && flag != TL_FLAG_SIZE_EXTENDED &&
+			    flag != TL_FLAG_EXTENDED) {
+				data++;
+			}
+		}
+		if (!tl_parse_rpc_payload(tl, data, len))
+			return false;
+	}
+
+	tl->last_rx_seqid = seqid;
+	tl->expected_seqid = (seqid + 1) & 0xFF;
 	tl->valid_frames++;
 	return true;
 }
