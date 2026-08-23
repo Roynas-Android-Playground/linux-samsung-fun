@@ -17,15 +17,17 @@ config GNSS_SERIAL
 	tristate
 
 config GNSS_BCM4773
-	tristate "Broadcom BCM4773 GNSS receiver support"
+	tristate "Broadcom BCM4773 GNSS/SSP SPI transport"
 	depends on SPI
 	help
-	  Say Y here if you have a Broadcom BCM4773 GNSS/sensor-hub device
-	  connected over Broadcom's SSI protocol on an SPI bus.
+	  Say Y here if you have a Broadcom BCM4773 connected over Broadcom's SSI
+	  protocol on an SPI bus.
 
-	  The initial driver exposes the raw BBD transport stream through the
-	  Linux GNSS core. Sensor RPC demultiplexing and firmware patch loading
-	  are handled separately.
+	  The BCM4773 multiplexes GNSS and Samsung Sensor Platform traffic. The
+	  driver owns the shared SPI/SSI transport and exposes the stock raw BBD
+	  stream through the Linux GNSS core for the existing lhd userspace stack.
+	  It also validates Broadcom TransportLayer frame boundaries and CRCs;
+	  in-kernel RPC, firmware download, and SSP/IIO children are added separately.
 
 	  To compile this driver as a module, choose M here: the module will
 	  be called bcm4773.
