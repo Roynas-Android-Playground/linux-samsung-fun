@@ -265,10 +265,10 @@ static bool tl_handle_frame(struct device *dev, struct tl_parser *tl)
 
 	seqid = tl->rx_buf[0];
 	data = &tl->rx_buf[1];
-	len = tl->rx_len - 2; /* exclude CRC byte */
+	len = tl->rx_len - 2; /* exclude SeqId and CRC bytes */
 	payload_len = *data++;
 	flags = *data++;
-	len -= 3;
+	len -= 2; /* payload_len and flags bytes just consumed */
 
 	for (bit = 0; bit < 16; bit++) {
 		u16 flag = BIT(bit);
