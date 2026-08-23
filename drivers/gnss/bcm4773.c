@@ -16,7 +16,9 @@
  */
 
 #include <linux/delay.h>
+#include <linux/device.h>
 #include <linux/gnss.h>
+#include <linux/gnss/bcm4773.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -66,9 +68,28 @@
 					 TL_FLAG_INTERNAL_PACKET | \
 					 TL_FLAG_IGNORE_SEQID)
 
+/*
+ * RPC ids — [VENDOR] bbdpl/bbd_rpc_lh.c RPC_DEFINITION enum. IRpcSensorRequest
+ * (AP->MCU) and IRpcSensorResponse (MCU->AP) are distinct, adjacent ids, not
+ * one id used both ways.
+ */
+#define BCM4773_RPC_SENSOR_REQUEST	0x20
 #define BCM4773_RPC_SENSOR_RESPONSE	0x21
 #define BCM4773_RPC_GET_VERSION_REQ	0x00
 #define BCM4773_RPC_SLEEP_CYCLES_REQ	0x02
+
+/*
+ * TransportLayer TX limits. The payload cap is a deliberately small bound
+ * for the diagnostic/handshake traffic phase 1 sends (see
+ * Documentation/driver-api/iio/exynos8890-sensorhub.rst); it keeps the
+ * worst-case escaped frame well under BCM4773_MAX_PAYLOAD so a single SSI
+ * transaction always suffices and bcm4773_ssi_write() never needs to loop.
+ */
+#define TL_MAX_TX_PAYLOAD		64
+#define TL_MAX_TX_BODY			(1 /* SeqId */ + 1 /* PayloadSize */ + \
+					 1 /* Flags */ + 10 /* flag detail bytes */ + \
+					 TL_MAX_TX_PAYLOAD + 1 /* CRC */)
+#define TL_MAX_TX_FRAME			(2 * TL_MAX_TX_BODY + 4)
 
 /* TransportLayer sequence window — [VENDOR] bbd_rpc_lh.c */
 #define TL_MAX_INCOMING_SEQS		150
@@ -86,6 +107,7 @@ struct tl_parser {
 	unsigned int state;
 	unsigned int rx_len;
 	u8 last_rx_seqid;
+	u8 tx_seqid; /* our own outgoing seqId counter, wraps at u8 */
 
 	/* Sequence tracking — [VENDOR] transport_layer_c.c */
 	u32 valid_frames;
@@ -114,6 +136,9 @@ struct tl_parser {
  * @gdev: Linux GNSS core device handle for GNSS function
  * @parser: TransportLayer framing/escaping/CRC parser state machine
  * @io_lock: serializes drain, TX, and probe/remove operations
+ * @sensor_ops: registered consumer callbacks for IRpcSensorResponse_Data
+ *		RPC records, or NULL if no consumer has attached
+ * @sensor_priv: opaque context passed back to @sensor_ops->recv()
  */
 struct bcm4773 {
 	struct spi_device	*spi;
@@ -130,6 +155,9 @@ struct bcm4773 {
 	struct tl_parser	parser; /* TransportLayer parser — shared by both functions */
 
 	struct mutex		io_lock; /* serializes SPI access */
+
+	const struct bcm4773_sensor_ops *sensor_ops;
+	void			*sensor_priv;
 };
 
 /*
@@ -179,6 +207,7 @@ static void tl_parser_init(struct tl_parser *tl)
 	tl->state = TL_STATE_WAIT_ESC_SOP;
 	tl->last_rx_seqid = 0xFF;
 	tl->expected_seqid = 0x01; /* start expecting seqId=1 */
+	tl->tx_seqid = 0x01; /* match the same starting convention for TX */
 }
 
 /*
@@ -227,6 +256,7 @@ static bool tl_parse_rpc_payload(struct tl_parser *tl, const u8 *data,
 			return false;
 		if (id == BCM4773_RPC_SENSOR_RESPONSE) {
 			u16 ssp_len;
+			struct bcm4773 *bcm = container_of(tl, struct bcm4773, parser);
 
 			if (payload_len < sizeof(__le16))
 				return false;
@@ -234,6 +264,22 @@ static bool tl_parse_rpc_payload(struct tl_parser *tl, const u8 *data,
 			if (ssp_len != payload_len - sizeof(__le16))
 				return false;
 			tl->sensor_responses++;
+			if (bcm->sensor_ops)
+				bcm->sensor_ops->recv(bcm->sensor_priv,
+						      data + sizeof(__le16),
+						      ssp_len);
+		} else {
+			/*
+			 * Non-sensor RPC (GNSS/location-engine or internal
+			 * diagnostic, e.g. BCM4773_RPC_GET_VERSION_REQ's
+			 * response). Not parsed further here — phase 1 only
+			 * needs to prove a round trip happened at all.
+			 */
+			struct bcm4773 *bcm = container_of(tl, struct bcm4773, parser);
+
+			dev_dbg(&bcm->spi->dev,
+				"RPC id=0x%x len=%u: %*ph\n", id, payload_len,
+				(int)min_t(u16, payload_len, 32), data);
 		}
 
 		data += payload_len;
@@ -381,6 +427,145 @@ static void tl_parse_bytes(struct device *dev, struct tl_parser *tl,
 		}
 	}
 
+}
+
+/* ========================== TransportLayer TX encoding ==================== */
+
+/*
+ * tl_build_rpc_record() — encode one RPC id+payload record.
+ *
+ * Mirrors tl_parse_rpc_payload()'s decode exactly: a 1-byte id/length,
+ * extended to 2 bytes (big-endian, high bit of the first byte set) when the
+ * value exceeds 0xff.
+ */
+static int tl_build_rpc_record(u16 rpc_id, const u8 *payload, size_t len,
+			       u8 *out, size_t out_max)
+{
+	size_t pos = 0;
+
+	if (rpc_id > 0x7fff || len > 0x7fff)
+		return -EINVAL;
+
+	if (rpc_id > 0xff) {
+		if (out_max < pos + 2)
+			return -EMSGSIZE;
+		out[pos++] = 0x80 | (rpc_id >> 8);
+		out[pos++] = rpc_id & 0xff;
+	} else {
+		if (out_max < pos + 1)
+			return -EMSGSIZE;
+		out[pos++] = rpc_id & 0xff;
+	}
+
+	if (len > 0xff) {
+		if (out_max < pos + 2)
+			return -EMSGSIZE;
+		out[pos++] = 0x80 | (len >> 8);
+		out[pos++] = len & 0xff;
+	} else {
+		if (out_max < pos + 1)
+			return -EMSGSIZE;
+		out[pos++] = len & 0xff;
+	}
+
+	if (out_max < pos + len)
+		return -EMSGSIZE;
+	memcpy(&out[pos], payload, len);
+	pos += len;
+
+	return pos;
+}
+
+/*
+ * tl_build_frame() — encode one TransportLayer frame for TX.
+ *
+ * @tl: parser state, source of the next outgoing seqId
+ * @rpc: a fully-formed RPC record (as produced by tl_build_rpc_record()) —
+ *       this function wraps it in exactly one TL frame, it does not split
+ *       across frames
+ * @rpc_len: length of @rpc
+ * @out: output buffer, must be at least TL_MAX_TX_FRAME bytes
+ *
+ * Layout mirrors tl_handle_frame()'s decode exactly: SeqId, PayloadSize,
+ * Flags, then one detail byte per set flag bit in bit0->bit15 order (only
+ * TL_FLAG_SIZE_EXTENDED's detail byte carries a real value here; this
+ * driver never sets any other flag), Payload, CRC-8 — computed over
+ * PayloadSize..Payload (SeqId and the CRC byte itself excluded) and
+ * nibble-swapped. The whole body (SeqId..CRC inclusive) is then escaped
+ * byte-for-byte and bounded by literal, unescaped SOP/EOP marker pairs.
+ *
+ * Returns the number of bytes written to @out, or a negative errno.
+ */
+static int tl_build_frame(struct tl_parser *tl, const u8 *rpc, size_t rpc_len,
+			  u8 *out)
+{
+	u8 body[TL_MAX_TX_BODY];
+	unsigned int pos = 0;
+	unsigned int bit;
+	unsigned int escaped;
+	unsigned int i;
+	u16 flags = 0;
+	u8 crc = 0;
+
+	if (rpc_len > TL_MAX_TX_PAYLOAD)
+		return -EMSGSIZE;
+	if (rpc_len > 0xff)
+		flags |= TL_FLAG_SIZE_EXTENDED;
+
+	body[pos++] = tl->tx_seqid;
+	body[pos++] = rpc_len & 0xff;
+	body[pos++] = flags & 0xff;
+
+	for (bit = 0; bit < 16; bit++) {
+		u16 flag = BIT(bit);
+
+		if (!(flags & flag))
+			continue;
+		if (flag == TL_FLAG_SIZE_EXTENDED)
+			body[pos++] = (rpc_len >> 8) & 0xff;
+		else
+			body[pos++] = 0; /* no other flags used by this driver */
+	}
+
+	memcpy(&body[pos], rpc, rpc_len);
+	pos += rpc_len;
+
+	crc_calc_many(&crc, &body[1], pos - 1);
+	crc = ((crc & 0x0f) << 4) | ((crc & 0xf0) >> 4);
+	body[pos++] = crc;
+
+	escaped = 0;
+	out[escaped++] = TL_ESCAPE;
+	out[escaped++] = TL_SOP;
+
+	for (i = 0; i < pos; i++) {
+		u8 b = body[i];
+
+		if (escaped + 2 > TL_MAX_TX_FRAME)
+			return -EMSGSIZE;
+
+		if (b == TL_ESCAPE) {
+			out[escaped++] = TL_ESCAPE;
+			out[escaped++] = TL_ESC_ESC;
+		} else if (b == 0x11) {
+			out[escaped++] = TL_ESCAPE;
+			out[escaped++] = TL_ESC_XON;
+		} else if (b == 0x13) {
+			out[escaped++] = TL_ESCAPE;
+			out[escaped++] = TL_ESC_XOFF;
+		} else {
+			out[escaped++] = b;
+		}
+	}
+
+	if (escaped + 2 > TL_MAX_TX_FRAME)
+		return -EMSGSIZE;
+	out[escaped++] = TL_ESCAPE;
+	out[escaped++] = TL_EOP;
+
+	tl->tx_seqid++; /* wraps naturally at u8 */
+
+	return escaped;
 }
 
 /* ========================== SSI SPI transport ============================= */
@@ -541,6 +726,172 @@ static int bcm4773_drain_locked(struct bcm4773 *bcm)
 	return ret;
 }
 
+/* ========================== RPC send (TX path) ============================ */
+
+/*
+ * bcm4773_rpc_send() — encode and transmit one RPC record as one TL frame.
+ *
+ * Services pending RX first, matching bcm4773_gnss_write_raw()'s existing
+ * ordering and the vendor transport's own "RX before TX" servicing rule.
+ * Sent unreliably (Flags=0): the vendor's own TL-level ARQ/retry state is
+ * dead code even in the reference driver, so there is no remote peer
+ * behavior to interoperate with, and a first bring-up probe does not need
+ * delivery guarantees beyond "did anything come back at all."
+ */
+static int bcm4773_rpc_send(struct bcm4773 *bcm, u16 rpc_id,
+			    const u8 *payload, size_t len)
+{
+	u8 rpc_buf[TL_MAX_TX_PAYLOAD];
+	u8 frame[TL_MAX_TX_FRAME];
+	int rpc_len, frame_len;
+	int ret;
+
+	rpc_len = tl_build_rpc_record(rpc_id, payload, len, rpc_buf,
+				      sizeof(rpc_buf));
+	if (rpc_len < 0)
+		return rpc_len;
+
+	mutex_lock(&bcm->io_lock);
+
+	frame_len = tl_build_frame(&bcm->parser, rpc_buf, rpc_len, frame);
+	if (frame_len < 0) {
+		ret = frame_len;
+		goto out;
+	}
+
+	ret = bcm4773_hello(bcm);
+	if (ret)
+		goto out;
+
+	ret = bcm4773_drain_locked(bcm);
+	if (ret)
+		goto out_bye;
+
+	ret = bcm4773_ssi_write(bcm, frame, frame_len);
+
+out_bye:
+	bcm4773_bye(bcm);
+out:
+	mutex_unlock(&bcm->io_lock);
+
+	return ret;
+}
+
+/* ========================== Exported sensor RPC API ======================= */
+
+/**
+ * bcm4773_get() - look up the BCM4773 transport referenced by @consumer's
+ *		  "samsung,transport" DT phandle
+ * @consumer: the requesting device; its of_node must carry the phandle
+ *
+ * Returns a pointer usable with the rest of this API, ERR_PTR(-EPROBE_DEFER)
+ * if the BCM4773 SPI device hasn't bound yet, or another ERR_PTR() on
+ * failure. The caller must release the reference with bcm4773_put().
+ */
+struct bcm4773 *bcm4773_get(struct device *consumer)
+{
+	struct device_node *node;
+	struct device *dev;
+	struct bcm4773 *bcm;
+
+	if (!consumer || !consumer->of_node)
+		return ERR_PTR(-EINVAL);
+
+	node = of_parse_phandle(consumer->of_node, "samsung,transport", 0);
+	if (!node)
+		return ERR_PTR(-ENODEV);
+
+	dev = bus_find_device_by_of_node(&spi_bus_type, node);
+	of_node_put(node);
+	if (!dev)
+		return ERR_PTR(-EPROBE_DEFER);
+
+	bcm = spi_get_drvdata(to_spi_device(dev));
+	if (!bcm) {
+		put_device(dev);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+
+	if (!device_link_add(consumer, dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
+		put_device(dev);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	return bcm;
+}
+EXPORT_SYMBOL_GPL(bcm4773_get);
+
+void bcm4773_put(struct bcm4773 *bcm)
+{
+	if (bcm)
+		put_device(&bcm->spi->dev);
+}
+EXPORT_SYMBOL_GPL(bcm4773_put);
+
+int bcm4773_register_sensor_ops(struct bcm4773 *bcm,
+				const struct bcm4773_sensor_ops *ops,
+				void *priv)
+{
+	if (!bcm || !ops || !ops->recv)
+		return -EINVAL;
+
+	mutex_lock(&bcm->io_lock);
+	if (bcm->sensor_ops) {
+		mutex_unlock(&bcm->io_lock);
+		return -EBUSY;
+	}
+	bcm->sensor_ops = ops;
+	bcm->sensor_priv = priv;
+	mutex_unlock(&bcm->io_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(bcm4773_register_sensor_ops);
+
+void bcm4773_unregister_sensor_ops(struct bcm4773 *bcm)
+{
+	if (!bcm)
+		return;
+
+	mutex_lock(&bcm->io_lock);
+	bcm->sensor_ops = NULL;
+	bcm->sensor_priv = NULL;
+	mutex_unlock(&bcm->io_lock);
+}
+EXPORT_SYMBOL_GPL(bcm4773_unregister_sensor_ops);
+
+/*
+ * bcm4773_sensor_send() — send raw SSP bytes to the sensor-hub MCU.
+ *
+ * Wrapped as one IRpcSensorRequest_Data (0x20) RPC record with a leading
+ * 2-byte little-endian length prefix, mirroring the 2-byte length prefix
+ * this driver already requires and validates on the IRpcSensorResponse_Data
+ * (0x21) receive side. The vendor source available for this port does not
+ * independently confirm the same prefix applies on the request side — it is
+ * inferred from the Request/Response RPC pair sharing one "Data" method
+ * name in the vendor's own RPC definition list, which is exactly what
+ * phase 1 exists to validate against real hardware. See
+ * Documentation/driver-api/iio/exynos8890-sensorhub.rst.
+ */
+int bcm4773_sensor_send(struct bcm4773 *bcm, const void *data, size_t len)
+{
+	u8 payload[TL_MAX_TX_PAYLOAD];
+	__le16 sz;
+
+	if (!bcm || (!data && len))
+		return -EINVAL;
+	if (len + sizeof(sz) > sizeof(payload))
+		return -EMSGSIZE;
+
+	sz = cpu_to_le16(len);
+	memcpy(payload, &sz, sizeof(sz));
+	memcpy(payload + sizeof(sz), data, len);
+
+	return bcm4773_rpc_send(bcm, BCM4773_RPC_SENSOR_REQUEST, payload,
+				len + sizeof(sz));
+}
+EXPORT_SYMBOL_GPL(bcm4773_sensor_send);
+
 /* ========================== IRQ thread (RX path) ========================= */
 
 static irqreturn_t bcm4773_irq_thread(int irq, void *data)
@@ -578,6 +929,16 @@ static int bcm4773_gnss_open(struct gnss_device *gdev)
 	enable_irq(bcm->irq);
 
 	mutex_unlock(&bcm->io_lock);
+
+	/*
+	 * Phase 1 diagnostic round trip (see
+	 * Documentation/driver-api/iio/exynos8890-sensorhub.rst): send a
+	 * GetVersion request and let whatever comes back be logged by
+	 * tl_parse_rpc_payload()'s diagnostic path. This only proves the TX
+	 * encoder and RX decoder are mutually consistent on real hardware —
+	 * it must never be allowed to fail GNSS open.
+	 */
+	bcm4773_rpc_send(bcm, BCM4773_RPC_GET_VERSION_REQ, NULL, 0);
 
 	return 0;
 }
