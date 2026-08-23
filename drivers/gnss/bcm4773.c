@@ -1001,7 +1001,16 @@ static int bcm4773_gnss_open(struct gnss_device *gdev)
 	 * encoder and RX decoder are mutually consistent on real hardware —
 	 * it must never be allowed to fail GNSS open.
 	 */
-	bcm4773_rpc_send(bcm, BCM4773_RPC_GET_VERSION_REQ, NULL, 0);
+	{
+		int ret = bcm4773_rpc_send(bcm, BCM4773_RPC_GET_VERSION_REQ,
+					   NULL, 0);
+		if (ret)
+			dev_warn(&bcm->spi->dev,
+				"GetVersion probe failed: %d%s\n", ret,
+				ret == -ETIMEDOUT ?
+				" (GPIO handshake timeout — mcu_resp never asserted)" :
+				"");
+	}
 
 	return 0;
 }
