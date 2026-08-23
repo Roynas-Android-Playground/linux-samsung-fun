@@ -278,7 +278,7 @@ static bool tl_handle_frame(struct device *dev, struct tl_parser *tl)
 			continue;
 		if (!len || !(flag & TL_FLAG_KNOWN))
 			return false;
-		detail = *data++;
+		detail = *data++; /* consume one detail byte per set flag */
 		len--;
 		if (flag == TL_FLAG_SIZE_EXTENDED)
 			payload_len |= (u16)detail << 8;
@@ -299,45 +299,10 @@ static bool tl_handle_frame(struct device *dev, struct tl_parser *tl)
 	if (!(flags & TL_FLAG_MSG_GARBAGE))
 		tl->packets_received++;
 
-	if (flags & TL_FLAG_PACKET_ACK && !(flags & TL_FLAG_RELIABLE_PACKET)) {
-		u8 ack_seqid;
-		ack_seqid = *(data - 1); /* detail already consumed */
-		tl->last_rx_seqid = ack_seqid;
-	}
-
-	for (bit = 0; bit < 16; bit++) {
-		u16 flag = BIT(bit);
-		if (!(flags & flag))
-			continue;
-		switch (flag) {
-		case TL_FLAG_PACKET_ACK:
-			break;
-		case TL_FLAG_RELIABLE_PACKET:
-			tl->last_rx_seqid = data[-1];
-			break;
-		case TL_FLAG_RELIABLE_ACK:
-			tl->last_rx_seqid = data[-1];
-			break;
-		case TL_FLAG_RELIABLE_NACK:
-			tl->local_packet_lost++;
-			break;
-		default:
-			break;
-		}
-	}
-
 	if (payload_len != len)
 		return false;
 
 	if (!(flags & TL_FLAG_INTERNAL_PACKET)) {
-		data = (const u8 *)((u16 *)data - 2);
-		for (bit = 0; bit < 16; bit++) {
-			u16 flag = BIT(bit);
-			if ((flags & flag) && flag != TL_FLAG_SIZE_EXTENDED &&
-			    flag != TL_FLAG_EXTENDED) {
-				data++;
-			}
-		}
 		if (!tl_parse_rpc_payload(tl, data, len))
 			return false;
 	}
