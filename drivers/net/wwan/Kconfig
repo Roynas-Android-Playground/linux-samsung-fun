@@ -37,6 +37,14 @@ config WWAN_HWSIM
 	  To compile this driver as a module, choose M here: the module will be
 	  called wwan_hwsim.  If unsure, say N.
 
+config WWAN_EXYNOS8890_SIPC
+	tristate "Exynos8890 SIPC5/SBD transport"
+	depends on ARM64 && ARCH_EXYNOS && OF && MAILBOX
+	depends on EXYNOS8890_CPCTL && EXYNOS_MBOX
+	help
+	  Build the SIPC5, SBD, WWAN-port, and packet-data transport for the
+	  Exynos8890 SS310AP modem.
+
 config MHI_WWAN_CTRL
 	tristate "MHI WWAN control driver for Qualcomm-based PCIe modems"
 	depends on MHI_BUS

@@ -568,6 +568,14 @@ config MCHP_LAN966X_PCI
 	    - lan966x-miim (MDIO_MSCC_MIIM)
 	    - lan966x-switch (LAN966X_SWITCH)
 
+config EXYNOS8890_CBD_COMPAT
+	tristate "Exynos8890 Samsung cbd compatibility"
+	depends on ARM64 && ARCH_EXYNOS && OF
+	depends on EXYNOS8890_CPCTL && WWAN_EXYNOS8890_SIPC
+	help
+	  Build legacy Samsung cbd device and ioctl compatibility on the modern
+	  Exynos8890 SIPC transport.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

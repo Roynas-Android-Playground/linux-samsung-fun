@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/samsung,exynos8890-sipc5.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 SIPC5 and SBD modem transport
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Shared-memory SIPC5 transport between the Exynos8890 application processor
+  and SS310AP modem. Child nodes describe the externally visible SIPC channels
+  and their SBD ring geometry.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-sipc5
+
+  '#address-cells':
+    const: 1
+
+  '#size-cells':
+    const: 0
+
+  samsung,cpctl:
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  memory-region:
+    maxItems: 1
+
+  samsung,ipc-offset:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    const: 0x08000000
+
+  samsung,ipc-size:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    const: 0x00800000
+
+patternProperties:
+  '^channel@[0-9a-f]+$':
+    type: object
+    additionalProperties: false
+    properties:
+      reg:
+        maxItems: 1
+        minimum: 0
+        maximum: 255
+      label: true
+      samsung,format:
+        enum: [formatted, raw, rfs, multi-raw, boot, dump, command, debug]
+      samsung,type:
+        enum: [misc, net, dummy]
+      samsung,application:
+        $ref: /schemas/types.yaml#/definitions/string
+      samsung,option-region:
+        $ref: /schemas/types.yaml#/definitions/string
+      samsung,sipc5:
+        type: boolean
+      samsung,sbd:
+        type: boolean
+      samsung,no-link-header:
+        type: boolean
+      samsung,no-rx-limit:
+        type: boolean
+      samsung,tx-entries:
+        $ref: /schemas/types.yaml#/definitions/uint32
+      samsung,tx-buffer-size:
+        $ref: /schemas/types.yaml#/definitions/uint32
+      samsung,rx-entries:
+        $ref: /schemas/types.yaml#/definitions/uint32
+      samsung,rx-buffer-size:
+        $ref: /schemas/types.yaml#/definitions/uint32
+    required:
+      - reg
+      - label
+      - samsung,format
+      - samsung,type
+
+required:
+  - compatible
+  - '#address-cells'
+  - '#size-cells'
+  - samsung,cpctl
+  - memory-region
+  - samsung,ipc-offset
+  - samsung,ipc-size
+
+additionalProperties: false
+
+examples:
+  - |
+    sipc {
+        compatible = "samsung,exynos8890-sipc5";
+        #address-cells = <1>;
+        #size-cells = <0>;
+        samsung,cpctl = <&modem_control>;
+        memory-region = <&modem_mem>;
+        samsung,ipc-offset = <0x08000000>;
+        samsung,ipc-size = <0x00800000>;
+
+        channel@eb {
+            reg = <235>;
+            label = "umts_ipc0";
+            samsung,format = "formatted";
+            samsung,type = "misc";
+            samsung,application = "RIL";
+            samsung,sipc5;
+            samsung,sbd;
+            samsung,tx-entries = <16>;
+            samsung,tx-buffer-size = <4096>;
+            samsung,rx-entries = <32>;
+            samsung,rx-buffer-size = <4096>;
+        };
+    };

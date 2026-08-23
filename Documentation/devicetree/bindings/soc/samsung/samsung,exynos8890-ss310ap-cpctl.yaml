@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/samsung/samsung,exynos8890-ss310ap-cpctl.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 SS310AP modem control plane
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Control plane for the SS310AP modem integrated in Exynos8890. It owns CP
+  power/reset secure-monitor calls, the CP failure and watchdog interrupts,
+  calibration SYSRAM, AP/CP mailbox clients, and the reserved-memory geometry.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-ss310ap-cpctl
+
+  reg:
+    maxItems: 1
+
+  reg-names:
+    items:
+      - const: sysram
+
+  interrupts:
+    minItems: 2
+    maxItems: 2
+
+  interrupt-names:
+    items:
+      - const: cp-fail
+      - const: cp-watchdog
+
+  samsung,pmu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,mbox-syscon:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Syscon exposing the 64 mailbox ISSR words.
+
+  mboxes:
+    minItems: 16
+    maxItems: 16
+
+  mailbox-names:
+    minItems: 16
+    maxItems: 16
+
+  memory-region:
+    maxItems: 1
+
+  revision-gpios:
+    minItems: 4
+    maxItems: 4
+
+  samsung,dual-sim:
+    type: boolean
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - samsung,pmu
+  - samsung,mbox-syscon
+  - mboxes
+  - mailbox-names
+  - memory-region
+  - revision-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    modem-control@20c7800 {
+        compatible = "samsung,exynos8890-ss310ap-cpctl";
+        reg = <0x020c7800 0x800>;
+        reg-names = "sysram";
+        interrupts = <GIC_SPI 21 0>, <GIC_SPI 96 0>;
+        interrupt-names = "cp-fail", "cp-watchdog";
+        samsung,pmu = <&pmu_system_controller>;
+        samsung,mbox-syscon = <&mailbox>;
+        mboxes = <&mailbox 0>, <&mailbox 1>, <&mailbox 2>, <&mailbox 3>,
+                  <&mailbox 4>, <&mailbox 5>, <&mailbox 6>, <&mailbox 7>,
+                  <&mailbox 8>, <&mailbox 9>, <&mailbox 10>, <&mailbox 11>,
+                  <&mailbox 12>, <&mailbox 13>, <&mailbox 14>, <&mailbox 15>;
+        mailbox-names = "doorbell0", "doorbell1", "doorbell2", "doorbell3",
+                        "doorbell4", "doorbell5", "doorbell6", "doorbell7",
+                        "doorbell8", "doorbell9", "doorbell10", "doorbell11",
+                        "doorbell12", "doorbell13", "doorbell14", "doorbell15";
+        memory-region = <&modem_mem>;
+        revision-gpios = <&gpf2 0 GPIO_ACTIVE_HIGH>,
+                         <&gpf2 1 GPIO_ACTIVE_HIGH>,
+                         <&gpf2 2 GPIO_ACTIVE_HIGH>,
+                         <&gpf2 3 GPIO_ACTIVE_HIGH>;
+    };

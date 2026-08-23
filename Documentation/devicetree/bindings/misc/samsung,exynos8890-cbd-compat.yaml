@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/misc/samsung,exynos8890-cbd-compat.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 cbd compatibility interface
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Legacy userspace compatibility interface for Samsung cbd. The node contains
+  no hardware resources; it references the SS310AP control and SIPC transport
+  devices and exposes the established device names and ioctl ABI.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-cbd-compat
+
+  samsung,cpctl:
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,sipc:
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+required:
+  - compatible
+  - samsung,cpctl
+  - samsung,sipc
+
+additionalProperties: false
+
+examples:
+  - |
+    cbd {
+        compatible = "samsung,exynos8890-cbd-compat";
+        samsung,cpctl = <&modem_control>;
+        samsung,sipc = <&modem_sipc>;
+    };

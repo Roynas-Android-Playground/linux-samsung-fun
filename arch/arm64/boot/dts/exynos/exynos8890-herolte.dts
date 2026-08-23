@@ -1698,7 +1698,7 @@
 	/* modem_interface_driver: Samsung Electronics Jungfrau */
 	modem: modem@20c7800 {
 		compatible = "sec_modem,modem_pdata";
-		status = "okay";
+		status = "disabled";
 		reg = <0x0 0x020c7800 0x800>;
 		interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 96 IRQ_TYPE_LEVEL_HIGH>;
@@ -2016,10 +2016,62 @@
 
 	shmem: shmem {
 		compatible = "samsung,exynos8890-shm_ipc";
+		status = "disabled";
 
 		memory-region = <&modem_reserved>;
 
 		shmem,ipc_offset = <0x8000000>;
 		shmem,ipc_size = <0x800000>;
+	};
+
+	/*
+	 * Rewrite of the modem/shmem nodes above onto the upstream-style
+	 * exynos8890-cpctl/exynos8890-sipc5/exynos8890-cbd-compat stack. This
+	 * is now the active production path; the legacy "modem"/"shmem" nodes
+	 * above are kept disabled as a rollback reference. Kconfig also keeps
+	 * the two stacks mutually exclusive (EXYNOS8890_CPCTL depends on
+	 * !SEC_SIPC_MODEM_IF).
+	 */
+	modem_control: modem-control@20c7800 {
+		compatible = "samsung,exynos8890-ss310ap-cpctl";
+		status = "okay";
+		reg = <0x0 0x020c7800 0x800>;
+		reg-names = "sysram";
+		interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 96 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "cp-fail", "cp-watchdog";
+		samsung,pmu = <&pmu_system_controller>;
+		samsung,mbox-syscon = <&mcu_ipc>;
+		mboxes = <&mcu_ipc 0>, <&mcu_ipc 1>, <&mcu_ipc 2>, <&mcu_ipc 3>,
+			 <&mcu_ipc 4>, <&mcu_ipc 5>, <&mcu_ipc 6>, <&mcu_ipc 7>,
+			 <&mcu_ipc 8>, <&mcu_ipc 9>, <&mcu_ipc 10>, <&mcu_ipc 11>,
+			 <&mcu_ipc 12>, <&mcu_ipc 13>, <&mcu_ipc 14>, <&mcu_ipc 15>;
+		mailbox-names = "doorbell0", "doorbell1", "doorbell2", "doorbell3",
+				"doorbell4", "doorbell5", "doorbell6", "doorbell7",
+				"doorbell8", "doorbell9", "doorbell10", "doorbell11",
+				"doorbell12", "doorbell13", "doorbell14", "doorbell15";
+		memory-region = <&modem_reserved>;
+		revision-gpios = <&gpe4 4 GPIO_ACTIVE_HIGH>,
+				 <&gpe4 5 GPIO_ACTIVE_HIGH>,
+				 <&gpe4 6 GPIO_ACTIVE_HIGH>,
+				 <&gpe4 7 GPIO_ACTIVE_HIGH>;
+	};
+
+	modem_sipc: sipc {
+		compatible = "samsung,exynos8890-sipc5";
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		samsung,cpctl = <&modem_control>;
+		memory-region = <&modem_reserved>;
+		samsung,ipc-offset = <0x08000000>;
+		samsung,ipc-size = <0x00800000>;
+	};
+
+	cbd {
+		compatible = "samsung,exynos8890-cbd-compat";
+		status = "okay";
+		samsung,cpctl = <&modem_control>;
+		samsung,sipc = <&modem_sipc>;
 	};
 };
