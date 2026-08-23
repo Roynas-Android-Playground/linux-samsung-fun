@@ -46,6 +46,28 @@
 #define TL_MAX_INCOMING			2048
 #define TL_MAX_HEADER_SIZE		14
 
+/* TransportLayer flags — [VENDOR] transport_layer_c.c */
+#define TL_FLAG_PACKET_ACK		BIT(0)
+#define TL_FLAG_RELIABLE_PACKET	BIT(1)
+#define TL_FLAG_RELIABLE_ACK		BIT(2)
+#define TL_FLAG_RELIABLE_NACK		BIT(3)
+#define TL_FLAG_MSG_LOST		BIT(4)
+#define TL_FLAG_MSG_GARBAGE		BIT(5)
+#define TL_FLAG_SIZE_EXTENDED		BIT(6)
+#define TL_FLAG_EXTENDED		BIT(7)
+#define TL_FLAG_INTERNAL_PACKET	BIT(8)
+#define TL_FLAG_IGNORE_SEQID		BIT(9)
+#define TL_FLAG_KNOWN			(TL_FLAG_PACKET_ACK | \
+					 TL_FLAG_RELIABLE_PACKET | \
+					 TL_FLAG_RELIABLE_ACK | \
+					 TL_FLAG_RELIABLE_NACK | \
+					 TL_FLAG_MSG_LOST | TL_FLAG_MSG_GARBAGE | \
+					 TL_FLAG_SIZE_EXTENDED | TL_FLAG_EXTENDED | \
+					 TL_FLAG_INTERNAL_PACKET | \
+					 TL_FLAG_IGNORE_SEQID)
+
+#define BCM4773_RPC_SENSOR_RESPONSE	0x21
+
 /* Parser states */
 #define TL_STATE_WAIT_ESC_SOP		0
 #define TL_STATE_WAIT_SOP		1
@@ -57,6 +79,9 @@ struct tl_parser {
 	unsigned int state;
 	unsigned int rx_len;
 	u8 last_rx_seqid;
+	u32 valid_frames;
+	u32 malformed_frames;
+	u32 sensor_responses;
 	u8 rx_buf[TL_MAX_INCOMING + TL_MAX_HEADER_SIZE];
 };
 
@@ -149,8 +174,64 @@ static void tl_reset(struct tl_parser *tl)
 	tl->rx_len = 0;
 }
 
+static bool tl_parse_rpc_payload(struct tl_parser *tl, const u8 *data,
+				 size_t len)
+{
+	while (len) {
+		u16 id, payload_len;
+		u8 first;
+
+		first = *data++;
+		len--;
+		id = first;
+		if (first & BIT(7)) {
+			if (!len)
+				return false;
+			id = (first & ~BIT(7)) << 8;
+			id |= *data++;
+			len--;
+		}
+
+		if (!len)
+			return false;
+		first = *data++;
+		len--;
+		payload_len = first;
+		if (first & BIT(7)) {
+			if (!len)
+				return false;
+			payload_len = (first & ~BIT(7)) << 8;
+			payload_len |= *data++;
+			len--;
+		}
+
+		if (payload_len > len)
+			return false;
+		if (id == BCM4773_RPC_SENSOR_RESPONSE) {
+			u16 ssp_len;
+
+			if (payload_len < sizeof(__le16))
+				return false;
+			ssp_len = (u16)data[0] | ((u16)data[1] << 8);
+			if (ssp_len != payload_len - sizeof(__le16))
+				return false;
+			tl->sensor_responses++;
+		}
+
+		data += payload_len;
+		len -= payload_len;
+	}
+
+	return true;
+}
+
 static bool tl_handle_frame(struct device *dev, struct tl_parser *tl)
 {
+	const u8 *data;
+	unsigned int len;
+	u16 flags;
+	u16 payload_len;
+	unsigned int bit;
 	u8 crc = 0;
 
 	if (tl->rx_len < 4)
@@ -163,7 +244,37 @@ static bool tl_handle_frame(struct device *dev, struct tl_parser *tl)
 		return false;
 	}
 
+	data = tl->rx_buf;
+	len = tl->rx_len - 1;
+	data++;
+	payload_len = *data++;
+	flags = *data++;
+	len -= 3;
+
+	for (bit = 0; bit < 16; bit++) {
+		u16 flag = BIT(bit);
+		u8 detail;
+
+		if (!(flags & flag))
+			continue;
+		if (!len || !(flag & TL_FLAG_KNOWN))
+			return false;
+		detail = *data++;
+		len--;
+		if (flag == TL_FLAG_SIZE_EXTENDED)
+			payload_len |= (u16)detail << 8;
+		else if (flag == TL_FLAG_EXTENDED)
+			flags |= (u16)detail << 8;
+	}
+
+	if (payload_len != len)
+		return false;
+	if (!(flags & TL_FLAG_INTERNAL_PACKET) &&
+	    !tl_parse_rpc_payload(tl, data, len))
+		return false;
+
 	tl->last_rx_seqid = tl->rx_buf[0];
+	tl->valid_frames++;
 	return true;
 }
 
@@ -207,7 +318,8 @@ static void tl_parse_bytes(struct device *dev, struct tl_parser *tl,
 
 		case TL_STATE_WAIT_EOP:
 			if (byte == TL_EOP) {
-				tl_handle_frame(dev, tl);
+				if (!tl_handle_frame(dev, tl))
+					tl->malformed_frames++;
 				tl_reset(tl);
 			} else if (byte == TL_ESC_ESC || byte == TL_ESC_XON ||
 				   byte == TL_ESC_XOFF) {
