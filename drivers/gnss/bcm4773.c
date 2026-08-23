@@ -5,14 +5,21 @@
  * The BCM4773 used by Exynos8890 Galaxy S7 devices multiplexes two logical
  * functions over one physical SPI connection: GNSS and a Samsung Sensor
  * Platform gateway. This initial driver preserves the vendor raw-BBD userspace
- * ABI while establishing a per-device TransportLayer receive parser.
+ * ABI on the GNSS side while establishing a per-device TransportLayer
+ * encoder/parser shared by both functions.
  *
  * Protocol layering:
- *   SSI framing over SPI → Broadcom TransportLayer escaping/CRC → raw BBD ABI
+ *   SSI framing over SPI ↔ Broadcom TransportLayer escaping/CRC ↔ RPC records
  *
  * The SSI transaction format is based on Samsung's GPL-licensed bcm_gps_spi.
- * TransportLayer receive framing is derived from Broadcom's GPL
- * transport_layer_c.c and bbd_rpc_lh.c.
+ * TransportLayer RX framing is derived from Broadcom's GPL
+ * transport_layer_c.c and bbd_rpc_lh.c. TransportLayer TX framing (frame
+ * builder, escaping, CRC scope/order, SeqId handling) and the VersionResponse
+ * wire layout are [LHD-RE]: disassembled directly from
+ * TransportLayer::BuildAndSendPacket()/SendPacket() and
+ * RpcGlobalResponseDecoder::ProcessRpc() in the userspace `lhd` binary's
+ * embedded .gnu_debugdata symbol table — no TX-side source is present in any
+ * vendor tree available for this port.
  */
 
 #include <linux/delay.h>
@@ -26,6 +33,7 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/spi/spi.h>
+#include <linux/unaligned.h>
 
 /* SSI framing constants — [VENDOR] bcm_gps_spi.c */
 #define BCM4773_SSI_READ_HD		0x20
@@ -77,6 +85,24 @@
 #define BCM4773_RPC_SENSOR_RESPONSE	0x21
 #define BCM4773_RPC_GET_VERSION_REQ	0x00
 #define BCM4773_RPC_SLEEP_CYCLES_REQ	0x02
+#define BCM4773_RPC_VERSION_RESPONSE	0x03
+#define BCM4773_RPC_STATE_RESPONSE	0x04
+
+/*
+ * VersionResponse (0x03) / StateResponse (0x04) payload layouts — [LHD-RE]
+ * disassembled directly from RpcGlobalResponseDecoder::ProcessRpc() and
+ * StreamDecoder::GetU32() in the uploaded lhd binary's embedded
+ * .gnu_debugdata symbol table (functions at file offset 0x28438 and
+ * 0x2c344 respectively). ProcessRpc() dispatches rpc id 3 to a callback
+ * taking exactly 3 unsigned ints, each produced by one GetU32() call in
+ * sequence (little-endian, 4 bytes each, no padding) — i.e. VersionResponse
+ * is `u32 AsicVersion, u32 RomVersion, u32 PatchLevel` back to back, 12
+ * bytes total; that argument order matches the vendor's own printed status
+ * string order "Asic 0x%x Rom %u Patch %u". Id 4 (StateResponse) dispatches
+ * to a single-unsigned-int callback, i.e. one raw `u32 State`, 4 bytes.
+ */
+#define BCM4773_VERSION_RESPONSE_LEN	12
+#define BCM4773_STATE_RESPONSE_LEN	4
 
 /*
  * TransportLayer TX limits. The payload cap is a deliberately small bound
@@ -268,11 +294,34 @@ static bool tl_parse_rpc_payload(struct tl_parser *tl, const u8 *data,
 				bcm->sensor_ops->recv(bcm->sensor_priv,
 						      data + sizeof(__le16),
 						      ssp_len);
+		} else if (id == BCM4773_RPC_VERSION_RESPONSE &&
+			   payload_len == BCM4773_VERSION_RESPONSE_LEN) {
+			struct bcm4773 *bcm = container_of(tl, struct bcm4773, parser);
+			u32 asic = get_unaligned_le32(&data[0]);
+			u32 rom = get_unaligned_le32(&data[4]);
+			u32 patch = get_unaligned_le32(&data[8]);
+
+			/*
+			 * This is the phase-1 "does the wire protocol work at
+			 * all" proof: a correctly decoded VersionResponse can
+			 * only happen if GPIO handshake, SSI framing,
+			 * TransportLayer TX encode/escape/CRC, and
+			 * TransportLayer RX decode/escape/CRC all round-tripped
+			 * correctly against real hardware.
+			 */
+			dev_info(&bcm->spi->dev,
+				"BCM4773 ASIC=0x%08x ROM=0x%08x patch=%u\n",
+				asic, rom, patch);
+		} else if (id == BCM4773_RPC_STATE_RESPONSE &&
+			   payload_len == BCM4773_STATE_RESPONSE_LEN) {
+			struct bcm4773 *bcm = container_of(tl, struct bcm4773, parser);
+
+			dev_info(&bcm->spi->dev, "BCM4773 state=0x%08x\n",
+				get_unaligned_le32(data));
 		} else {
 			/*
-			 * Non-sensor RPC (GNSS/location-engine or internal
-			 * diagnostic, e.g. BCM4773_RPC_GET_VERSION_REQ's
-			 * response). Not parsed further here — phase 1 only
+			 * Any other RPC (GNSS/location-engine or internal
+			 * diagnostic). Not parsed further here — phase 1 only
 			 * needs to prove a round trip happened at all.
 			 */
 			struct bcm4773 *bcm = container_of(tl, struct bcm4773, parser);
@@ -470,7 +519,8 @@ static int tl_build_rpc_record(u16 rpc_id, const u8 *payload, size_t len,
 
 	if (out_max < pos + len)
 		return -EMSGSIZE;
-	memcpy(&out[pos], payload, len);
+	if (len)
+		memcpy(&out[pos], payload, len);
 	pos += len;
 
 	return pos;
@@ -493,6 +543,19 @@ static int tl_build_rpc_record(u16 rpc_id, const u8 *payload, size_t len,
  * PayloadSize..Payload (SeqId and the CRC byte itself excluded) and
  * nibble-swapped. The whole body (SeqId..CRC inclusive) is then escaped
  * byte-for-byte and bounded by literal, unescaped SOP/EOP marker pairs.
+ *
+ * [LHD-RE] confirmed byte-for-byte against TransportLayer::BuildAndSendPacket()
+ * (lhd .gnu_debugdata offset 0x2a5b4): SOP is a fixed halfword store
+ * (`0xB0 0x00`) before the escape loop, not routed through it; SeqId is
+ * escape-checked but written before the first Crc8Bits::Update() call; CRC
+ * accumulates PayloadSize, Flags, each flag-detail byte, then the raw
+ * (unescaped) Payload via a bulk Update(buf,len) call, in that order; the
+ * final CRC byte is itself escape-checked before EOP; EOP is a fixed,
+ * unescaped `0xB0 0x01` pair. The one confirmed gap here: real firmware also
+ * auto-ORs FLAG_PACKET_ACK/FLAG_MSG_LOST/FLAG_MSG_GARBAGE into Flags based on
+ * internal RX accounting state before encoding — this driver does not, which
+ * is a no-op on the freshly-reset parser state this phase-1 probe runs
+ * against, but will need implementing before general reliable/ACK traffic.
  *
  * Returns the number of bytes written to @out, or a negative errno.
  */
