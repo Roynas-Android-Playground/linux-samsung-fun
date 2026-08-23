@@ -43,6 +43,15 @@ config EXYNOS8890_CPUIDLE
 	  both exynos8890.c2=1 and explicit per-CPU sysfs enablement. This is a
 	  hardware diagnostic and must not be enabled as production policy.
 
+config EXYNOS8890_CPCTL
+	tristate "Exynos8890 SS310AP control plane"
+	depends on ARM64 && ARCH_EXYNOS && OF && MAILBOX
+	depends on !SEC_SIPC_MODEM_IF
+	select MFD_SYSCON
+	help
+	  Build the contract-preserving SS310AP control plane for Exynos8890.
+	  This is mutually exclusive with the legacy Samsung modem_v1 stack.
+
 config EXYNOS_USI
 	tristate "Exynos USI (Universal Serial Interface) driver"
 	default ARCH_EXYNOS && ARM64
