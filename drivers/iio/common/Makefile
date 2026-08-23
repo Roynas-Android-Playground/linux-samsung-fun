@@ -9,6 +9,7 @@
 
 # When adding new entries keep the list in alphabetical order
 obj-y += cros_ec_sensors/
+obj-y += exynos8890-ssp/
 obj-y += hid-sensors/
 obj-y += inv_sensors/
 obj-y += ms_sensors/

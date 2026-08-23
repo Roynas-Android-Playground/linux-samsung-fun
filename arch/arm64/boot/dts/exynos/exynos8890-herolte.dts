@@ -1269,7 +1269,7 @@
 
 		status = "okay";
 
-		gnss@0 {
+		gnss0: gnss@0 {
 			compatible = "brcm,bcm4773";
 			reg = <0>;
 			spi-max-frequency = <26000000>;
@@ -1285,6 +1285,19 @@
 				     &ssp_mcu_req &ssp_mcu_resp>;
 			pinctrl-names = "default";
 		};
+	};
+};
+
+/ {
+	/*
+	 * Samsung SSP sensor-hub protocol core, riding on the BCM4773
+	 * transport above. Phase 1 milestone only (WHOAMI probe) — see
+	 * Documentation/driver-api/iio/exynos8890-sensorhub.rst. Not yet
+	 * validated on real hardware.
+	 */
+	sensorhub {
+		compatible = "samsung,exynos8890-ssp";
+		samsung,transport = <&gnss0>;
 	};
 };
 

@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/iio/common/samsung,exynos8890-ssp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 SSP sensor-hub protocol core
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Samsung "SSP" application-layer protocol core for the sensor-hub MCU
+  reachable through a BCM4773 GNSS/sensor SPI transport (see
+  Documentation/devicetree/bindings/gnss/brcm,bcm4773.yaml, where present,
+  for the transport node itself). The node owns no hardware resources of
+  its own; it references the BCM4773 transport node and exchanges RPC
+  records with it.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-ssp
+
+  samsung,transport:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the BCM4773 SPI device providing the shared
+      GNSS/sensor RPC transport.
+
+required:
+  - compatible
+  - samsung,transport
+
+additionalProperties: false
+
+examples:
+  - |
+    sensorhub {
+        compatible = "samsung,exynos8890-ssp";
+        samsung,transport = <&gnss0>;
+    };
