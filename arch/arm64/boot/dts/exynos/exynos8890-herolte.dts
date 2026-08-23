@@ -315,6 +315,21 @@
 		startup-delay-us = <2000>;
 	};
 
+	/*
+	 * Vendor DT toggles this GPIO directly as an LDO enable line for the
+	 * SX9310 grip/proximity sensor instead of describing it through the
+	 * regulator framework; model it as a switched fixed regulator so the
+	 * upstream sx9310 driver's vdd-supply/svdd-supply regulator_bulk_get
+	 * can enable it normally.
+	 */
+	grip_ldo: regulator-fixed-grip {
+		compatible = "regulator-fixed";
+		regulator-name = "grip_ldo_en";
+
+		enable-active-high;
+		gpio = <&gpa1 7 GPIO_ACTIVE_HIGH>;
+	};
+
 	gpu_opp_table: opp-table-gpu {
 		compatible = "operating-points-v2";
 
@@ -406,13 +421,17 @@
 };
 
 &hsi2c_2 {
+	status = "okay";
+
 	proximity@28 {
 		compatible = "semtech,sx9310";
 		reg = <0x28>;
 		interrupt-parent = <&gpa2>;
 		interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
+		vdd-supply = <&grip_ldo>;
+		svdd-supply = <&grip_ldo>;
 		#io-channel-cells = <1>;
-		status = "disabled"; /* supplies are not identified by vendor DT */
+		status = "okay";
 	};
 };
 
