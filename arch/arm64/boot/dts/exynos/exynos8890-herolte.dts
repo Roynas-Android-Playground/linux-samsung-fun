@@ -25,6 +25,14 @@
 		spi0 = &spi_0;
 		serial0 = &serial_4; // UART
 		serial1 = &serial_1; // Bluetooth
+		/* decon8890/dsim8890/vpp8890, see the &decon8890_f override below */
+		decon0 = &decon8890_f;
+		dsim0 = &dsim8890_0;
+		mdev0 = &mdev0;
+		vpp0 = &vpp8890_0;
+		vpp1 = &vpp8890_1;
+		vpp2 = &vpp8890_2;
+		vpp3 = &vpp8890_3;
 	};
 
 	chosen {
@@ -371,14 +379,18 @@
 	status = "okay";
 };
 
+/*
+ * Swapped from the DRM "takeover" driver to decon8890 (drivers/video/
+ * fbdev/exynos/decon8890/) for real-hardware bring-up testing - only one
+ * of the two can be enabled at a time, they claim the same DECON/VPP-G1/
+ * SysMMU-disp01 registers.
+ */
 &decon_f {
-	vci-supply = <&max77838_ldo1>;
-	vdd3-supply = <&max77838_ldo3>;
-	status = "okay";
+	status = "disabled";
 };
 
 &dsim0_observer {
-	status = "okay";
+	status = "disabled";
 };
 
 &vpp_g1_observer {
@@ -386,6 +398,83 @@
 };
 
 &sysmmu_disp01_observer {
+	status = "disabled";
+};
+
+/ {
+	/*
+	 * decon8890's dsim8890_0 lcd_info phandle target - real timing
+	 * values from vendor's exynos8890-display-lcd.dtsi s6e3ha3 node.
+	 */
+	s6e3ha3_wqhd8890: s6e3ha3-wqhd {
+		mode = <2>;			/* MIPI command mode */
+		resolution = <1440 2560>;
+		resolution_fhd = <1080 1920>;
+		resolution_hd = <720 1280>;
+		size = <63 113>;		/* mm */
+		timing,refresh = <60>;
+		timing,h-porch = <2 2 2>;	/* hbp hfp hsa */
+		timing,v-porch = <15 3 1>;	/* vbp vfp vsa */
+		timing,dsi-hs-clk = <897>;
+		timing,pms = <1 69 1>;		/* p m s */
+		timing,dsi-escape-clk = <20>;
+		mic_en = <1>;
+		mic_ratio = <0>;
+		mic_ver = <2>;
+		type_of_ddi = <0>;
+		dsc_en = <0>;
+		dsc_cnt = <0>;
+		dsc_slice_num = <0>;
+	};
+};
+
+&mdev0 {
+	status = "okay";
+};
+
+&mipi_phy_dsim8890 {
+	status = "okay";
+};
+
+&pd_disp0 {
+	status = "okay";
+};
+
+&sysmmu_disp0_00 {
+	status = "okay";
+};
+
+&sysmmu_disp0_01 {
+	status = "okay";
+};
+
+&dsim8890_0 {
+	lcd_info = <&s6e3ha3_wqhd8890>;
+	/* lcd reset, lcd power (LDO enable) */
+	gpios = <&gpi2 0 0x1>, <&gpd0 4 0x1>;
+	disp_type_gpio = <&gpi2 2 0x0>;
+	regulator_30V = "vdd_3p0_ddi";
+	regulator_18V = "vdd_1p8_ddi";
+	status = "okay";
+};
+
+&decon8890_f {
+	status = "okay";
+};
+
+&vpp8890_0 {
+	status = "okay";
+};
+
+&vpp8890_1 {
+	status = "okay";
+};
+
+&vpp8890_2 {
+	status = "okay";
+};
+
+&vpp8890_3 {
 	status = "okay";
 };
 
@@ -469,7 +558,16 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
-				regulator-name = "max77838_ldo1";
+				/*
+				 * dsim_drv.c's regulator_30V/regulator_18V
+				 * properties are matched by regulator_get(NULL,
+				 * name) against this exact string, not the node
+				 * label. Confirmed against a sibling S7-family
+				 * board's DT using the same max77838 part
+				 * (exynos8890-gracelte_common.dtsi): LDO1 =
+				 * 1.8V = the DDI supply, matching values here.
+				 */
+				regulator-name = "vdd_1p8_ddi";
 			};
 
 			max77838_ldo2: ldo2 {
@@ -482,7 +580,8 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <3000000>;
 				regulator-max-microvolt = <3000000>;
-				regulator-name = "max77838_ldo3";
+				/* LDO3 = 3.0V = the other DDI supply, see ldo1 above. */
+				regulator-name = "vdd_3p0_ddi";
 			};
 
 			max77838_ldo4: ldo4 {

@@ -1110,6 +1110,177 @@
 			status = "disabled";
 		};
 
+		/*
+		 * decon8890/dsim8890/vpp8890 (drivers/video/fbdev/exynos/
+		 * decon8890/): the real, full-featured vendor driver stack,
+		 * as opposed to the read-only "takeover" driver above. Only
+		 * DECON-F (the internal-panel path) and its four DISP0 VPPs
+		 * (G0/G1/VG0/VG1) are wired - DECON-S/T are write-back-only
+		 * paths on the DISP1 domain, not needed to drive the panel.
+		 *
+		 * All reg/interrupts/clock wiring cross-checked against
+		 * vendor's real exynos8890_Oneui.dtsi node definitions
+		 * (decon_f@0x13960000, dsim_0@0x13900000, idma_g0/g1/vg0/
+		 * vg1@0x1395{1,2,3,4}000, sysmmu_disp_{00,01}@0x13a{0,1}0000)
+		 * and this file's own cmu_disp0 clock-ID header
+		 * (include/dt-bindings/clock/samsung,exynos8890-cmu.h).
+		 */
+		mdev0: mdev {
+			compatible = "samsung,exynos5-mdev";
+		};
+
+		mipi_phy_dsim8890: phy@13a6100c {
+			compatible = "samsung,mipi-phy-dsim";
+			reg = <0x13a6100c 0x4>;
+			samsung,pmu-syscon = <&pmu_system_controller>;
+			/* M4S4 (DSIM0/1/2) isolation + reset PMU offsets/bits */
+			isolation = <0x070c 0x0710 0x0730>;
+			reset = <2 1 0>;
+			#phy-cells = <1>;
+		};
+
+		pd_disp0: power-domain@105c4080 {
+			compatible = "samsung,exynos8890-disp-pd";
+			reg = <0x105c4080 0x20>;
+			#power-domain-cells = <0>;
+			label = "DISP0";
+		};
+
+		sysmmu_disp0_00: sysmmu@13a00000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x13a00000 0x1000>;
+			interrupts = <GIC_SPI 191 IRQ_TYPE_LEVEL_HIGH>;
+			clock-names = "aclk", "pclk";
+			clocks = <&cmu_disp0 CLK_GOUT_DISP0_ACLK_SMMU_DISP0_0>,
+				 <&cmu_disp0 CLK_GOUT_DISP0_PCLK_SMMU_DISP0_0>;
+			power-domains = <&pd_disp0>;
+			#iommu-cells = <0>;
+		};
+
+		sysmmu_disp0_01: sysmmu@13a10000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x13a10000 0x1000>;
+			interrupts = <GIC_SPI 193 IRQ_TYPE_LEVEL_HIGH>;
+			clock-names = "aclk", "pclk";
+			clocks = <&cmu_disp0 CLK_GOUT_DISP0_ACLK_SMMU_DISP0_1>,
+				 <&cmu_disp0 CLK_GOUT_DISP0_PCLK_SMMU_DISP0_1>;
+			power-domains = <&pd_disp0>;
+			#iommu-cells = <0>;
+		};
+
+		dsim8890_0: dsim@13900000 {
+			/* vendor's own of_device_id table has this literal
+			 * typo (space after the comma) in both places it's
+			 * matched - must be reproduced exactly. */
+			compatible = "samsung, exynos8-mipi-dsi";
+			reg = <0x13900000 0x100>;
+			interrupts = <GIC_SPI 186 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_disp0>;
+
+			phys = <&mipi_phy_dsim8890 0>;
+			phy-names = "dsim_dphy";
+
+			clocks = <&cmu_disp0 CLK_GOUT_DISP0_PCLK_DSIM0>,
+				 <&cmu_disp0 CLK_GOUT_DISP0_PHYCLK_MIPIDPHY0_RXCLKESC0>,
+				 <&cmu_disp0 CLK_GOUT_DISP0_PHYCLK_MIPIDPHY0_BITCLKDIV8>;
+			clock-names = "dsim_pclk", "dphy_escclk", "dphy_byteclk";
+
+			data_lane_cnt = <4>;
+
+			status = "disabled";
+		};
+
+		decon8890_f: decon@13960000 {
+			compatible = "samsung,exynos8-decon_driver";
+			reg = <0x13960000 0x10000>;
+			interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 181 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 184 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 185 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_disp0>;
+
+			clocks = <&cmu_disp0 CLK_FOUT_DISP_PLL>,
+				 <&cmu_disp0 CLK_GOUT_DISP0_PCLK_DECON0>,
+				 <&cmu_disp0 CLK_MOUT_DISP0_SCLK_DISP0_DECON0_ECLK0_USER>,
+				 <&cmu_disp0 CLK_DOUT_DISP0_SCLK_DECON0_ECLK0>,
+				 <&cmu_disp0 CLK_MOUT_DISP0_SCLK_DISP0_DECON0_VCLK0_USER>,
+				 <&cmu_disp0 CLK_DOUT_DISP0_SCLK_DECON0_VCLK0>;
+			clock-names = "disp_pll", "decon_pclk", "eclk_user",
+				      "eclk_leaf", "vclk_user", "vclk_leaf";
+
+			max_win = <8>;
+			n_sink_pad = <8>;
+			n_src_pad = <1>;
+			default_win = <0>;
+			psr_mode = <2>;		/* 0: video, 1: DP cmd, 2: MIPI cmd */
+			trig_mode = <0>;	/* 0: hw trigger, 1: sw trigger */
+			dsi_mode = <0>;		/* 0: single DSI, 1: dual DSI */
+			out_type = <0>;		/* 0: DSI, 1: eDP, 2: HDMI, 3: WB */
+			out_idx = <0>;		/* 0: DSI0 */
+
+			/* TE gpio, ESD err/panel-connect-detect gpios */
+			gpios = <&gpb0 0 0xf>;
+			gpio_err = <&gpi2 5 0>;
+			gpio_pcd = <&gpe7 1 0>;
+
+			status = "disabled";
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			te_eint {
+				/* NWEINT_GPB0_PEND(GPB0_0), NWEINT_GPB0_MASK(GPB0_0) */
+				reg = <0x136d0a1c 0x4>, <0x136d091c 0x4>;
+			};
+		};
+
+		vpp8890_0: vpp@13951000 {
+			compatible = "samsung,exynos7-vpp";
+			reg = <0x13951000 0x1000>;
+			interrupts = <GIC_SPI 176 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_disp0>;
+			iommus = <&sysmmu_disp0_00>;
+			clocks = <&cmu_disp0 CLK_GOUT_DISP0_ACLK_VPP0_ACLK_0>;
+			clock-names = "vpp_clk";
+			status = "disabled";
+		};
+
+		vpp8890_1: vpp@13952000 {
+			compatible = "samsung,exynos7-vpp";
+			reg = <0x13952000 0x1000>;
+			interrupts = <GIC_SPI 177 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_disp0>;
+			iommus = <&sysmmu_disp0_01>;
+			clocks = <&cmu_disp0 CLK_GOUT_DISP0_ACLK_VPP0_ACLK_1>;
+			clock-names = "vpp_clk";
+			status = "disabled";
+		};
+
+		vpp8890_2: vpp@13953000 {
+			compatible = "samsung,exynos7-vpp";
+			reg = <0x13953000 0x1000>;
+			interrupts = <GIC_SPI 178 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_disp0>;
+			iommus = <&sysmmu_disp0_00>;
+			clocks = <&cmu_disp0 CLK_GOUT_DISP0_ACLK_VPP0_ACLK_0>;
+			clock-names = "vpp_clk";
+			status = "disabled";
+		};
+
+		vpp8890_3: vpp@13954000 {
+			compatible = "samsung,exynos7-vpp";
+			reg = <0x13954000 0x1000>;
+			interrupts = <GIC_SPI 179 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_disp0>;
+			iommus = <&sysmmu_disp0_01>;
+			clocks = <&cmu_disp0 CLK_GOUT_DISP0_ACLK_VPP0_ACLK_1>;
+			clock-names = "vpp_clk";
+			status = "disabled";
+		};
+
 		tmuctrl_0: tmu@10060000 {
 			compatible = "samsung,exynos8890-tmu";
 			reg = <0x10060000 0x200>;
