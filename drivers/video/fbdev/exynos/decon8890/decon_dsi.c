@@ -22,7 +22,23 @@
 #include "dsim.h"
 #include "decon_helper.h"
 
-extern unsigned int lpcharge;
+/*
+ * Real definition normally lives in the Samsung battery/charging stack
+ * (drivers/staging/samsung/sec_batt.c upstream), which isn't ported in
+ * this tree - not porting a whole charging driver for one boot-mode
+ * flag read here (decon_dsi.c checks lpcharge==1 to skip full panel
+ * init when booting into charger-only mode). Same "androidboot.mode="
+ * cmdline arg vendor's sec_bat_is_lpm_check() parses.
+ */
+unsigned int lpcharge;
+EXPORT_SYMBOL(lpcharge);
+static int __init decon_lpcharge_setup(char *str)
+{
+	if (strncmp(str, "charger", 7) == 0)
+		lpcharge = 1;
+	return 1;
+}
+__setup("androidboot.mode=", decon_lpcharge_setup);
 
 unsigned int decon_bootmode;
 EXPORT_SYMBOL(decon_bootmode);
