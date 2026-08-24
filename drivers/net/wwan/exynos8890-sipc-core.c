@@ -7,7 +7,6 @@
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
-#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/rculist.h>
 #include <linux/slab.h>
@@ -158,6 +157,19 @@ int exynos8890_sipc_init_channels(struct exynos8890_sipc *sipc)
 		refcount_set(&channel->users, 1);
 		mutex_init(&channel->tx_lock);
 		init_waitqueue_head(&channel->tx_wait);
+		/*
+		 * tx.queue/rx.queue must be valid the moment this channel
+		 * table exists: exynos8890_transport_close_tx() (reachable
+		 * from .shutdown, unconditionally, at any time - see reboot
+		 * crash in skb_queue_purge_reason()) purges every channel's
+		 * tx.queue regardless of whether the CP ever brought up its
+		 * SBD ring. The rest of struct exynos8890_sbd_ring (buffer
+		 * pointers, slot counts, ...) genuinely can't be set up until
+		 * exynos8890_sbd_init() learns the ring layout from the CP,
+		 * but the plain skb list has no such dependency.
+		 */
+		skb_queue_head_init(&channel->tx.queue);
+		skb_queue_head_init(&channel->rx.queue);
 		channel->started = false;
 		channel->carrier = NULL;
 		channel->ps_multiplex = false;
@@ -425,6 +437,19 @@ int exynos8890_shmem_get(struct device *consumer,
 	shmem = kzalloc(sizeof(*shmem), GFP_KERNEL);
 	if (!shmem)
 		return -ENOMEM;
+	/*
+	 * Deliberately not of_reserved_mem_device_init(consumer): that only
+	 * wires up rmem->ops->device_init, which requires a
+	 * RESERVEDMEM_OF_DECLARE() handler registered for this node's
+	 * "exynos,modem_if" compatible (drivers/misc/mcu_ipc/shm_ipc.c
+	 * provides one, but only under CONFIG_SHM_IPC, which herolte_defconfig
+	 * does not enable) - without it, rmem->ops is NULL and the call
+	 * returns -EINVAL unconditionally. This code never needed it anyway:
+	 * the physical region is resolved directly via
+	 * of_address_to_resource() above and mapped by hand in
+	 * exynos8890_shmem_map() below, bypassing the reserved-mem device/DMA
+	 * API entirely.
+	 */
 	shmem->dev = get_device(consumer);
 	shmem->geometry.base = resource.start;
 	shmem->geometry.total_size = resource_size(&resource);
@@ -437,10 +462,6 @@ int exynos8890_shmem_get(struct device *consumer,
 	ret = exynos8890_shmem_validate(&shmem->geometry);
 	if (ret)
 		goto err_put;
-	ret = of_reserved_mem_device_init(consumer);
-	if (ret)
-		goto err_put;
-	shmem->attached = true;
 	*out = shmem;
 	return 0;
 
@@ -464,8 +485,6 @@ void exynos8890_shmem_put(struct exynos8890_shmem *shmem)
 	shmem->ipc_users = 0;
 	shmem->boot_users = 0;
 	mutex_unlock(&shmem->map_lock);
-	if (shmem->attached)
-		of_reserved_mem_device_release(shmem->dev);
 	put_device(shmem->dev);
 	kfree(shmem);
 }
@@ -1350,36 +1369,59 @@ static int exynos8890_sipc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, sipc);
 
 	ret = exynos8890_sipc_parse_dt(sipc);
-	if (ret)
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret, "failed to parse device tree\n");
 		goto err_srcu;
+	}
 	sipc->cpctl = exynos8890_cpctl_get(&pdev->dev);
 	if (IS_ERR(sipc->cpctl)) {
 		ret = PTR_ERR(sipc->cpctl);
 		sipc->cpctl = NULL;
+		dev_err_probe(&pdev->dev, ret, "failed to get cpctl\n");
 		goto err_srcu;
 	}
 	ret = exynos8890_shmem_get(&pdev->dev, &sipc->shmem);
-	if (ret)
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret,
+			     "failed to get shared memory region\n");
 		goto err_cpctl;
+	}
 	ret = exynos8890_sipc_map_shared_memory(sipc);
-	if (ret)
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret,
+			     "failed to map shared memory\n");
 		goto err_shmem;
+	}
 	ret = exynos8890_sipc_validate_layout(sipc);
-	if (ret)
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret,
+			     "shared memory layout mismatch (base=%pa size=%#zx ipc_base=%p ipc_size=%#zx)\n",
+			     &sipc->shmem->geometry.base,
+			     sipc->shmem->geometry.total_size,
+			     sipc->ipc_base, sipc->ipc_size);
 		goto err_unmap;
+	}
 	ret = exynos8890_sipc_init_channels(sipc);
-	if (ret)
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret, "failed to init channels\n");
 		goto err_unmap;
+	}
 
 	sipc->cp_notifier.notifier_call = exynos8890_sipc_cp_event;
 	ret = exynos8890_cpctl_register_notifier(sipc->cpctl,
 						 &sipc->cp_notifier);
-	if (ret)
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret,
+			     "failed to register cpctl notifier\n");
 		goto err_channels;
+	}
 	sipc->notifier_registered = true;
 	ret = exynos8890_sipc_register_wwan(sipc);
-	if (ret)
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret,
+			     "failed to register wwan endpoints\n");
 		goto err_notifier;
+	}
 
 	dev_info(&pdev->dev, "SIPC5 transport mapped %pa+%#zx (IPC %#zx)\n",
 		 &sipc->shared_phys, sipc->shared_size, sipc->ipc_size);
