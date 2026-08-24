@@ -46,8 +46,23 @@
 #define MSG2SSP_AP_WHOAMI		0x0F
 #define MSG2SSP_AP_FIRMWARE_REV	0xF0
 
+/* [VENDOR] ssp.h MSG2SSP_INST_* — bypass-sensor enable/disable instructions */
+#define MSG2SSP_INST_BYPASS_SENSOR_ADD		0xA1
+#define MSG2SSP_INST_BYPASS_SENSOR_REMOVE	0xA2
+
+/* [VENDOR] sensor_list.h enum sensor_type - only the ones this phase uses */
+#define SSP_SENSOR_ACCELEROMETER	0
+
 /* [VENDOR] ssp.h DEVICE_ID — the only valid WHOAMI response byte */
 #define SSP_DEVICE_ID			0x55
+
+/*
+ * [VENDOR] ssp_sysfs.c set_sensor_cmd(): ADD_SENSOR/CHANGE_DELAY payload is
+ * always period_ms(u32 LE) + max_batch_report_latency_ms(u32 LE) +
+ * batch_options(u8) - 9 bytes after the sensor-type prefix byte
+ * send_instruction() itself prepends.
+ */
+#define SSP_ADD_SENSOR_PAYLOAD_LEN	9
 
 #define SSP_TRANSACT_TIMEOUT_MS	1000
 
@@ -136,6 +151,75 @@ out:
 	return ret;
 }
 
+/*
+ * exynos8890_ssp_instruct() — send one fire-and-forget SSP instruction.
+ *
+ * MSG2SSP_INST_BYPASS_SENSOR_ADD/REMOVE (vendor's send_instruction() in
+ * ssp_i2c.c) are AP2HUB_WRITE-only: the MCU never sends a synchronous
+ * reply, only the sensor data stream that follows once it's enabled -
+ * which this phase does not yet parse (see exynos8890_ssp_recv()). So
+ * this does not wait on @ssp->done the way exynos8890_ssp_transact()
+ * does for WHOAMI; success here only proves the write reached the MCU
+ * over SPI, not that it accepted the instruction.
+ */
+static int exynos8890_ssp_instruct(struct exynos8890_ssp *ssp, u8 cmd,
+				   u8 sensor_type, const u8 *payload,
+				   size_t payload_len)
+{
+	u8 req[SSP_MSG_HEADER_SIZE + 1 + SSP_ADD_SENSOR_PAYLOAD_LEN];
+	size_t body_len = 1 + payload_len;
+
+	if (payload_len > SSP_ADD_SENSOR_PAYLOAD_LEN)
+		return -EINVAL;
+
+	req[0] = cmd;
+	put_unaligned_le16(body_len, &req[1]);
+	put_unaligned_le16(SSP_AP2HUB_WRITE, &req[3]);
+	/* req[5..8] ("data") left zero — unused by these instructions */
+	req[SSP_MSG_HEADER_SIZE] = sensor_type;
+	if (payload_len)
+		memcpy(&req[SSP_MSG_HEADER_SIZE + 1], payload, payload_len);
+
+	return bcm4773_sensor_send(ssp->bcm, req, SSP_MSG_HEADER_SIZE + body_len);
+}
+
+/*
+ * exynos8890_ssp_enable_sensor() — MSG2SSP_INST_BYPASS_SENSOR_ADD.
+ * @period_ms: requested sampling period.
+ * @max_latency_ms: batch max report latency, 0 disables batching.
+ */
+static int exynos8890_ssp_enable_sensor(struct exynos8890_ssp *ssp,
+					u8 sensor_type, u32 period_ms,
+					u32 max_latency_ms)
+{
+	u8 payload[SSP_ADD_SENSOR_PAYLOAD_LEN];
+
+	put_unaligned_le32(period_ms, &payload[0]);
+	put_unaligned_le32(max_latency_ms, &payload[4]);
+	payload[8] = 0; /* batch_options - unused with max_latency_ms == 0 */
+
+	return exynos8890_ssp_instruct(ssp, MSG2SSP_INST_BYPASS_SENSOR_ADD,
+				       sensor_type, payload, sizeof(payload));
+}
+
+/*
+ * exynos8890_ssp_disable_sensor() — MSG2SSP_INST_BYPASS_SENSOR_REMOVE.
+ *
+ * Vendor's REMOVE_SENSOR path shares send_instruction() with ADD but the
+ * only observed real caller in ssp_sysfs.c passes just the sensor-type
+ * prefix and no extra payload; unlike the ADD wire format (independently
+ * confirmed against ssp_sysfs.c's set_sensor_cmd()), the zero-length
+ * REMOVE payload is inferred from that call pattern, not from a payload
+ * struct definition - flagging it as such rather than treating it as
+ * equally confirmed.
+ */
+static int exynos8890_ssp_disable_sensor(struct exynos8890_ssp *ssp,
+					 u8 sensor_type)
+{
+	return exynos8890_ssp_instruct(ssp, MSG2SSP_INST_BYPASS_SENSOR_REMOVE,
+				       sensor_type, NULL, 0);
+}
+
 static int exynos8890_ssp_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -182,6 +266,30 @@ static int exynos8890_ssp_probe(struct platform_device *pdev)
 			 ret, whoami);
 	else
 		dev_warn(dev, "sensor-hub WHOAMI failed: %d\n", ret);
+
+	/*
+	 * Phase 3 first-probe milestone: prove the ADD/REMOVE_SENSOR
+	 * instruction wire format (see exynos8890_ssp_enable_sensor()) round
+	 * trips over the transport at all. Only meaningful once WHOAMI has
+	 * already proven the MCU is alive; a failure here is still
+	 * diagnostic-only; no sensor data is parsed yet (see
+	 * exynos8890_ssp_recv()), so there is nothing further to verify
+	 * against until that lands.
+	 */
+	if (ret == sizeof(whoami) && whoami == SSP_DEVICE_ID) {
+		ret = exynos8890_ssp_enable_sensor(ssp, SSP_SENSOR_ACCELEROMETER,
+						   200, 0);
+		if (ret < 0)
+			dev_warn(dev, "accelerometer ADD_SENSOR failed: %d\n",
+				 ret);
+		else
+			dev_info(dev, "accelerometer ADD_SENSOR sent\n");
+
+		ret = exynos8890_ssp_disable_sensor(ssp, SSP_SENSOR_ACCELEROMETER);
+		if (ret < 0)
+			dev_warn(dev, "accelerometer REMOVE_SENSOR failed: %d\n",
+				 ret);
+	}
 
 	return 0;
 }
