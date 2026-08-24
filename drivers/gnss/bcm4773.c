@@ -28,6 +28,7 @@
 #include <linux/gnss/bcm4773.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -162,6 +163,13 @@ struct tl_parser {
  * @gdev: Linux GNSS core device handle for GNSS function
  * @parser: TransportLayer framing/escaping/CRC parser state machine
  * @io_lock: serializes drain, TX, and probe/remove operations
+ * @link_lock: serializes @link_refcount against concurrent get/put
+ * @link_refcount: number of active callers wanting the link powered —
+ *		   GNSS open/close and sensor-ops register/unregister all
+ *		   go through bcm4773_link_get()/put() rather than the
+ *		   raw enable/disable pair, so the two functions can share
+ *		   one physical chip without either one powering it down
+ *		   while the other still needs it
  * @sensor_ops: registered consumer callbacks for IRpcSensorResponse_Data
  *		RPC records, or NULL if no consumer has attached
  * @sensor_priv: opaque context passed back to @sensor_ops->recv()
@@ -181,6 +189,9 @@ struct bcm4773 {
 	struct tl_parser	parser; /* TransportLayer parser — shared by both functions */
 
 	struct mutex		io_lock; /* serializes SPI access */
+
+	struct mutex		link_lock;
+	unsigned int		link_refcount;
 
 	const struct bcm4773_sensor_ops *sensor_ops;
 	void			*sensor_priv;
@@ -233,7 +244,12 @@ static void tl_parser_init(struct tl_parser *tl)
 	tl->state = TL_STATE_WAIT_ESC_SOP;
 	tl->last_rx_seqid = 0xFF;
 	tl->expected_seqid = 0x01; /* start expecting seqId=1 */
-	tl->tx_seqid = 0x01; /* match the same starting convention for TX */
+	/*
+	 * tl->tx_seqid starts at 0 (left zeroed by memset() above).
+	 * [LHD-RE, RE doc §41.1] confirmed against a real-hardware capture:
+	 * the first frame `lhd` ever transmits (the internal sync frame) is
+	 * sent with SeqId=0, not 1.
+	 */
 }
 
 /*
@@ -530,50 +546,69 @@ static int tl_build_rpc_record(u16 rpc_id, const u8 *payload, size_t len,
  * tl_build_frame() — encode one TransportLayer frame for TX.
  *
  * @tl: parser state, source of the next outgoing seqId
- * @rpc: a fully-formed RPC record (as produced by tl_build_rpc_record()) —
+ * @extra_flags: flags this caller wants set beyond the automatic
+ *               TL_FLAG_SIZE_EXTENDED/TL_FLAG_EXTENDED bookkeeping below —
+ *               e.g. TL_FLAG_INTERNAL_PACKET|TL_FLAG_IGNORE_SEQID for the
+ *               internal sync frame (see tl_build_internal_sync_frame()).
+ *               Every other RPC-carrying caller passes 0 here; the detail
+ *               byte for any bit in @extra_flags other than
+ *               TL_FLAG_SIZE_EXTENDED/TL_FLAG_EXTENDED is always 0 (matches
+ *               [LHD-RE] confirmed real-hardware behavior for
+ *               TL_FLAG_INTERNAL_PACKET/TL_FLAG_IGNORE_SEQID, see §40.2/§41.1
+ *               step 8 of the RE doc).
+ * @rpc: a fully-formed RPC record (as produced by tl_build_rpc_record()), or
+ *       any other raw TL payload (e.g. the fixed internal-sync payload) —
  *       this function wraps it in exactly one TL frame, it does not split
  *       across frames
  * @rpc_len: length of @rpc
  * @out: output buffer, must be at least TL_MAX_TX_FRAME bytes
  *
  * Layout mirrors tl_handle_frame()'s decode exactly: SeqId, PayloadSize,
- * Flags, then one detail byte per set flag bit in bit0->bit15 order (only
- * TL_FLAG_SIZE_EXTENDED's detail byte carries a real value here; this
- * driver never sets any other flag), Payload, CRC-8 — computed over
- * PayloadSize..Payload (SeqId and the CRC byte itself excluded) and
- * nibble-swapped. The whole body (SeqId..CRC inclusive) is then escaped
- * byte-for-byte and bounded by literal, unescaped SOP/EOP marker pairs.
+ * Flags, then one detail byte per set flag bit in bit0->bit15 order, Payload,
+ * CRC-8 — computed over PayloadSize..Payload (SeqId and the CRC byte itself
+ * excluded) and nibble-swapped. The whole body (SeqId..CRC inclusive) is then
+ * escaped byte-for-byte and bounded by literal, unescaped SOP/EOP marker
+ * pairs.
  *
  * [LHD-RE] confirmed byte-for-byte against TransportLayer::BuildAndSendPacket()
- * (lhd .gnu_debugdata offset 0x2a5b4): SOP is a fixed halfword store
- * (`0xB0 0x00`) before the escape loop, not routed through it; SeqId is
- * escape-checked but written before the first Crc8Bits::Update() call; CRC
- * accumulates PayloadSize, Flags, each flag-detail byte, then the raw
- * (unescaped) Payload via a bulk Update(buf,len) call, in that order; the
- * final CRC byte is itself escape-checked before EOP; EOP is a fixed,
- * unescaped `0xB0 0x01` pair. The one confirmed gap here: real firmware also
- * auto-ORs FLAG_PACKET_ACK/FLAG_MSG_LOST/FLAG_MSG_GARBAGE into Flags based on
- * internal RX accounting state before encoding — this driver does not, which
- * is a no-op on the freshly-reset parser state this phase-1 probe runs
- * against, but will need implementing before general reliable/ACK traffic.
+ * (lhd .gnu_debugdata offset 0x2a5b4), and independently re-confirmed against
+ * a real-hardware `strace` capture of `lhd` (RE doc §41.1 — the internal sync
+ * frame `B0 00 00 02 80 03 00 00 00 01 B1 B0 01` and the GetVersion frame
+ * `B0 00 02 02 03 00 00 00 00 BF B0 01` were both CRC-verified byte-for-byte):
+ * SOP is a fixed halfword store (`0xB0 0x00`) before the escape loop, not
+ * routed through it; SeqId is escape-checked but written before the first
+ * Crc8Bits::Update() call; CRC accumulates PayloadSize, Flags, each
+ * flag-detail byte, then the raw (unescaped) Payload via a bulk
+ * Update(buf,len) call, in that order; the final CRC byte is itself
+ * escape-checked before EOP; EOP is a fixed, unescaped `0xB0 0x01` pair. The
+ * one confirmed gap here: real firmware also auto-ORs
+ * FLAG_PACKET_ACK/FLAG_MSG_LOST/FLAG_MSG_GARBAGE into Flags based on internal
+ * RX accounting state before encoding (confirmed live in §41.1's GetVersion
+ * frame, which real `lhd` sent with FLAG_PACKET_ACK|FLAG_RELIABLE_PACKET, not
+ * flags=0) — this driver does not do that piggybacking, which is a no-op on
+ * the freshly-reset parser state this phase-1 probe runs against (nothing
+ * pending to ack/report yet), but will need implementing before general
+ * reliable/ACK traffic.
  *
  * Returns the number of bytes written to @out, or a negative errno.
  */
-static int tl_build_frame(struct tl_parser *tl, const u8 *rpc, size_t rpc_len,
-			  u8 *out)
+static int tl_build_frame(struct tl_parser *tl, u16 extra_flags,
+			  const u8 *rpc, size_t rpc_len, u8 *out)
 {
 	u8 body[TL_MAX_TX_BODY];
 	unsigned int pos = 0;
 	unsigned int bit;
 	unsigned int escaped;
 	unsigned int i;
-	u16 flags = 0;
+	u16 flags = extra_flags;
 	u8 crc = 0;
 
 	if (rpc_len > TL_MAX_TX_PAYLOAD)
 		return -EMSGSIZE;
 	if (rpc_len > 0xff)
 		flags |= TL_FLAG_SIZE_EXTENDED;
+	if (flags > 0xff)
+		flags |= TL_FLAG_EXTENDED;
 
 	body[pos++] = tl->tx_seqid;
 	body[pos++] = rpc_len & 0xff;
@@ -586,8 +621,10 @@ static int tl_build_frame(struct tl_parser *tl, const u8 *rpc, size_t rpc_len,
 			continue;
 		if (flag == TL_FLAG_SIZE_EXTENDED)
 			body[pos++] = (rpc_len >> 8) & 0xff;
+		else if (flag == TL_FLAG_EXTENDED)
+			body[pos++] = (flags >> 8) & 0xff;
 		else
-			body[pos++] = 0; /* no other flags used by this driver */
+			body[pos++] = 0; /* no other flags carry real data here */
 	}
 
 	memcpy(&body[pos], rpc, rpc_len);
@@ -816,7 +853,7 @@ static int bcm4773_rpc_send(struct bcm4773 *bcm, u16 rpc_id,
 
 	mutex_lock(&bcm->io_lock);
 
-	frame_len = tl_build_frame(&bcm->parser, rpc_buf, rpc_len, frame);
+	frame_len = tl_build_frame(&bcm->parser, 0, rpc_buf, rpc_len, frame);
 	if (frame_len < 0) {
 		ret = frame_len;
 		goto out;
@@ -838,6 +875,138 @@ out:
 	mutex_unlock(&bcm->io_lock);
 
 	return ret;
+}
+
+/*
+ * bcm4773_tl_sync() — send the internal TransportLayer sync frame.
+ *
+ * [LHD-RE, RE doc §41.1/§41.2] Every real-hardware trace of `lhd` sends
+ * exactly this frame before any RPC, and only sends GetVersion afterward:
+ *
+ *   TX: B0 00 00 02 80 03 00 00 00 01 B1 B0 01
+ *
+ * i.e. SeqId=0, Flags=TL_FLAG_EXTENDED|TL_FLAG_INTERNAL_PACKET|
+ * TL_FLAG_IGNORE_SEQID, a fixed opaque 2-byte payload {0x00,0x01}. This was
+ * captured and CRC-verified byte-for-byte against a real device's `strace`.
+ * Its response payload semantics are not decoded here — TL_FLAG_INTERNAL_PACKET
+ * frames are already routed away from RPC parsing in tl_handle_frame(), so
+ * simply exchanging this frame (and letting the normal drain path consume
+ * whatever comes back) is enough to bring this driver's TransportLayer
+ * session state in line with what every observed real trace does before any
+ * RPC traffic.
+ *
+ * Whether real firmware actually *requires* this step before it will answer
+ * GetVersion, as opposed to merely always seeing it first in stock traffic,
+ * is not proven — see RE doc §41.2. This is therefore sent best-effort: a
+ * failure or timed-out response is logged but does not block the caller from
+ * still attempting its own RPC afterward.
+ */
+static void bcm4773_tl_sync(struct bcm4773 *bcm)
+{
+	static const u8 sync_payload[2] = { 0x00, 0x01 };
+	u8 frame[TL_MAX_TX_FRAME];
+	unsigned long timeout;
+	int frame_len;
+	int ret;
+
+	mutex_lock(&bcm->io_lock);
+
+	frame_len = tl_build_frame(&bcm->parser,
+				   TL_FLAG_INTERNAL_PACKET | TL_FLAG_IGNORE_SEQID,
+				   sync_payload, sizeof(sync_payload), frame);
+	if (frame_len < 0) {
+		ret = frame_len;
+		goto out;
+	}
+
+	ret = bcm4773_hello(bcm);
+	if (ret)
+		goto out;
+
+	ret = bcm4773_drain_locked(bcm);
+	if (ret)
+		goto out_bye;
+
+	ret = bcm4773_ssi_write(bcm, frame, frame_len);
+	if (ret)
+		goto out_bye;
+
+	/* Real hardware answered within ~8ms (RE doc §41.1); allow headroom. */
+	timeout = jiffies + msecs_to_jiffies(200);
+	while (time_before(jiffies, timeout)) {
+		if (gpiod_get_value_cansleep(bcm->host_req)) {
+			bcm4773_drain_locked(bcm);
+			break;
+		}
+		usleep_range(1000, 2000);
+	}
+
+out_bye:
+	bcm4773_bye(bcm);
+out:
+	mutex_unlock(&bcm->io_lock);
+
+	if (ret)
+		dev_dbg(&bcm->spi->dev,
+			"TransportLayer sync send failed: %d\n", ret);
+}
+
+/*
+ * bcm4773_link_up() / bcm4773_link_down() — power the GNSS front-end and
+ * arm/disarm the HOST_REQ IRQ. Factored out of bcm4773_gnss_open()/close()
+ * so bcm4773_probe() can also run the version self-test (see
+ * bcm4773_version_probe()) unconditionally at boot, symmetrically.
+ */
+static void bcm4773_link_up(struct bcm4773 *bcm)
+{
+	mutex_lock(&bcm->io_lock);
+
+	gpiod_set_value_cansleep(bcm->enable, 1);
+
+	bcm->irq_enabled = true;
+	enable_irq(bcm->irq);
+
+	mutex_unlock(&bcm->io_lock);
+}
+
+static void bcm4773_link_down(struct bcm4773 *bcm)
+{
+	if (bcm->irq_enabled) {
+		bcm->irq_enabled = false;
+		disable_irq(bcm->irq);
+	}
+
+	mutex_lock(&bcm->io_lock);
+	bcm4773_bye(bcm);
+	gpiod_set_value_cansleep(bcm->enable, 0);
+	mutex_unlock(&bcm->io_lock);
+}
+
+/*
+ * bcm4773_link_get() / bcm4773_link_put() — reference-counted wrappers
+ * around bcm4773_link_up()/down().
+ *
+ * GNSS open/close and sensor-ops register/unregister are independent
+ * consumers of the same physical chip: without refcounting, whichever one
+ * releases the link first powers it down for the other. This was caught by
+ * a real boot where the sensor-hub WHOAMI probe timed out because
+ * bcm4773_probe()'s own self-test had already brought the link back down
+ * before the sensor-hub's platform driver got a chance to probe.
+ */
+static void bcm4773_link_get(struct bcm4773 *bcm)
+{
+	mutex_lock(&bcm->link_lock);
+	if (bcm->link_refcount++ == 0)
+		bcm4773_link_up(bcm);
+	mutex_unlock(&bcm->link_lock);
+}
+
+static void bcm4773_link_put(struct bcm4773 *bcm)
+{
+	mutex_lock(&bcm->link_lock);
+	if (!WARN_ON(bcm->link_refcount == 0) && --bcm->link_refcount == 0)
+		bcm4773_link_down(bcm);
+	mutex_unlock(&bcm->link_lock);
 }
 
 /* ========================== Exported sensor RPC API ======================= */
@@ -907,6 +1076,14 @@ int bcm4773_register_sensor_ops(struct bcm4773 *bcm,
 	bcm->sensor_priv = priv;
 	mutex_unlock(&bcm->io_lock);
 
+	/*
+	 * The sensor-hub MCU shares the same physical link as GNSS: keep it
+	 * powered for as long as this consumer is registered, independently
+	 * of whether anything has opened the GNSS device (see
+	 * bcm4773_link_get()).
+	 */
+	bcm4773_link_get(bcm);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(bcm4773_register_sensor_ops);
@@ -920,6 +1097,8 @@ void bcm4773_unregister_sensor_ops(struct bcm4773 *bcm)
 	bcm->sensor_ops = NULL;
 	bcm->sensor_priv = NULL;
 	mutex_unlock(&bcm->io_lock);
+
+	bcm4773_link_put(bcm);
 }
 EXPORT_SYMBOL_GPL(bcm4773_unregister_sensor_ops);
 
@@ -971,6 +1150,15 @@ static irqreturn_t bcm4773_irq_thread(int irq, void *data)
 	bcm4773_bye(bcm);
 	mutex_unlock(&bcm->io_lock);
 
+	/*
+	 * Phase-1 bring-up visibility: a boot where this line never appears
+	 * at all means HOST_REQ never asserted (nothing to distinguish from
+	 * "chip never answered" vs "answered but we never saw the IRQ"
+	 * without it) — see bcm4773_version_probe().
+	 */
+	dev_info_ratelimited(&bcm->spi->dev, "HOST_REQ IRQ serviced: %d\n",
+			     ret);
+
 	if (ret)
 		dev_err_ratelimited(&bcm->spi->dev,
 			    "receive failed: %d\n", ret);
@@ -980,37 +1168,50 @@ static irqreturn_t bcm4773_irq_thread(int irq, void *data)
 
 /* ========================== GNSS core operations ========================= */
 
+/*
+ * bcm4773_version_probe() — phase 1 diagnostic round trip (see
+ * Documentation/driver-api/iio/exynos8890-sensorhub.rst): send the internal
+ * TransportLayer sync frame — every real-hardware trace of `lhd` sends this
+ * before any RPC (RE doc §41.1/§41.2) — then a GetVersion request, and let
+ * whatever comes back be logged by tl_parse_rpc_payload()'s
+ * BCM4773_RPC_VERSION_RESPONSE branch. This only proves the TX encoder and
+ * RX decoder are mutually consistent on real hardware — a failure here must
+ * never be allowed to fail GNSS open or driver probe.
+ *
+ * Caller must have already called bcm4773_link_up().
+ */
+static void bcm4773_version_probe(struct bcm4773 *bcm)
+{
+	int ret;
+
+	bcm4773_tl_sync(bcm);
+
+	ret = bcm4773_rpc_send(bcm, BCM4773_RPC_GET_VERSION_REQ, NULL, 0);
+	if (ret)
+		dev_warn(&bcm->spi->dev,
+			"GetVersion probe failed: %d%s\n", ret,
+			ret == -ETIMEDOUT ?
+			" (GPIO handshake timeout — mcu_resp never asserted)" :
+			"");
+	else
+		/*
+		 * The GPIO wake handshake (bcm4773_hello()) and SPI write both
+		 * succeeded here — this only proves the request was sent, not
+		 * that the chip answered. See bcm4773_irq_thread()'s
+		 * "HOST_REQ IRQ serviced" line for whether any response ever
+		 * arrived, and the "BCM4773 ASIC=..." line for whether it
+		 * decoded as a valid VersionResponse.
+		 */
+		dev_info(&bcm->spi->dev,
+			"GetVersion request sent, awaiting HOST_REQ response\n");
+}
+
 static int bcm4773_gnss_open(struct gnss_device *gdev)
 {
 	struct bcm4773 *bcm = gnss_get_drvdata(gdev);
 
-	mutex_lock(&bcm->io_lock);
-
-	gpiod_set_value_cansleep(bcm->enable, 1);
-
-	bcm->irq_enabled = true;
-	enable_irq(bcm->irq);
-
-	mutex_unlock(&bcm->io_lock);
-
-	/*
-	 * Phase 1 diagnostic round trip (see
-	 * Documentation/driver-api/iio/exynos8890-sensorhub.rst): send a
-	 * GetVersion request and let whatever comes back be logged by
-	 * tl_parse_rpc_payload()'s diagnostic path. This only proves the TX
-	 * encoder and RX decoder are mutually consistent on real hardware —
-	 * it must never be allowed to fail GNSS open.
-	 */
-	{
-		int ret = bcm4773_rpc_send(bcm, BCM4773_RPC_GET_VERSION_REQ,
-					   NULL, 0);
-		if (ret)
-			dev_warn(&bcm->spi->dev,
-				"GetVersion probe failed: %d%s\n", ret,
-				ret == -ETIMEDOUT ?
-				" (GPIO handshake timeout — mcu_resp never asserted)" :
-				"");
-	}
+	bcm4773_link_get(bcm);
+	bcm4773_version_probe(bcm);
 
 	return 0;
 }
@@ -1019,15 +1220,7 @@ static void bcm4773_gnss_close(struct gnss_device *gdev)
 {
 	struct bcm4773 *bcm = gnss_get_drvdata(gdev);
 
-	if (bcm->irq_enabled) {
-		bcm->irq_enabled = false;
-		disable_irq(bcm->irq);
-	}
-
-	mutex_lock(&bcm->io_lock);
-	bcm4773_bye(bcm);
-	gpiod_set_value_cansleep(bcm->enable, 0);
-	mutex_unlock(&bcm->io_lock);
+	bcm4773_link_put(bcm);
 }
 
 static int bcm4773_gnss_write_raw(struct gnss_device *gdev,
@@ -1081,6 +1274,7 @@ static int bcm4773_probe(struct spi_device *spi)
 
 	bcm->spi = spi;
 	mutex_init(&bcm->io_lock);
+	mutex_init(&bcm->link_lock);
 	tl_parser_init(&bcm->parser);
 
 	bcm->enable = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
@@ -1142,6 +1336,20 @@ static int bcm4773_probe(struct spi_device *spi)
 
 	dev_info(dev, "BCM4773 raw BBD transport registered as %s\n",
 		 dev_name(&gdev->dev));
+
+	/*
+	 * Phase-1 hardware bring-up proof (RE doc Milestone 4 / §41): run
+	 * once here, unconditionally, so a boot-time dmesg alone is enough
+	 * to prove GPIO handshake + SSI + TransportLayer TX/RX + RPC
+	 * round-trip all work on real hardware — no GNSS userspace client
+	 * has to open /dev/gnssN first. Leaves the link in the same
+	 * disabled/idle state bcm4773_gnss_close() would (enable GPIO low,
+	 * IRQ disabled), matching what gnss_register_device() expects prior
+	 * to the first real open().
+	 */
+	bcm4773_link_get(bcm);
+	bcm4773_version_probe(bcm);
+	bcm4773_link_put(bcm);
 
 	return 0;
 }
