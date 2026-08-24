@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: GPL-2.0
+
+config EXYNOS8890_DECON
+	bool "Samsung Exynos8890 DECON/DSIM/VPP display driver"
+	depends on FB && ARCH_EXYNOS
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	select MEDIA_SUPPORT
+	select MEDIA_CONTROLLER
+	select VIDEO_DEV
+	select DECON_EVENT_LOG
+	select EXYNOS_VPP
+	select PANEL_S6E3HA3_DYNAMIC
+	help
+	  Ported from vendor drivers/video/fbdev/exynos/decon_8890/: DECON
+	  display controller, DSIM MIPI-DSI host, VPP window DMA, and the
+	  S6E3HA3 dynamic-backlight panel driver used on herolte. This models
+	  vendor's real init/mode-set sequencing rather than the read-only
+	  "inherited state" takeover in drivers/gpu/drm/exynos/
+	  exynos8890_drm_decon.c.
+
+config PANEL_S6E3HA3_DYNAMIC
+	bool "S6E3HA3 dynamic-AID-dimming AMOLED panel (herolte)"
+	depends on EXYNOS8890_DECON
+	select PANEL_AID_DIMMING
+	help
+	  The S6E3HA3 WQHD AMOLED panel driven over MIPI-DSI, as used on
+	  herolte, with per-frame AID/ACL brightness dimming. Selects the
+	  panels/s6e3ha3_s6e3ha2_wqhd_param.h command/gamma tables.
+
+config PANEL_AID_DIMMING
+	bool
+	help
+	  Per-gray-level AID (Analog and Digital Illumination) brightness
+	  interpolation, used by AMOLED panels that don't do dimming in the
+	  DDI itself.
+
+config DECON_EVENT_LOG
+	bool
+	help
+	  DECON/DSIM/VPP event-history ring buffer (DISP_SS_EVENT_LOG and
+	  friends in decon.h), dumped via debugfs on underrun/hang. decon.h
+	  also defines struct esd_protect and the disp_ss_log types inside
+	  this same #ifdef block, so it is required unconditionally, not
+	  just a debug nice-to-have.
+
+config EXYNOS_VPP
+	bool
+	help
+	  Creates the media-controller pad links between the VPP window-DMA
+	  subdevs and DECON's sink pads in decon_create_links() - required
+	  for the VPP<->DECON composition pipeline this port already relies
+	  on throughout (vpp_drv.c, decon_core.c's v4l2_subdev_call() into
+	  VPP_WIN_CONFIG etc.), not an optional feature.
