@@ -194,12 +194,15 @@ config ARM_S5PV210_CPUFREQ
 config ARM_EXYNOS8890_CPUFREQ
 	tristate "Samsung Exynos8890 CPU frequency scaling"
 	depends on ARM64 && ARCH_EXYNOS && OF && REGULATOR
-	depends on EXYNOS8890_ECT
+	depends on EXYNOS8890_PWRCAL
 	select PM_DEVFREQ
 	help
 	  Dedicated dual-cluster CPUFreq support for the Apollo Cortex-A53 and
-	  Mongoose M1 CPU domains in Exynos8890. The driver consumes qualified
-	  ECT/ASV tables and performs BUS-PLL-safe clock transitions.
+	  Mongoose M1 CPU domains in Exynos8890. The driver is a thin wrapper
+	  over the ported pwrcal DFS layer (cal_dfs_set_rate()/set_ema()),
+	  which owns the qualified ECT/ASV tables and BUS-PLL-safe clock
+	  transitions; this driver only handles cpufreq glue, regulator
+	  voltage sequencing, and the MIF frequency floor.
 
 config ARM_SA1110_CPUFREQ
 	bool

@@ -2,13 +2,19 @@
 /*
  * Samsung Exynos8890 dual-cluster CPU frequency scaling.
  *
- * The driver consumes fuse-qualified ECT rows and performs CAL-equivalent
- * BUS-PLL switching. It refuses to probe unless the APM Cortex-M3 is off and
- * a MIF devfreq provider is available, so Linux never races autonomous DVFS
+ * Thin wrapper over the ported pwrcal DFS layer
+ * (drivers/soc/samsung/pwrcal8890/), matching vendor's own
+ * exynos-mp-cpufreq-cal.c calling convention: cal_dfs_set_rate() owns the
+ * entire PLL-switch/divider dance and cal_dfs_set_ema() owns per-voltage
+ * EMA tuning internally - this driver only owns what's Linux-framework
+ * specific and outside pwrcal's scope: the cpufreq_driver glue, regulator
+ * voltage sequencing around each rate change, and the MIF PM QoS floor.
+ *
+ * It still refuses to probe unless the APM Cortex-M3 is off and a MIF
+ * devfreq provider is available, so Linux never races autonomous DVFS
  * firmware or omits the vendor CPU-to-memory frequency floor.
  */
 
-#include <linux/clk.h>
 #include <linux/cpufreq.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -21,7 +27,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/soc/samsung/exynos8890-apm.h>
-#include <linux/soc/samsung/exynos8890-ect.h>
+#include <linux/soc/samsung/exynos8890-pwrcal.h>
 #include <linux/mfd/syscon.h>
 
 #define EXYNOS8890_CLUSTERS		2
@@ -29,12 +35,12 @@
 #define EXYNOS8890_MONGOOSE		1
 #define EXYNOS8890_APM_STATUS		0x2504
 #define EXYNOS8890_APM_STATUS_ON	BIT(0)
-#define EXYNOS8890_APOLLO_EMA_CON	0x320
-#define EXYNOS8890_MNGS_EMA_CON	0x314
-#define EXYNOS8890_MNGS_ASSIST_CON	0x1040
 #define EXYNOS8890_COLD_OFFSET_UV	25000
 #define EXYNOS8890_COLD_LIMIT_UV	1350000
 #define EXYNOS8890_TRANSITION_LATENCY	100000
+
+/* Matches cal_dfs_get_rate_asv_table()'s own internal "rate[48]" cap. */
+#define EXYNOS8890_DFS_MAX_LEVELS	48
 
 struct exynos8890_bus_lock {
 	u32 rate_khz;
@@ -62,28 +68,15 @@ static const struct exynos8890_bus_lock mongoose_bus_locks[] = {
 	{ 520000, 0 }, { 416000, 0 }, { 312000, 0 }, { 208000, 0 },
 };
 
-static const unsigned long switch_rates[] = {
-	1056000000, 528000000, 352000000, 264000000, 176000000, 96000000,
-};
-
 struct exynos8890_cluster {
 	const char *name;
-	struct exynos8890_ect_cpu_domain ect;
-	struct cpufreq_frequency_table table[EXYNOS8890_ECT_MAX_LEVELS + 1];
+	unsigned int vclk_id;
+	struct cpufreq_frequency_table table[EXYNOS8890_DFS_MAX_LEVELS + 1];
+	u32 voltage_uv[EXYNOS8890_DFS_MAX_LEVELS];
 	u32 num_table;
-	struct clk *pll;
-	struct clk *pll_user;
-	struct clk *bus_user;
-	struct clk *mux;
-	struct clk *root;
-	struct clk *switch_div;
-	struct clk *switch_gate;
-	struct clk *members[EXYNOS8890_ECT_MAX_CLOCKS];
 	struct regulator *regulator;
-	struct regmap *ema;
 	const struct exynos8890_bus_lock *bus_locks;
 	size_t num_bus_locks;
-	u32 max_supported_khz;
 	struct cpumask cpus;
 	struct mutex lock;
 	bool faulted;
@@ -124,139 +117,6 @@ static int exynos8890_update_mif(struct exynos8890_cpufreq *data,
 	return ret < 0 ? ret : 0;
 }
 
-static int exynos8890_set_ema(struct exynos8890_cluster *cluster, u32 voltage)
-{
-	if (cluster == &exynos8890_cpufreq_data->cluster[EXYNOS8890_APOLLO])
-		return regmap_write(cluster->ema, EXYNOS8890_APOLLO_EMA_CON, 0x492);
-
-	if (regmap_write(cluster->ema, EXYNOS8890_MNGS_ASSIST_CON, 0))
-		return -EIO;
-	if (voltage >= 1106000)
-		return regmap_write(cluster->ema, EXYNOS8890_MNGS_EMA_CON, 0xe91b9);
-	if (voltage >= 900000)
-		return regmap_write(cluster->ema, EXYNOS8890_MNGS_EMA_CON, 0x1091b9);
-	return regmap_write(cluster->ema, EXYNOS8890_MNGS_EMA_CON, 0x1095b9);
-}
-
-static int exynos8890_set_member_dividers(struct exynos8890_cluster *cluster,
-					 unsigned int level, unsigned int other,
-					 bool safe)
-{
-	int i, ret;
-
-	for (i = 1; i < cluster->ect.num_clocks; i++) {
-		u32 divider = cluster->ect.levels[level].clock_values[i];
-		unsigned long parent_rate, rate;
-
-		if (safe)
-			divider = max(divider,
-				      cluster->ect.levels[other].clock_values[i]);
-		parent_rate = clk_get_rate(clk_get_parent(cluster->members[i]));
-		if (!parent_rate)
-			return -EINVAL;
-		rate = DIV_ROUND_UP(parent_rate, divider + 1);
-		ret = clk_set_rate(cluster->members[i], rate);
-		if (ret)
-			return ret;
-	}
-	return 0;
-}
-
-static int exynos8890_switch_clock(struct exynos8890_cluster *cluster,
-				   unsigned int old_level,
-				   unsigned int new_level)
-{
-	unsigned long old_rate = cluster->ect.levels[old_level].rate_khz * 1000UL;
-	unsigned long new_rate = cluster->ect.levels[new_level].rate_khz * 1000UL;
-	unsigned long limit = min(old_rate, new_rate);
-	unsigned long parent_rate, request, selected = 0;
-	unsigned int divider = 0;
-	bool on_bus = false, pll_changed = false;
-	int i, restore_ret, ret;
-
-	for (i = 0; i < ARRAY_SIZE(switch_rates); i++) {
-		divider = DIV_ROUND_UP(switch_rates[i], limit);
-		if (divider >= 1 && divider <= 64) {
-			selected = switch_rates[i];
-			break;
-		}
-	}
-	if (!selected)
-		return -ERANGE;
-
-	ret = clk_set_rate(cluster->switch_div, selected);
-	if (ret)
-		return ret;
-	ret = clk_prepare_enable(cluster->switch_gate);
-	if (ret)
-		return ret;
-	ret = clk_set_parent(cluster->bus_user, cluster->switch_gate);
-	if (ret)
-		goto out;
-	ret = exynos8890_set_member_dividers(cluster, new_level, old_level, true);
-	if (ret)
-		goto out;
-	parent_rate = clk_get_rate(clk_get_parent(cluster->root));
-	request = DIV_ROUND_UP(parent_rate, divider);
-	ret = clk_set_rate(cluster->root, request);
-	if (ret)
-		goto out;
-	ret = clk_set_parent(cluster->mux, cluster->bus_user);
-	if (ret)
-		goto out;
-	on_bus = true;
-	if (clk_get_rate(cluster->root) > limit) {
-		ret = -ERANGE;
-		goto restore_parent;
-	}
-	ret = clk_set_rate(cluster->pll, new_rate);
-	if (ret)
-		goto restore_parent;
-	pll_changed = true;
-
-	/* Leave the switch source before applying target divider decreases. */
-	ret = clk_set_parent(cluster->mux, cluster->pll_user);
-	if (ret)
-		goto restore_parent;
-	on_bus = false;
-	ret = clk_set_rate(cluster->root, new_rate);
-	if (!ret)
-		ret = exynos8890_set_member_dividers(cluster, new_level, old_level,
-						       false);
-	if (ret || clk_get_rate(cluster->root) != new_rate) {
-		cluster->faulted = true;
-		/* The CPU reached its new rate; retain conservative dividers. */
-		if (clk_get_rate(cluster->root) == new_rate)
-			ret = 0;
-		else
-			ret = ret ?: -EIO;
-	}
-	goto out;
-
-restore_parent:
-	if (pll_changed) {
-		restore_ret = clk_set_rate(cluster->pll, old_rate);
-		if (restore_ret)
-			cluster->faulted = true;
-	}
-	restore_ret = clk_set_parent(cluster->mux, cluster->pll_user);
-	if (!restore_ret) {
-		on_bus = false;
-		if (pll_changed &&
-		    (clk_set_rate(cluster->root, old_rate) ||
-		     exynos8890_set_member_dividers(cluster, old_level, new_level,
-						      false)))
-			cluster->faulted = true;
-	} else {
-		cluster->faulted = true;
-	}
-out:
-	/* Never gate the source while it can still be feeding the CPUs. */
-	if (!on_bus)
-		clk_disable_unprepare(cluster->switch_gate);
-	return ret;
-}
-
 static unsigned int exynos8890_cpufreq_get(unsigned int cpu)
 {
 	struct exynos8890_cpufreq *data = exynos8890_cpufreq_data;
@@ -264,7 +124,7 @@ static unsigned int exynos8890_cpufreq_get(unsigned int cpu)
 
 	for (i = 0; i < EXYNOS8890_CLUSTERS; i++)
 		if (cpumask_test_cpu(cpu, &data->cluster[i].cpus))
-			return clk_get_rate(data->cluster[i].root) / 1000;
+			return cal_dfs_get_rate(data->cluster[i].vclk_id);
 	return 0;
 }
 
@@ -273,21 +133,15 @@ static int exynos8890_target_index(struct cpufreq_policy *policy,
 {
 	struct exynos8890_cpufreq *data = exynos8890_cpufreq_data;
 	struct exynos8890_cluster *cluster = policy->driver_data;
-	unsigned int new_level = cluster->table[index].driver_data;
+	unsigned int new_rate = cluster->table[index].frequency;
 	unsigned int old_rate = exynos8890_cpufreq_get(policy->cpu);
-	unsigned int old_level, new_rate, new_voltage;
+	unsigned int cluster_idx = cluster - data->cluster;
+	u32 new_voltage = cluster->voltage_uv[index];
 	u32 mif_lock, old_mif_lock;
 	int delay, old_voltage, ret;
 
-	for (old_level = 0; old_level < cluster->ect.num_levels; old_level++)
-		if (cluster->ect.levels[old_level].rate_khz == old_rate)
-			break;
-	if (old_level == cluster->ect.num_levels)
-		return -EINVAL;
-	new_rate = cluster->ect.levels[new_level].rate_khz;
 	if (new_rate == old_rate)
 		return 0;
-	new_voltage = cluster->ect.levels[new_level].voltage_uv;
 	if (new_voltage <= EXYNOS8890_COLD_LIMIT_UV - EXYNOS8890_COLD_OFFSET_UV)
 		new_voltage += EXYNOS8890_COLD_OFFSET_UV;
 	mif_lock = exynos8890_mif_lock(cluster, new_rate);
@@ -304,36 +158,37 @@ static int exynos8890_target_index(struct cpufreq_policy *policy,
 		goto out_unlock;
 	}
 	if (new_rate > old_rate) {
-		ret = exynos8890_update_mif(data, cluster - data->cluster, mif_lock);
+		ret = exynos8890_update_mif(data, cluster_idx, mif_lock);
 		if (ret)
 			goto out_unlock;
 		ret = regulator_set_voltage_triplet(cluster->regulator, new_voltage,
 						    new_voltage, new_voltage);
 		if (ret) {
-			exynos8890_update_mif(data, cluster - data->cluster,
-					      old_mif_lock);
+			exynos8890_update_mif(data, cluster_idx, old_mif_lock);
 			goto out_unlock;
 		}
 		delay = regulator_set_voltage_time(cluster->regulator, old_voltage,
 						   new_voltage);
 		if (delay > 0)
 			usleep_range(delay, delay + 50);
-		ret = exynos8890_set_ema(cluster, new_voltage);
-		if (ret) {
+		if (cal_dfs_set_ema(cluster->vclk_id, new_voltage) < 0) {
 			regulator_set_voltage_triplet(cluster->regulator, old_voltage,
 						      old_voltage, old_voltage);
-			exynos8890_update_mif(data, cluster - data->cluster,
-					      old_mif_lock);
+			exynos8890_update_mif(data, cluster_idx, old_mif_lock);
+			ret = -EIO;
 			goto out_unlock;
 		}
 	}
-	ret = exynos8890_switch_clock(cluster, old_level, new_level);
-	if (ret) {
+
+	if (cal_dfs_set_rate(cluster->vclk_id, new_rate) < 0) {
 		cluster->faulted = true;
+		ret = -EIO;
 		goto out_unlock;
 	}
+	ret = 0;
+
 	if (new_rate < old_rate) {
-		ret = exynos8890_set_ema(cluster, new_voltage);
+		ret = cal_dfs_set_ema(cluster->vclk_id, new_voltage) < 0 ? -EIO : 0;
 		if (!ret)
 			ret = regulator_set_voltage_triplet(cluster->regulator,
 							    new_voltage, new_voltage,
@@ -345,8 +200,7 @@ static int exynos8890_target_index(struct cpufreq_policy *policy,
 				usleep_range(delay, delay + 50);
 		}
 		if (!ret)
-			ret = exynos8890_update_mif(data, cluster - data->cluster,
-						     mif_lock);
+			ret = exynos8890_update_mif(data, cluster_idx, mif_lock);
 		if (ret < 0) {
 			cluster->voltage_degraded = true;
 			dev_warn(data->dev,
@@ -365,7 +219,6 @@ static int exynos8890_policy_init(struct cpufreq_policy *policy)
 {
 	struct exynos8890_cpufreq *data = exynos8890_cpufreq_data;
 	struct exynos8890_cluster *cluster = NULL;
-	u32 resume_rate;
 	int i;
 
 	for (i = 0; i < EXYNOS8890_CLUSTERS; i++)
@@ -381,16 +234,6 @@ static int exynos8890_policy_init(struct cpufreq_policy *policy)
 	policy->freq_table = cluster->table;
 	policy->cpuinfo.transition_latency = EXYNOS8890_TRANSITION_LATENCY;
 	policy->cur = exynos8890_cpufreq_get(policy->cpu);
-	if (cluster->ect.resume_level < 0)
-		return -EINVAL;
-	resume_rate = cluster->ect.levels[cluster->ect.resume_level].rate_khz;
-	for (i = 0; i < cluster->num_table; i++)
-		if (cluster->table[i].frequency == resume_rate) {
-			policy->suspend_freq = resume_rate;
-			break;
-		}
-	if (i == cluster->num_table)
-		return -EINVAL;
 	return cpufreq_table_validate_and_sort(policy);
 }
 
@@ -403,87 +246,38 @@ static struct cpufreq_driver exynos8890_cpufreq_driver = {
 	.suspend = cpufreq_generic_suspend,
 };
 
-static struct clk *exynos8890_get_cluster_clock(struct platform_device *pdev,
-						const char *prefix,
-						const char *suffix)
-{
-	char name[64];
-
-	snprintf(name, sizeof(name), "%s-%s", prefix, suffix);
-	return devm_clk_get(&pdev->dev, name);
-}
-
-static int exynos8890_check_cluster_clocks(struct exynos8890_cluster *cluster)
-{
-	struct clk *clocks[] = {
-		cluster->pll, cluster->pll_user, cluster->bus_user, cluster->mux,
-		cluster->root, cluster->switch_div, cluster->switch_gate,
-	};
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(clocks); i++)
-		if (IS_ERR(clocks[i]))
-			return PTR_ERR(clocks[i]);
-	return 0;
-}
-
 static int exynos8890_init_cluster(struct platform_device *pdev,
 				   struct exynos8890_cluster *cluster,
-				   const char *prefix, const char *domain)
+				   const char *prefix, const char *vclk_name)
 {
-	char clock_name[64];
-	unsigned int n = 0;
-	int cpu, i, ret;
+	struct dvfs_rate_volt asv_table[EXYNOS8890_DFS_MAX_LEVELS];
+	int num_levels, i, cpu;
 
 	cluster->name = prefix;
-	ret = exynos8890_ect_get_cpu_domain(domain, &cluster->ect);
-	if (ret)
-		return ret;
+	cluster->vclk_id = cal_dfs_get((char *)vclk_name);
+	if (cluster->vclk_id == 0xFFFFFFFF)
+		return dev_err_probe(&pdev->dev, -ENODEV,
+				     "unknown pwrcal DFS domain %s\n", vclk_name);
 
-	cluster->pll = exynos8890_get_cluster_clock(pdev, prefix, "pll");
-	cluster->pll_user = exynos8890_get_cluster_clock(pdev, prefix, "pll-user");
-	cluster->bus_user = exynos8890_get_cluster_clock(pdev, prefix, "bus-user");
-	cluster->mux = exynos8890_get_cluster_clock(pdev, prefix, "mux");
-	cluster->root = exynos8890_get_cluster_clock(pdev, prefix, "root");
-	cluster->switch_div = exynos8890_get_cluster_clock(pdev, prefix,
-							   "switch-div");
-	cluster->switch_gate = exynos8890_get_cluster_clock(pdev, prefix,
-							    "switch-gate");
-	ret = exynos8890_check_cluster_clocks(cluster);
-	if (ret)
-		return ret;
+	num_levels = cal_dfs_get_rate_asv_table(cluster->vclk_id, asv_table);
+	if (num_levels <= 0)
+		return dev_err_probe(&pdev->dev, -EINVAL,
+				     "empty pwrcal ASV rate table for %s\n",
+				     vclk_name);
+	if (num_levels > EXYNOS8890_DFS_MAX_LEVELS)
+		num_levels = EXYNOS8890_DFS_MAX_LEVELS;
 
-	for (i = 0; i < cluster->ect.num_levels; i++) {
-		if (!cluster->ect.levels[i].enabled)
-			continue;
-		if (cluster->ect.levels[i].rate_khz > cluster->max_supported_khz)
-			continue;
-		if (clk_round_rate(cluster->pll,
-				   cluster->ect.levels[i].rate_khz * 1000UL) !=
-		    cluster->ect.levels[i].rate_khz * 1000UL)
-			continue;
-		cluster->table[n].driver_data = i;
-		cluster->table[n++].frequency = cluster->ect.levels[i].rate_khz;
+	for (i = 0; i < num_levels; i++) {
+		cluster->table[i].driver_data = i;
+		cluster->table[i].frequency = asv_table[i].rate;
+		cluster->voltage_uv[i] = asv_table[i].volt;
 	}
-	cluster->table[n].frequency = CPUFREQ_TABLE_END;
-	if (!n)
-		return -EINVAL;
-	cluster->num_table = n;
+	cluster->table[num_levels].frequency = CPUFREQ_TABLE_END;
+	cluster->num_table = num_levels;
 
-	for (i = 0; i < cluster->ect.num_clocks; i++) {
-		cluster->members[i] = devm_clk_get(&pdev->dev,
-						  cluster->ect.clock_names[i]);
-		if (IS_ERR(cluster->members[i]))
-			return PTR_ERR(cluster->members[i]);
-	}
 	cluster->regulator = devm_regulator_get(&pdev->dev, prefix);
 	if (IS_ERR(cluster->regulator))
 		return PTR_ERR(cluster->regulator);
-	snprintf(clock_name, sizeof(clock_name), "samsung,%s-sysreg", prefix);
-	cluster->ema = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
-						       clock_name);
-	if (IS_ERR(cluster->ema))
-		return PTR_ERR(cluster->ema);
 	mutex_init(&cluster->lock);
 	cpumask_clear(&cluster->cpus);
 	for_each_possible_cpu(cpu) {
@@ -502,7 +296,7 @@ static int exynos8890_seed_mif_floor(struct exynos8890_cpufreq *data,
 				     unsigned int index)
 {
 	struct exynos8890_cluster *cluster = &data->cluster[index];
-	u32 rate = clk_get_rate(cluster->root) / 1000;
+	u32 rate = cal_dfs_get_rate(cluster->vclk_id);
 	u32 mif = exynos8890_mif_lock(cluster, rate);
 	int i;
 
@@ -592,24 +386,22 @@ static int exynos8890_cpufreq_probe(struct platform_device *pdev)
 	if (ret)
 		goto out_remove_qos0;
 
-	data->cluster[0].bus_locks = apollo_bus_locks;
-	data->cluster[0].num_bus_locks = ARRAY_SIZE(apollo_bus_locks);
-	data->cluster[0].max_supported_khz = 1586000;
-	data->cluster[1].bus_locks = mongoose_bus_locks;
-	data->cluster[1].num_bus_locks = ARRAY_SIZE(mongoose_bus_locks);
-	data->cluster[1].max_supported_khz = 2288000;
-	ret = exynos8890_init_cluster(pdev, &data->cluster[0], "apollo",
-				      "dvfs_little");
+	data->cluster[EXYNOS8890_APOLLO].bus_locks = apollo_bus_locks;
+	data->cluster[EXYNOS8890_APOLLO].num_bus_locks = ARRAY_SIZE(apollo_bus_locks);
+	data->cluster[EXYNOS8890_MONGOOSE].bus_locks = mongoose_bus_locks;
+	data->cluster[EXYNOS8890_MONGOOSE].num_bus_locks = ARRAY_SIZE(mongoose_bus_locks);
+	ret = exynos8890_init_cluster(pdev, &data->cluster[EXYNOS8890_APOLLO],
+				      "apollo", "dvfs_little");
 	if (ret)
 		goto out_remove_qos;
-	ret = exynos8890_init_cluster(pdev, &data->cluster[1], "mongoose",
-				      "dvfs_big");
+	ret = exynos8890_init_cluster(pdev, &data->cluster[EXYNOS8890_MONGOOSE],
+				      "mongoose", "dvfs_big");
 	if (ret)
 		goto out_remove_qos;
-	ret = exynos8890_seed_mif_floor(data, 0);
+	ret = exynos8890_seed_mif_floor(data, EXYNOS8890_APOLLO);
 	if (ret)
 		goto out_remove_qos;
-	ret = exynos8890_seed_mif_floor(data, 1);
+	ret = exynos8890_seed_mif_floor(data, EXYNOS8890_MONGOOSE);
 	if (ret)
 		goto out_remove_qos;
 
