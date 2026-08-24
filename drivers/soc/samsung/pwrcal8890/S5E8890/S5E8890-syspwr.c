@@ -27,14 +27,17 @@ enum sys_powerdown {
 	num_of_syspwr,
 };
 
-#ifdef PWRCAL_TARGET_LINUX
-extern int is_cp_aud_enabled(void);
-#else
+/*
+ * Real definition normally lives in the LPASS audio driver (sound/soc/
+ * samsung/lpass.c upstream), which isn't ported in this tree - not porting
+ * a whole audio subsystem for one CP-audio-availability flag read here.
+ * Stub matches the vendor's own non-Linux-target fallback below: assume
+ * no CP audio path is active.
+ */
 static inline int is_cp_aud_enabled(void)
 {
 	return 0;
 }
-#endif
 extern void enable_cppll_sharing_bus012_disable(void);
 extern void disable_cppll_sharing_bus012_enable(void);
 static unsigned int mif_use_cp_pll = 0;
