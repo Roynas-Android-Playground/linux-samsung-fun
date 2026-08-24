@@ -32,6 +32,11 @@ config EXYNOS8890_ECT
 	  and combine its characterized CPU voltage data with secure per-die ASV
 	  fuse values. Validate table versions, groups, SSA adjustments and CPU
 	  voltage ordering. Malformed or incomplete firmware data is rejected.
+	
+config EXYNOS8890_ECT_DUMP
+	bool "Enable Exynos Characteristic Table File Dump sysfs"
+	default n
+	depends on EXYNOS8890_ECT
 
 config EXYNOS8890_CPUIDLE
 	bool "Exynos8890 opt-in local-core C2 diagnostics"
@@ -51,6 +56,28 @@ config EXYNOS8890_CPCTL
 	help
 	  Build the contract-preserving SS310AP control plane for Exynos8890.
 	  This is mutually exclusive with the legacy Samsung modem_v1 stack.
+
+config EXYNOS8890_APM
+	tristate "Exynos8890 APM DVFS ownership provider"
+	depends on ARM64 && ARCH_EXYNOS && OF
+	select MFD_SYSCON
+	help
+	  Hold the Exynos8890 APM Cortex-M3 in PMU power-down so it can never
+	  contest DVFS decisions, and hand exclusive ownership of CPU/bus
+	  clock and voltage control to Linux. This does not load or speak to
+	  the vendor APM firmware; exynos8890-cpufreq is an optional consumer
+	  of this driver's exynos8890_apm_dvfs_claim() export.
+
+config EXYNOS8890_PWRCAL
+	bool "Exynos Power Chip Abstraction Layer"
+	depends on ARM64 && ARCH_EXYNOS
+	depends on EXYNOS8890_ECT
+	help
+	  Support Power CAL for Exynos8890 SoC. Owns the ported vendor DFS/
+	  CMU/PLL/ASV layer (drivers/soc/samsung/pwrcal8890/); consumers
+	  (exynos8890-cpufreq, the exynos8890 devfreq drivers) call the
+	  cal_dfs_*()/cal_clk_*() API. Requires EXYNOS8890_ECT for the ASV/
+	  DVFS table parser this layer calls into directly.
 
 config EXYNOS_USI
 	tristate "Exynos USI (Universal Serial Interface) driver"

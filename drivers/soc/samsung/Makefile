@@ -6,6 +6,7 @@ exynos_chipid-y			+= exynos-chipid.o exynos-asv.o
 obj-$(CONFIG_EXYNOS8890_ECT)	+= exynos8890-ect.o
 obj-$(CONFIG_EXYNOS8890_CPUIDLE)	+= exynos8890-cpuidle.o
 obj-$(CONFIG_EXYNOS8890_CPCTL)	+= exynos8890-cpctl.o
+obj-$(CONFIG_EXYNOS8890_APM)	+= exynos8890-apm.o
 
 obj-$(CONFIG_EXYNOS_USI)	+= exynos-usi.o
 
@@ -17,3 +18,5 @@ obj-$(CONFIG_EXYNOS_PMU_ARM_DRIVERS)	+= exynos3250-pmu.o exynos4-pmu.o \
 obj-$(CONFIG_EXYNOS_REGULATOR_COUPLER) += exynos-regulator-coupler.o
 
 obj-$(CONFIG_SAMSUNG_PM_CHECK)	+= s3c-pm-check.o
+
+obj-$(CONFIG_EXYNOS8890_PWRCAL)            += pwrcal8890/
