@@ -90,6 +90,24 @@ config ARM_EXYNOS_BUS_DEVFREQ
 	  and adjusts the operating frequencies and voltages with OPP support.
 	  This does not yet operate with optimal voltages.
 
+config ARM_EXYNOS8890_DEVFREQ
+	tristate "ARM Exynos8890 MIF/INT/DISP/CAM DEVFREQ Driver"
+	depends on ARCH_EXYNOS && OF && REGULATOR
+	depends on EXYNOS8890_PWRCAL
+	select DEVFREQ_GOV_SIMPLE_ONDEMAND
+	help
+	  This adds the DEVFREQ drivers for the Exynos8890 MIF, INT, DISP and
+	  CAM bus domains. Each domain is a thin exynos_devfreq_ops
+	  implementation over the ported pwrcal DFS layer
+	  (cal_dfs_set_rate()/cal_dfs_get_rate_asv_table()), matching
+	  vendor's own per-domain driver split.
+
+config ARM_EXYNOS8890_DEVFREQ_DEBUG
+	bool "Debug ARM Exynos8890 DEVFREQ common driver"
+	depends on ARM_EXYNOS8890_DEVFREQ
+	help
+	  Enable extra debug logging in the Exynos8890 DEVFREQ common driver.
+
 config ARM_HISI_UNCORE_DEVFREQ
 	tristate "HiSilicon uncore DEVFREQ Driver"
 	depends on ACPI && ACPI_PPTT && PCC
