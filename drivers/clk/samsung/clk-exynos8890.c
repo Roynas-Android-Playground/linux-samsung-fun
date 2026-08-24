@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 
 #include <dt-bindings/clock/samsung,exynos8890-cmu.h>
+#include <linux/soc/samsung/exynos8890-pwrcal.h>
 
 #include "clk.h"
 
@@ -96,6 +97,9 @@ static void __init exynos8890_init_clocks(struct device_node *np,
 	}
 
 	iounmap(reg_base);
+
+	if (!cal_init())
+		pr_err("%s: unable to initialize power cal\n", __func__);
 }
 
 /* ---- CMU_TOP ------------------------------------------------------------- */
