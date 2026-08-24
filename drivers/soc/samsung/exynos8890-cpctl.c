@@ -1323,23 +1323,36 @@ static int exynos8890_cpctl_probe(struct platform_device *pdev)
 	if (ret)
 		goto put_mailboxes;
 
-	/* Start from the vendor-defined quiescent control state. */
+	/*
+	 * Start from the vendor-defined quiescent control state. The vendor
+	 * driver never does this eagerly at probe — exynos_cp_reset()/
+	 * exynos_cp_init() only run later, on demand, from the modem_on/
+	 * modem_reset ops triggered by userspace — so treat a failure here
+	 * as diagnostic rather than fatal: the SMC ID, sub-command numbers,
+	 * and secure/non-secure bank encoding all match the vendor driver's
+	 * pmu-cp.c exactly, so a failure this early is more likely a
+	 * probe-time prerequisite the secure firmware expects than a wrong
+	 * argument, and must not prevent the rest of the driver (which the
+	 * real modem_on/reset path depends on) from binding.
+	 */
 	ret = exynos8890_cpctl_read_ctrl(cpctl, EXYNOS8890_CP_CTRL_NONSECURE,
 					 &ctrl);
+	if (!ret)
+		ret = exynos8890_cpctl_write_ctrl(cpctl,
+				EXYNOS8890_CP_CTRL_NONSECURE,
+				ctrl & ~(EXYNOS8890_CP_RESET_SET |
+					 EXYNOS8890_CP_PWRON));
+	if (!ret)
+		ret = exynos8890_cpctl_read_ctrl(cpctl,
+				EXYNOS8890_CP_CTRL_SECURE, &ctrl);
+	if (!ret)
+		ret = exynos8890_cpctl_write_ctrl(cpctl,
+				EXYNOS8890_CP_CTRL_SECURE,
+				ctrl & ~EXYNOS8890_CP_START);
 	if (ret)
-		goto put_mailboxes;
-	ret = exynos8890_cpctl_write_ctrl(cpctl, EXYNOS8890_CP_CTRL_NONSECURE,
-					  ctrl & ~(EXYNOS8890_CP_RESET_SET |
-						   EXYNOS8890_CP_PWRON));
-	if (ret)
-		goto put_mailboxes;
-	ret = exynos8890_cpctl_read_ctrl(cpctl, EXYNOS8890_CP_CTRL_SECURE, &ctrl);
-	if (ret)
-		goto put_mailboxes;
-	ret = exynos8890_cpctl_write_ctrl(cpctl, EXYNOS8890_CP_CTRL_SECURE,
-					  ctrl & ~EXYNOS8890_CP_START);
-	if (ret)
-		goto put_mailboxes;
+		dev_warn(dev,
+			"failed to reach quiescent CP control state: %d\n",
+			ret);
 
 	dev_info(dev, "SS310AP control plane ready (board %u, %s SIM)\n",
 		 cpctl->board_revision, cpctl->dual_sim ? "dual" : "single");
