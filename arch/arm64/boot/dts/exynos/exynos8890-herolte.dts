@@ -318,15 +318,18 @@
 	/*
 	 * Vendor DT toggles this GPIO directly as an LDO enable line for the
 	 * SX9310 grip/proximity sensor instead of describing it through the
-	 * regulator framework; model it as a switched fixed regulator so the
-	 * upstream sx9310 driver's vdd-supply/svdd-supply regulator_bulk_get
-	 * can enable it normally.
+	 * regulator framework. The in-tree sx9310 driver doesn't call
+	 * regulator_get()/enable() on vdd-supply/svdd-supply at all, so
+	 * nothing would ever switch this rail on if it depended on a
+	 * consumer; force it on unconditionally instead, matching the
+	 * vendor driver's own always-on GPIO toggle.
 	 */
 	grip_ldo: regulator-fixed-grip {
 		compatible = "regulator-fixed";
 		regulator-name = "grip_ldo_en";
 
 		enable-active-high;
+		regulator-always-on;
 		gpio = <&gpa1 7 GPIO_ACTIVE_HIGH>;
 	};
 
@@ -2105,5 +2108,116 @@
 		status = "okay";
 		samsung,cpctl = <&modem_control>;
 		samsung,sipc = <&modem_sipc>;
+	};
+
+	/*
+	 * Apollo (little)/Mongoose (big) CPUFreq. Clock IDs and the EMA/
+	 * regulator wiring below are cross-checked against vendor's
+	 * S5E8890-dfs.c switch/member-clock lists and S5E8890-sfrbase.h
+	 * SYSREG bases (see sysreg_apollo/sysreg_mngs in exynos8890.dtsi),
+	 * and against the real vdd_apollo/vdd_mngs max-microvolt values
+	 * (1475000/1575000) already baked into exynos8890-cpufreq.c's own
+	 * exynos8890_validate_cpu_domain() calls, which match s2mps16_buck3/
+	 * buck2 here exactly - see herolte_common.dtsi BUCK2=vdd_mngs/
+	 * BUCK3=vdd_apollo for the vendor mapping this was confirmed against.
+	 *
+	 * The per-cluster auxiliary clock-names list
+	 * (cluster->ect.clock_names[], one devm_clk_get() per ECT-supplied
+	 * name) is firmware data read out of the live ECT blob - filled in
+	 * below verbatim from the "dvfs_little"/"dvfs_big" clock lists
+	 * exynos8890-ect.c logs at probe, confirmed identical to vendor's
+	 * S5E8890-dfs.c member-clock order.
+	 *
+	 * samsung,mif-devfreq points at a stub (see
+	 * exynos8890-mif-stub.c): real MIF/DRAM frequency changes on this
+	 * SoC go through a vendor DMC-specific sequencer
+	 * (pscdc_transition()/dfsmif_switch_pre/post() in S5E8890-dfs.c),
+	 * not a clock-mux relock, and reimplementing that safely is out of
+	 * scope for this port. cpufreq's MIF PM QoS floor requests land on
+	 * the stub and are structurally satisfied, but no real MIF
+	 * frequency scaling happens.
+	 */
+	cpufreq: cpufreq {
+		compatible = "samsung,exynos8890-cpufreq";
+		samsung,pmu = <&pmu_system_controller>;
+		samsung,apm = <&apm>;
+		samsung,apollo-sysreg = <&sysreg_apollo>;
+		samsung,mongoose-sysreg = <&sysreg_mngs>;
+		apollo-supply = <&s2mps16_buck3>;
+		mongoose-supply = <&s2mps16_buck2>;
+
+		clocks = <&cmu_apollo CLK_FOUT_APOLLO_PLL>,
+			 <&cmu_apollo CLK_MOUT_APOLLO_APOLLO_PLL>,
+			 <&cmu_apollo CLK_MOUT_APOLLO_BUS_PLL_APOLLO_USER>,
+			 <&cmu_apollo CLK_MOUT_APOLLO_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_APOLLO>,
+			 <&cmu_top CLK_DOUT_TOP_SCLK_BUS_PLL_APOLLO>,
+			 <&cmu_top CLK_GOUT_TOP_SCLK_BUS_PLL_APOLLO>,
+			 <&cmu_mngs CLK_FOUT_MNGS_PLL>,
+			 <&cmu_mngs CLK_MOUT_MNGS_MNGS_PLL>,
+			 <&cmu_mngs CLK_MOUT_MNGS_BUS_PLL_MNGS_USER>,
+			 <&cmu_mngs CLK_MOUT_MNGS_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_MNGS>,
+			 <&cmu_top CLK_DOUT_TOP_SCLK_BUS_PLL_MNGS>,
+			 <&cmu_top CLK_GOUT_TOP_SCLK_BUS_PLL_MNGS>,
+			 /*
+			  * Aux DVFS member clocks - exynos8890_init_cluster()
+			  * does one devm_clk_get() per ECT-supplied
+			  * clock_names[] entry (index 0 included, even though
+			  * only indices 1.. are actually divided at runtime),
+			  * so these local names must match the live ECT dump
+			  * verbatim: "dvfs_little"/"dvfs_big" clock lists
+			  * logged by exynos8890-ect.c, confirmed identical to
+			  * vendor's S5E8890-dfs.c member-clock order.
+			  */
+			 <&cmu_apollo CLK_FOUT_APOLLO_PLL>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_ACLK_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_PCLK_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_ATCLK_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_PCLK_DBG_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_CNTCLK_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_APOLLO_PLL>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_SCLK_PROMISE_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_APOLLO_RUN_MONITOR>,
+			 <&cmu_mngs CLK_FOUT_MNGS_PLL>,
+			 <&cmu_mngs CLK_DOUT_MNGS_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ACLK_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_PCLK_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_CORE>,
+			 <&cmu_mngs CLK_DOUT_MNGS_PCLK_DBG_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_CNTCLK_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_MNGS_PLL>,
+			 <&cmu_mngs CLK_DOUT_MNGS_SCLK_PROMISE_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_SOC>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_CSSYS_TRACECLK>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_ASYNCATB_CAM1>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_ASYNCATB_AUD>;
+		clock-names = "apollo-pll", "apollo-pll-user", "apollo-bus-user",
+			      "apollo-mux", "apollo-root", "apollo-switch-div",
+			      "apollo-switch-gate",
+			      "mongoose-pll", "mongoose-pll-user",
+			      "mongoose-bus-user", "mongoose-mux",
+			      "mongoose-root", "mongoose-switch-div",
+			      "mongoose-switch-gate",
+			      "APOLLO_PLL", "APOLLO_DIV_ACLK_APOLLO",
+			      "APOLLO_DIV_PCLK_APOLLO", "APOLLO_DIV_ATCLK_APOLLO",
+			      "APOLLO_DIV_PCLK_DBG_APOLLO",
+			      "APOLLO_DIV_CNTCLK_APOLLO", "APOLLO_DIV_APOLLO_PLL",
+			      "APOLLO_DIV_SCLK_PROMISE_APOLLO",
+			      "APOLLO_DIV_APOLLO_RUN_MONITOR",
+			      "MNGS_PLL", "MNGS_DIV_MNGS", "MNGS_DIV_ACLK_MNGS",
+			      "MNGS_DIV_PCLK_MNGS", "MNGS_DIV_ATCLK_MNGS_CORE",
+			      "MNGS_DIV_PCLK_DBG_MNGS", "MNGS_DIV_CNTCLK_MNGS",
+			      "MNGS_DIV_MNGS_PLL", "MNGS_DIV_SCLK_PROMISE_MNGS",
+			      "MNGS_DIV_ATCLK_MNGS_SOC",
+			      "MNGS_DIV_ATCLK_MNGS_CSSYS_TRACECLK",
+			      "MNGS_DIV_ATCLK_MNGS_ASYNCATB_CAM1",
+			      "MNGS_DIV_ATCLK_MNGS_ASYNCATB_AUD";
+
+		samsung,mif-devfreq = <&mif_devfreq_stub>;
+	};
+
+	mif_devfreq_stub: mif-devfreq-stub {
+		compatible = "samsung,exynos8890-mif-devfreq-stub";
 	};
 };

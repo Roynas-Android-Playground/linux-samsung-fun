@@ -405,6 +405,28 @@
 			clock-names = "oscclk", "bus";
 		};
 
+		/*
+		 * EMA/ASSIST control for the two CPU clusters - [VENDOR]
+		 * S5E8890-sfrbase.h SYSREG_MNGS_BASE/SYSREG_APOLLO_BASE, offsets
+		 * cross-checked against exynos8890-cpufreq.c's own
+		 * EXYNOS8890_{MNGS,APOLLO}_EMA_CON / MNGS_ASSIST_CON constants.
+		 * Distinct blocks from cmu_mngs/cmu_apollo above, not overlapping.
+		 */
+		sysreg_mngs: system-controller@11850000 {
+			compatible = "samsung,exynos8890-sysreg-mngs", "syscon";
+			reg = <0x11850000 0x2000>;
+		};
+
+		sysreg_apollo: system-controller@11940000 {
+			compatible = "samsung,exynos8890-sysreg-apollo", "syscon";
+			reg = <0x11940000 0x2000>;
+		};
+
+		apm: apm {
+			compatible = "samsung,exynos8890-apm";
+			samsung,pmu = <&pmu_system_controller>;
+		};
+
 		cmu_bus0: clock-controller@13400000 {
 			compatible = "samsung,exynos8890-cmu-bus0";
 			reg = <0x13400000 0x8000>;
