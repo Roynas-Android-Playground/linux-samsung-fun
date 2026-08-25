@@ -484,8 +484,9 @@
 		compatible = "samsung,s6sa552";
 		reg = <0x48>;
 
-		avdd-supply = <&s2mps16_ldo33>;
-		vdd-supply = <&s2mps16_ldo32>;
+		/* real rails per vendor's sec,regulator_avdd/dvdd = tsp_avdd/tsp_io on max77838 (was wrongly s2mps16_ldo33/32, the HRM rails) */
+		avdd-supply = <&max77838_ldo4>;
+		vdd-supply = <&max77838_ldo2>;
 
 		interrupt-parent = <&gpa1>;
 		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
@@ -569,9 +570,9 @@
 			};
 
 			max77838_ldo2: ldo2 {
-				regulator-min-microvolt = <1800000>;
-				regulator-max-microvolt = <1800000>;
-				regulator-name = "max77838_ldo2";
+				regulator-min-microvolt = <1850000>;
+				regulator-max-microvolt = <1850000>;
+				regulator-name = "tsp_io";
 			};
 
 			max77838_ldo3: ldo3 {
@@ -585,7 +586,7 @@
 			max77838_ldo4: ldo4 {
 				regulator-min-microvolt = <3300000>;
 				regulator-max-microvolt = <3300000>;
-				regulator-name = "max77838_ldo4";
+				regulator-name = "tsp_avdd";
 			};
 
 			max77838_buck: buck {
