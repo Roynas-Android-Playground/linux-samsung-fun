@@ -7,12 +7,10 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/file.h>
+#include <linux/io.h>
 #include <linux/module.h>
-#include <linux/vmalloc.h>
 
 #define ALIGNMENT_SIZE	 4
-
-#define S5P_VA_ECT (VMALLOC_START + 0xF6000000 + 0x02D00000)
 
 /* Variable */
 
@@ -23,7 +21,7 @@ static char ect_signature[] = "PARA";
 static phys_addr_t ect_address;
 static phys_addr_t ect_size;
 
-static struct vm_struct ect_early_vm;
+static phys_addr_t ect_phys_addr;
 
 /* API for internal */
 
@@ -1224,7 +1222,7 @@ static int ect_dump_header(struct seq_file *s, void *data)
 	}
 
 	seq_printf(s, "[ECT] : ECT Information\n");
-	seq_printf(s, "\t[VA] : %p\n", (void *)S5P_VA_ECT);
+	seq_printf(s, "\t[VA] : %p\n", (void *)ect_address);
 	seq_printf(s, "\t[SIGN] : %c%c%c%c\n",
 			header->sign[0],
 			header->sign[1],
@@ -1805,15 +1803,10 @@ late_initcall_sync(ect_dump_init);
 
 /* API for external */
 
+// memremap()s directly instead of vm_area_add_early() - we run after vmalloc_init(), unlike vendor
 void __init exynos8890_ect_init(phys_addr_t address, phys_addr_t size)
 {
-	ect_early_vm.phys_addr = address;
-	ect_early_vm.addr = (void *)S5P_VA_ECT;
-	ect_early_vm.size = size + PAGE_SIZE;
-
-	vm_area_add_early(&ect_early_vm);
-
-	ect_address = (phys_addr_t)S5P_VA_ECT;
+	ect_phys_addr = address;
 	ect_size = size;
 }
 
@@ -2176,25 +2169,13 @@ int exynos8890_ect_strncmp(char *src1, char *src2, int length)
 
 void exynos8890_ect_init_map_io(void)
 {
-	int page_size, i;
-	struct page *page;
-	struct page **pages;
-	int ret;
+	void *base;
 
-	page_size = ect_early_vm.size / PAGE_SIZE;
-	if (ect_early_vm.size % PAGE_SIZE)
-		page_size++;
-	pages = kzalloc((sizeof(struct page *) * page_size), GFP_KERNEL);
-	page = phys_to_page(ect_early_vm.phys_addr);
-
-	for (i = 0; i < page_size; ++i)
-		pages[i] = page++;
-
-	ret = vmap_pages_range((unsigned long)ect_early_vm.addr,
-                        (unsigned long)ect_early_vm.addr + ect_early_vm.size,
-                        PAGE_KERNEL, pages, PAGE_SHIFT);
-	if (ret) {
-		pr_err("[ECT] : failed to mapping va and pa(%d)\n", ret);
+	base = memremap(ect_phys_addr, ect_size, MEMREMAP_WB);
+	if (!base) {
+		pr_err("[ECT] : failed to mapping va and pa\n");
+		return;
 	}
-	kfree(pages);
+
+	ect_address = (phys_addr_t)(uintptr_t)base;
 }
