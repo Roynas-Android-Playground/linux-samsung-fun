@@ -11,10 +11,14 @@
 #include <linux/mod_devicetable.h>
 #include <linux/of_address.h>
 #include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 
 #include <dt-bindings/clock/samsung,exynos8890-cmu.h>
+#include <linux/soc/samsung/exynos8890-ect.h>
+#ifdef CONFIG_EXYNOS8890_PWRCAL
 #include <linux/soc/samsung/exynos8890-pwrcal.h>
+#endif
 
 #include "clk.h"
 
@@ -38,6 +42,10 @@
 #define MNGS_NR_CLK	(CLK_GOUT_MNGS_SCLK_PROMISE0_MNGS + 1)
 #define PERIC0_NR_CLK	(CLK_GOUT_PERIC0_SCLK_PWM + 1)
 #define PERIC1_NR_CLK	(CLK_GOUT_PERIC1_SCLK_UART5 + 1)
+#define CAM0_NR_CLK	(CLK_GOUT_CAM0_PCLK_HPM_APBIF_CAM0 + 1)
+#define CAM1_NR_CLK	(CLK_GOUT_CAM1_PHYCLK_HS0_CSIS3_RX_BYTE + 1)
+#define ISP0_NR_CLK	(CLK_GOUT_ISP0_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D + 1)
+#define ISP1_NR_CLK	(CLK_GOUT_ISP1_SCLK_PROMISE_ISP1 + 1)
 
 /*
  * As exynos8890 first introduced hwacg, cmu registers are mapped similarly
@@ -70,6 +78,51 @@ static bool is_qstate_reg(unsigned long off)
 	return off >= QSTATE_OFF_START && off <= QSTATE_OFF_END;
 }
 
+/*
+ * cal_init() (below) pulls in ASV data via exynos8890_ect_get_block("ASV"),
+ * which BUG()s if the ECT binary blob hasn't been mapped and parsed yet.
+ * Vendor wires this up via a custom root-level "/ect" flat-DT scan that runs
+ * before time_init(); we don't need that hack because by the time any
+ * CLK_OF_DECLARE handler runs (of_clk_init(), also called from time_init())
+ * the DT is already unflattened and of_reserved_mem's own early scan (which
+ * runs earlier still, from arm64_memblock_init()) has already populated the
+ * reserved_mem entry - so a normal phandle lookup is enough here.
+ */
+static void __init exynos8890_ect_dt_init(void)
+{
+	static bool done;
+	struct device_node *ect_node, *mem_node;
+	struct reserved_mem *rmem;
+
+	if (done)
+		return;
+	done = true;
+
+	ect_node = of_find_compatible_node(NULL, NULL, "samsung,exynos8890-ect");
+	if (!ect_node) {
+		pr_err("%s: no /firmware/ect node, ASV data unavailable\n", __func__);
+		return;
+	}
+
+	mem_node = of_parse_phandle(ect_node, "memory-region", 0);
+	of_node_put(ect_node);
+	if (!mem_node) {
+		pr_err("%s: ect node has no memory-region\n", __func__);
+		return;
+	}
+
+	rmem = of_reserved_mem_lookup(mem_node);
+	of_node_put(mem_node);
+	if (!rmem) {
+		pr_err("%s: failed to look up ect reserved-memory\n", __func__);
+		return;
+	}
+
+	exynos8890_ect_init(rmem->base, rmem->size);
+	if (exynos8890_ect_parse_binary_header())
+		pr_err("%s: failed to parse ect binary\n", __func__);
+}
+
 static void __init exynos8890_init_clocks(struct device_node *np,
 					  const struct samsung_cmu_info *cmu)
 {
@@ -97,9 +150,6 @@ static void __init exynos8890_init_clocks(struct device_node *np,
 	}
 
 	iounmap(reg_base);
-
-	if (!cal_init())
-		pr_err("%s: unable to initialize power cal\n", __func__);
 }
 
 /* ---- CMU_TOP ------------------------------------------------------------- */
@@ -2670,6 +2720,12 @@ static void __init exynos8890_cmu_top_init(struct device_node *np)
 {
 	exynos8890_init_clocks(np, &top_cmu_info);
 	samsung_cmu_register_one(np, &top_cmu_info);
+
+	exynos8890_ect_dt_init();
+#ifdef CONFIG_EXYNOS8890_PWRCAL
+	if (!cal_init())
+		pr_err("%s: unable to initialize power cal\n", __func__);
+#endif
 }
 
 /* Register CMU_TOP early, as it's a dependency for other early domains */
@@ -8619,6 +8675,733 @@ static const struct samsung_cmu_info peric1_cmu_info __initconst = {
 	.nr_clk_regs		= ARRAY_SIZE(peric1_clk_regs),
 };
 
+/* ---- CMU_CAM0 ---------------------------------------------------------- */
+
+/* Register Offset definitions for CMU_CAM0 */
+#define CLK_CON_MUX_ACLK_CAM0_CSIS0_414_USER			0x0200
+#define CLK_CON_MUX_ACLK_CAM0_CSIS1_168_USER			0x0204
+#define CLK_CON_MUX_ACLK_CAM0_CSIS2_234_USER			0x0208
+#define CLK_CON_MUX_ACLK_CAM0_CSIS3_132_USER			0x020C
+#define CLK_CON_MUX_ACLK_CAM0_3AA0_414_USER			0x0214
+#define CLK_CON_MUX_ACLK_CAM0_3AA1_414_USER			0x0218
+#define CLK_CON_MUX_ACLK_CAM0_TREX_528_USER			0x021C
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS0_USER			0x0220
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS0_USER			0x0224
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS2_CSIS0_USER			0x0228
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS3_CSIS0_USER			0x022C
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS1_USER			0x0230
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS1_USER			0x0234
+#define CLK_CON_DIV_PCLK_CAM0_CSIS0_207			0x0400
+#define CLK_CON_DIV_PCLK_CAM0_3AA0_207			0x040C
+#define CLK_CON_DIV_PCLK_CAM0_3AA1_207			0x0410
+#define CLK_CON_DIV_PCLK_CAM0_TREX_264			0x0414
+#define CLK_CON_DIV_PCLK_CAM0_TREX_132			0x0418
+#define CLK_ENABLE_ACLK_CAM0_CSIS0_414			0x0800
+#define CLK_ENABLE_PCLK_CAM0_CSIS0_207			0x0804
+#define CLK_ENABLE_ACLK_CAM0_CSIS1_168_CAM0			0x080C
+#define CLK_ENABLE_ACLK_CAM0_CSIS2_234_CAM0			0x0818
+#define CLK_ENABLE_ACLK_CAM0_CSIS3_132_CAM0			0x081C
+#define CLK_ENABLE_ACLK_CAM0_3AA0_414_CAM0			0x0828
+#define CLK_ENABLE_PCLK_CAM0_3AA0_207			0x082C
+#define CLK_ENABLE_ACLK_CAM0_3AA1_414_CAM0			0x0830
+#define CLK_ENABLE_PCLK_CAM0_3AA1_207			0x0834
+#define CLK_ENABLE_ACLK_CAM0_TREX_528_CAM0			0x0838
+#define CLK_ENABLE_PCLK_CAM0_TREX_264			0x083C
+#define CLK_ENABLE_PCLK_CAM0_TREX_132			0x0840
+#define CLK_ENABLE_SCLK_PROMISE_CAM0			0x0844
+#define CLK_ENABLE_PHYCLK_HS0_CSIS0_RX_BYTE			0x0848
+#define CLK_ENABLE_PHYCLK_HS1_CSIS0_RX_BYTE			0x084C
+#define CLK_ENABLE_PHYCLK_HS2_CSIS0_RX_BYTE			0x0850
+#define CLK_ENABLE_PHYCLK_HS3_CSIS0_RX_BYTE			0x0854
+#define CLK_ENABLE_PHYCLK_HS0_CSIS1_RX_BYTE			0x0858
+#define CLK_ENABLE_PHYCLK_HS1_CSIS1_RX_BYTE			0x085C
+#define CLK_ENABLE_PCLK_HPM_APBIF_CAM0			0x0860
+
+static const unsigned long cam0_clk_regs[] __initconst = {
+	CLK_CON_MUX_ACLK_CAM0_CSIS0_414_USER,
+	CLK_CON_MUX_ACLK_CAM0_CSIS1_168_USER,
+	CLK_CON_MUX_ACLK_CAM0_CSIS2_234_USER,
+	CLK_CON_MUX_ACLK_CAM0_CSIS3_132_USER,
+	CLK_CON_MUX_ACLK_CAM0_3AA0_414_USER,
+	CLK_CON_MUX_ACLK_CAM0_3AA1_414_USER,
+	CLK_CON_MUX_ACLK_CAM0_TREX_528_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS0_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS0_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS2_CSIS0_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS3_CSIS0_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS1_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS1_USER,
+	CLK_CON_DIV_PCLK_CAM0_CSIS0_207,
+	CLK_CON_DIV_PCLK_CAM0_3AA0_207,
+	CLK_CON_DIV_PCLK_CAM0_3AA1_207,
+	CLK_CON_DIV_PCLK_CAM0_TREX_264,
+	CLK_CON_DIV_PCLK_CAM0_TREX_132,
+	CLK_ENABLE_ACLK_CAM0_CSIS0_414,
+	CLK_ENABLE_PCLK_CAM0_CSIS0_207,
+	CLK_ENABLE_ACLK_CAM0_CSIS1_168_CAM0,
+	CLK_ENABLE_ACLK_CAM0_CSIS2_234_CAM0,
+	CLK_ENABLE_ACLK_CAM0_CSIS3_132_CAM0,
+	CLK_ENABLE_ACLK_CAM0_3AA0_414_CAM0,
+	CLK_ENABLE_PCLK_CAM0_3AA0_207,
+	CLK_ENABLE_ACLK_CAM0_3AA1_414_CAM0,
+	CLK_ENABLE_PCLK_CAM0_3AA1_207,
+	CLK_ENABLE_ACLK_CAM0_TREX_528_CAM0,
+	CLK_ENABLE_PCLK_CAM0_TREX_264,
+	CLK_ENABLE_PCLK_CAM0_TREX_132,
+	CLK_ENABLE_SCLK_PROMISE_CAM0,
+	CLK_ENABLE_PHYCLK_HS0_CSIS0_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS1_CSIS0_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS2_CSIS0_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS3_CSIS0_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS0_CSIS1_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS1_CSIS1_RX_BYTE,
+	CLK_ENABLE_PCLK_HPM_APBIF_CAM0,
+};
+
+/*
+ * These CSI RX byte-clock D-PHY signals are fed directly from the
+ * MIPI CSI-2 D-PHY hardware (sensor-negotiated lane speed), not
+ * routed through any CMU_TOP supply gate - there is no fixed
+ * nominal rate to give them (unlike DISP0's DSIM D-PHY escape/byte
+ * clocks, which vendor documents as fixed values). Registered at
+ * rate 0 (unknown until the sensor link is configured) rather than
+ * fabricating a plausible-looking number.
+ */
+static const struct samsung_fixed_rate_clock cam0_fixed_clks[] __initconst = {
+	FRATE(CLK_PHYCLK_RXBYTECLKHS0_CSIS0_PHY, "phyclk_rxbyteclkhs0_csis0_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS1_CSIS0_PHY, "phyclk_rxbyteclkhs1_csis0_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS2_CSIS0_PHY, "phyclk_rxbyteclkhs2_csis0_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS3_CSIS0_PHY, "phyclk_rxbyteclkhs3_csis0_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS0_CSIS1_PHY, "phyclk_rxbyteclkhs0_csis1_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS1_CSIS1_PHY, "phyclk_rxbyteclkhs1_csis1_phy", NULL, 0, 0),
+};
+
+PNAME(cam0_mux_aclk_cam0_csis0_414_user_p) = { "oscclk", "gout_top_aclk_cam0_csis0_414" };
+PNAME(cam0_mux_aclk_cam0_csis1_168_user_p) = { "oscclk", "gout_top_aclk_cam0_csis1_168" };
+PNAME(cam0_mux_aclk_cam0_csis2_234_user_p) = { "oscclk", "gout_top_aclk_cam0_csis2_234" };
+PNAME(cam0_mux_aclk_cam0_csis3_132_user_p) = { "oscclk", "gout_top_aclk_cam0_csis3_132" };
+PNAME(cam0_mux_aclk_cam0_3aa0_414_user_p) = { "oscclk", "gout_top_aclk_cam0_3aa0_414" };
+PNAME(cam0_mux_aclk_cam0_3aa1_414_user_p) = { "oscclk", "gout_top_aclk_cam0_3aa1_414" };
+PNAME(cam0_mux_aclk_cam0_trex_528_user_p) = { "oscclk", "gout_top_aclk_cam0_trex_528" };
+PNAME(cam0_mux_phyclk_rxbyteclkhs0_csis0_user_p) = { "oscclk", "phyclk_rxbyteclkhs0_csis0_phy" };
+PNAME(cam0_mux_phyclk_rxbyteclkhs1_csis0_user_p) = { "oscclk", "phyclk_rxbyteclkhs1_csis0_phy" };
+PNAME(cam0_mux_phyclk_rxbyteclkhs2_csis0_user_p) = { "oscclk", "phyclk_rxbyteclkhs2_csis0_phy" };
+PNAME(cam0_mux_phyclk_rxbyteclkhs3_csis0_user_p) = { "oscclk", "phyclk_rxbyteclkhs3_csis0_phy" };
+PNAME(cam0_mux_phyclk_rxbyteclkhs0_csis1_user_p) = { "oscclk", "phyclk_rxbyteclkhs0_csis1_phy" };
+PNAME(cam0_mux_phyclk_rxbyteclkhs1_csis1_user_p) = { "oscclk", "phyclk_rxbyteclkhs1_csis1_phy" };
+
+static const struct samsung_mux_clock cam0_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_CAM0_ACLK_CAM0_CSIS0_414_USER, "mout_cam0_aclk_cam0_csis0_414_user",
+	    cam0_mux_aclk_cam0_csis0_414_user_p, CLK_CON_MUX_ACLK_CAM0_CSIS0_414_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_ACLK_CAM0_CSIS1_168_USER, "mout_cam0_aclk_cam0_csis1_168_user",
+	    cam0_mux_aclk_cam0_csis1_168_user_p, CLK_CON_MUX_ACLK_CAM0_CSIS1_168_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_ACLK_CAM0_CSIS2_234_USER, "mout_cam0_aclk_cam0_csis2_234_user",
+	    cam0_mux_aclk_cam0_csis2_234_user_p, CLK_CON_MUX_ACLK_CAM0_CSIS2_234_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_ACLK_CAM0_CSIS3_132_USER, "mout_cam0_aclk_cam0_csis3_132_user",
+	    cam0_mux_aclk_cam0_csis3_132_user_p, CLK_CON_MUX_ACLK_CAM0_CSIS3_132_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_ACLK_CAM0_3AA0_414_USER, "mout_cam0_aclk_cam0_3aa0_414_user",
+	    cam0_mux_aclk_cam0_3aa0_414_user_p, CLK_CON_MUX_ACLK_CAM0_3AA0_414_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_ACLK_CAM0_3AA1_414_USER, "mout_cam0_aclk_cam0_3aa1_414_user",
+	    cam0_mux_aclk_cam0_3aa1_414_user_p, CLK_CON_MUX_ACLK_CAM0_3AA1_414_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_ACLK_CAM0_TREX_528_USER, "mout_cam0_aclk_cam0_trex_528_user",
+	    cam0_mux_aclk_cam0_trex_528_user_p, CLK_CON_MUX_ACLK_CAM0_TREX_528_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_PHYCLK_RXBYTECLKHS0_CSIS0_USER, "mout_cam0_phyclk_rxbyteclkhs0_csis0_user",
+	    cam0_mux_phyclk_rxbyteclkhs0_csis0_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS0_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_PHYCLK_RXBYTECLKHS1_CSIS0_USER, "mout_cam0_phyclk_rxbyteclkhs1_csis0_user",
+	    cam0_mux_phyclk_rxbyteclkhs1_csis0_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS0_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_PHYCLK_RXBYTECLKHS2_CSIS0_USER, "mout_cam0_phyclk_rxbyteclkhs2_csis0_user",
+	    cam0_mux_phyclk_rxbyteclkhs2_csis0_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS2_CSIS0_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_PHYCLK_RXBYTECLKHS3_CSIS0_USER, "mout_cam0_phyclk_rxbyteclkhs3_csis0_user",
+	    cam0_mux_phyclk_rxbyteclkhs3_csis0_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS3_CSIS0_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_PHYCLK_RXBYTECLKHS0_CSIS1_USER, "mout_cam0_phyclk_rxbyteclkhs0_csis1_user",
+	    cam0_mux_phyclk_rxbyteclkhs0_csis1_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS1_USER, 12, 1),
+	MUX(CLK_MOUT_CAM0_PHYCLK_RXBYTECLKHS1_CSIS1_USER, "mout_cam0_phyclk_rxbyteclkhs1_csis1_user",
+	    cam0_mux_phyclk_rxbyteclkhs1_csis1_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS1_USER, 12, 1),
+};
+
+static const struct samsung_div_clock cam0_div_clks[] __initconst = {
+	DIV(CLK_DOUT_CAM0_PCLK_CAM0_CSIS0_207, "dout_cam0_pclk_cam0_csis0_207",
+	    "mout_cam0_aclk_cam0_csis0_414_user", CLK_CON_DIV_PCLK_CAM0_CSIS0_207, 0, 3),
+	DIV(CLK_DOUT_CAM0_PCLK_CAM0_3AA0_207, "dout_cam0_pclk_cam0_3aa0_207",
+	    "mout_cam0_aclk_cam0_3aa0_414_user", CLK_CON_DIV_PCLK_CAM0_3AA0_207, 0, 3),
+	DIV(CLK_DOUT_CAM0_PCLK_CAM0_3AA1_207, "dout_cam0_pclk_cam0_3aa1_207",
+	    "mout_cam0_aclk_cam0_3aa1_414_user", CLK_CON_DIV_PCLK_CAM0_3AA1_207, 0, 3),
+	DIV(CLK_DOUT_CAM0_PCLK_CAM0_TREX_264, "dout_cam0_pclk_cam0_trex_264",
+	    "mout_cam0_aclk_cam0_trex_528_user", CLK_CON_DIV_PCLK_CAM0_TREX_264, 0, 3),
+	DIV(CLK_DOUT_CAM0_PCLK_CAM0_TREX_132, "dout_cam0_pclk_cam0_trex_132",
+	    "mout_cam0_aclk_cam0_trex_528_user", CLK_CON_DIV_PCLK_CAM0_TREX_132, 0, 3),
+};
+
+static const struct samsung_gate_clock cam0_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_CAM0_ACLK_BNS, "gout_cam0_aclk_bns",
+	     "mout_cam0_aclk_cam0_csis0_414_user", CLK_ENABLE_ACLK_CAM0_CSIS0_414, 2, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_PXL_ASBS_CSIS2_INT, "gout_cam0_aclk_pxl_asbs_csis2_int",
+	     "mout_cam0_aclk_cam0_csis0_414_user", CLK_ENABLE_ACLK_CAM0_CSIS0_414, 1, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_CSIS0, "gout_cam0_aclk_csis0",
+	     "mout_cam0_aclk_cam0_csis0_414_user", CLK_ENABLE_ACLK_CAM0_CSIS0_414, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_BNS, "gout_cam0_pclk_bns",
+	     "dout_cam0_pclk_cam0_csis0_207", CLK_ENABLE_PCLK_CAM0_CSIS0_207, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_CSIS1, "gout_cam0_aclk_csis1",
+	     "mout_cam0_aclk_cam0_csis1_168_user", CLK_ENABLE_ACLK_CAM0_CSIS1_168_CAM0, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_CSIS2, "gout_cam0_aclk_csis2",
+	     "mout_cam0_aclk_cam0_csis2_234_user", CLK_ENABLE_ACLK_CAM0_CSIS2_234_CAM0, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_CSIS3, "gout_cam0_aclk_csis3",
+	     "mout_cam0_aclk_cam0_csis3_132_user", CLK_ENABLE_ACLK_CAM0_CSIS3_132_CAM0, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_3AA0, "gout_cam0_aclk_3aa0",
+	     "mout_cam0_aclk_cam0_3aa0_414_user", CLK_ENABLE_ACLK_CAM0_3AA0_414_CAM0, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_3AA0, "gout_cam0_pclk_3aa0",
+	     "dout_cam0_pclk_cam0_3aa0_207", CLK_ENABLE_PCLK_CAM0_3AA0_207, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_3AA1, "gout_cam0_aclk_3aa1",
+	     "mout_cam0_aclk_cam0_3aa1_414_user", CLK_ENABLE_ACLK_CAM0_3AA1_414_CAM0, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_3AA1, "gout_cam0_pclk_3aa1",
+	     "dout_cam0_pclk_cam0_3aa1_207", CLK_ENABLE_PCLK_CAM0_3AA1_207, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_SFW110_IS_A, "gout_cam0_aclk_sfw110_is_a",
+	     "mout_cam0_aclk_cam0_trex_528_user", CLK_ENABLE_ACLK_CAM0_TREX_528_CAM0, 3, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_SYSMMU6_IS_A, "gout_cam0_aclk_sysmmu6_is_a",
+	     "mout_cam0_aclk_cam0_trex_528_user", CLK_ENABLE_ACLK_CAM0_TREX_528_CAM0, 2, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_TREX_A_5X1_IS_A, "gout_cam0_aclk_trex_a_5x1_is_a",
+	     "mout_cam0_aclk_cam0_trex_528_user", CLK_ENABLE_ACLK_CAM0_TREX_528_CAM0, 1, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_LH_ASYNC_SI_CAM0, "gout_cam0_aclk_lh_async_si_cam0",
+	     "mout_cam0_aclk_cam0_trex_528_user", CLK_ENABLE_ACLK_CAM0_TREX_528_CAM0, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_PMU_CAM0, "gout_cam0_pclk_pmu_cam0",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_CAM0_TREX_264, 6, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_SYSREG_CAM0, "gout_cam0_pclk_sysreg_cam0",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_CAM0_TREX_264, 5, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_LH_ASYNC_MI_CAM0, "gout_cam0_aclk_lh_async_mi_cam0",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_CAM0_TREX_264, 4, 0, 0),
+	GATE(CLK_GOUT_CAM0_ACLK_XIUASYNC_MI_CAM0, "gout_cam0_aclk_xiuasync_mi_cam0",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_CAM0_TREX_264, 3, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_CAM0, "gout_cam0_pclk_cam0",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_CAM0_TREX_264, 2, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_CSIS1, "gout_cam0_pclk_csis1",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_CAM0_TREX_264, 1, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_CSIS0, "gout_cam0_pclk_csis0",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_CAM0_TREX_264, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_XIUASYNC_MI_CAM0, "gout_cam0_pclk_xiuasync_mi_cam0",
+	     "dout_cam0_pclk_cam0_trex_132", CLK_ENABLE_PCLK_CAM0_TREX_132, 3, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_TREX_A_5X1_IS_A, "gout_cam0_pclk_trex_a_5x1_is_a",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_CAM0_TREX_264, 7, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_SYSMMU6_IS_A, "gout_cam0_pclk_sysmmu6_is_a",
+	     "dout_cam0_pclk_cam0_trex_132", CLK_ENABLE_PCLK_CAM0_TREX_132, 1, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_SFW110_IS_A_IS_A, "gout_cam0_pclk_sfw110_is_a_is_a",
+	     "dout_cam0_pclk_cam0_trex_132", CLK_ENABLE_PCLK_CAM0_TREX_132, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_SCLK_PROMISE_CAM0, "gout_cam0_sclk_promise_cam0",
+	     "gout_top_sclk_promise_disp", CLK_ENABLE_SCLK_PROMISE_CAM0, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PHYCLK_HS0_CSIS0_RX_BYTE, "gout_cam0_phyclk_hs0_csis0_rx_byte",
+	     "mout_cam0_phyclk_rxbyteclkhs0_csis0_user", CLK_ENABLE_PHYCLK_HS0_CSIS0_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PHYCLK_HS1_CSIS0_RX_BYTE, "gout_cam0_phyclk_hs1_csis0_rx_byte",
+	     "mout_cam0_phyclk_rxbyteclkhs1_csis0_user", CLK_ENABLE_PHYCLK_HS1_CSIS0_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PHYCLK_HS2_CSIS0_RX_BYTE, "gout_cam0_phyclk_hs2_csis0_rx_byte",
+	     "mout_cam0_phyclk_rxbyteclkhs2_csis0_user", CLK_ENABLE_PHYCLK_HS2_CSIS0_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PHYCLK_HS3_CSIS0_RX_BYTE, "gout_cam0_phyclk_hs3_csis0_rx_byte",
+	     "mout_cam0_phyclk_rxbyteclkhs3_csis0_user", CLK_ENABLE_PHYCLK_HS3_CSIS0_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PHYCLK_HS0_CSIS1_RX_BYTE, "gout_cam0_phyclk_hs0_csis1_rx_byte",
+	     "mout_cam0_phyclk_rxbyteclkhs0_csis1_user", CLK_ENABLE_PHYCLK_HS0_CSIS1_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PHYCLK_HS1_CSIS1_RX_BYTE, "gout_cam0_phyclk_hs1_csis1_rx_byte",
+	     "mout_cam0_phyclk_rxbyteclkhs1_csis1_user", CLK_ENABLE_PHYCLK_HS1_CSIS1_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM0_PCLK_HPM_APBIF_CAM0, "gout_cam0_pclk_hpm_apbif_cam0",
+	     "dout_cam0_pclk_cam0_trex_264", CLK_ENABLE_PCLK_HPM_APBIF_CAM0, 0, 0, 0),
+};
+
+static const struct samsung_cmu_info cam0_cmu_info __initconst = {
+	.fixed_clks		= cam0_fixed_clks,
+	.nr_fixed_clks		= ARRAY_SIZE(cam0_fixed_clks),
+	.mux_clks		= cam0_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(cam0_mux_clks),
+	.div_clks		= cam0_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(cam0_div_clks),
+	.gate_clks		= cam0_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(cam0_gate_clks),
+	.nr_clk_ids		= CAM0_NR_CLK,
+	.clk_regs		= cam0_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(cam0_clk_regs),
+};
+
+/* ---- CMU_CAM1 ---------------------------------------------------------- */
+
+/* Register Offset definitions for CMU_CAM1 */
+#define CLK_CON_MUX_ACLK_CAM1_ARM_672_USER			0x0200
+#define CLK_CON_MUX_ACLK_CAM1_TREX_VRA_528_USER			0x0204
+#define CLK_CON_MUX_ACLK_CAM1_TREX_B_528_USER			0x0208
+#define CLK_CON_MUX_ACLK_CAM1_BUS_264_USER			0x020C
+#define CLK_CON_MUX_ACLK_CAM1_PERI_84_USER			0x0210
+#define CLK_CON_MUX_ACLK_CAM1_CSIS2_414_USER			0x0214
+#define CLK_CON_MUX_ACLK_CAM1_CSIS3_132_USER			0x0218
+#define CLK_CON_MUX_ACLK_CAM1_SCL_566_USER			0x021C
+#define CLK_CON_MUX_SCLK_CAM1_ISP_SPI0_USER			0x0220
+#define CLK_CON_MUX_SCLK_CAM1_ISP_SPI1_USER			0x0224
+#define CLK_CON_MUX_SCLK_CAM1_ISP_UART_USER			0x0228
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS2_USER			0x022C
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS2_USER			0x0230
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS2_CSIS2_USER			0x0234
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS3_CSIS2_USER			0x0238
+#define CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS3_USER			0x023C
+#define CLK_CON_DIV_PCLK_CAM1_ARM_168			0x0400
+#define CLK_CON_DIV_PCLK_CAM1_TREX_VRA_264			0x0408
+#define CLK_CON_DIV_PCLK_CAM1_BUS_132			0x040C
+#define CLK_ENABLE_ACLK_CAM1_ARM_672_CAM1			0x0800
+#define CLK_ENABLE_PCLK_CAM1_ARM_168			0x0804
+#define CLK_ENABLE_ACLK_CAM1_TREX_VRA_528_CAM1			0x0808
+#define CLK_ENABLE_PCLK_CAM1_TREX_VRA_264			0x080C
+#define CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1			0x0810
+#define CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1			0x0814
+#define CLK_ENABLE_PCLK_CAM1_BUS_132			0x0818
+#define CLK_ENABLE_PCLK_CAM1_PERI_84			0x081C
+#define CLK_ENABLE_ACLK_CAM1_CSIS2_414_CAM1			0x0820
+#define CLK_ENABLE_ACLK_CAM1_CSIS3_132_CAM1			0x0828
+#define CLK_ENABLE_ACLK_CAM1_SCL_566_CAM1			0x0830
+#define CLK_ENABLE_PCLK_CAM1_MCS_132			0x083C
+#define CLK_ENABLE_SCLK_CAM1_ISP_SPI0_CAM1			0x0840
+#define CLK_ENABLE_SCLK_CAM1_ISP_SPI1_CAM1			0x0844
+#define CLK_ENABLE_SCLK_CAM1_ISP_UART_CAM1			0x0848
+#define CLK_ENABLE_SCLK_ISP_PERI_IS_B			0x084C
+#define CLK_ENABLE_PHYCLK_HS0_CSIS2_RX_BYTE			0x0850
+#define CLK_ENABLE_PHYCLK_HS1_CSIS2_RX_BYTE			0x0854
+#define CLK_ENABLE_PHYCLK_HS2_CSIS2_RX_BYTE			0x0858
+#define CLK_ENABLE_PHYCLK_HS3_CSIS2_RX_BYTE			0x085C
+#define CLK_ENABLE_PHYCLK_HS0_CSIS3_RX_BYTE			0x0860
+
+static const unsigned long cam1_clk_regs[] __initconst = {
+	CLK_CON_MUX_ACLK_CAM1_ARM_672_USER,
+	CLK_CON_MUX_ACLK_CAM1_TREX_VRA_528_USER,
+	CLK_CON_MUX_ACLK_CAM1_TREX_B_528_USER,
+	CLK_CON_MUX_ACLK_CAM1_BUS_264_USER,
+	CLK_CON_MUX_ACLK_CAM1_PERI_84_USER,
+	CLK_CON_MUX_ACLK_CAM1_CSIS2_414_USER,
+	CLK_CON_MUX_ACLK_CAM1_CSIS3_132_USER,
+	CLK_CON_MUX_ACLK_CAM1_SCL_566_USER,
+	CLK_CON_MUX_SCLK_CAM1_ISP_SPI0_USER,
+	CLK_CON_MUX_SCLK_CAM1_ISP_SPI1_USER,
+	CLK_CON_MUX_SCLK_CAM1_ISP_UART_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS2_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS2_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS2_CSIS2_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS3_CSIS2_USER,
+	CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS3_USER,
+	CLK_CON_DIV_PCLK_CAM1_ARM_168,
+	CLK_CON_DIV_PCLK_CAM1_TREX_VRA_264,
+	CLK_CON_DIV_PCLK_CAM1_BUS_132,
+	CLK_ENABLE_ACLK_CAM1_ARM_672_CAM1,
+	CLK_ENABLE_PCLK_CAM1_ARM_168,
+	CLK_ENABLE_ACLK_CAM1_TREX_VRA_528_CAM1,
+	CLK_ENABLE_PCLK_CAM1_TREX_VRA_264,
+	CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1,
+	CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1,
+	CLK_ENABLE_PCLK_CAM1_BUS_132,
+	CLK_ENABLE_PCLK_CAM1_PERI_84,
+	CLK_ENABLE_ACLK_CAM1_CSIS2_414_CAM1,
+	CLK_ENABLE_ACLK_CAM1_CSIS3_132_CAM1,
+	CLK_ENABLE_ACLK_CAM1_SCL_566_CAM1,
+	CLK_ENABLE_PCLK_CAM1_MCS_132,
+	CLK_ENABLE_SCLK_CAM1_ISP_SPI0_CAM1,
+	CLK_ENABLE_SCLK_CAM1_ISP_SPI1_CAM1,
+	CLK_ENABLE_SCLK_CAM1_ISP_UART_CAM1,
+	CLK_ENABLE_SCLK_ISP_PERI_IS_B,
+	CLK_ENABLE_PHYCLK_HS0_CSIS2_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS1_CSIS2_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS2_CSIS2_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS3_CSIS2_RX_BYTE,
+	CLK_ENABLE_PHYCLK_HS0_CSIS3_RX_BYTE,
+};
+
+/*
+ * These CSI RX byte-clock D-PHY signals are fed directly from the
+ * MIPI CSI-2 D-PHY hardware (sensor-negotiated lane speed), not
+ * routed through any CMU_TOP supply gate - there is no fixed
+ * nominal rate to give them (unlike DISP0's DSIM D-PHY escape/byte
+ * clocks, which vendor documents as fixed values). Registered at
+ * rate 0 (unknown until the sensor link is configured) rather than
+ * fabricating a plausible-looking number.
+ */
+static const struct samsung_fixed_rate_clock cam1_fixed_clks[] __initconst = {
+	FRATE(CLK_PHYCLK_RXBYTECLKHS0_CSIS2_PHY, "phyclk_rxbyteclkhs0_csis2_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS1_CSIS2_PHY, "phyclk_rxbyteclkhs1_csis2_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS2_CSIS2_PHY, "phyclk_rxbyteclkhs2_csis2_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS3_CSIS2_PHY, "phyclk_rxbyteclkhs3_csis2_phy", NULL, 0, 0),
+	FRATE(CLK_PHYCLK_RXBYTECLKHS0_CSIS3_PHY, "phyclk_rxbyteclkhs0_csis3_phy", NULL, 0, 0),
+};
+
+PNAME(cam1_mux_aclk_cam1_arm_672_user_p) = { "oscclk", "gout_top_aclk_cam1_arm_672" };
+PNAME(cam1_mux_aclk_cam1_trex_vra_528_user_p) = { "oscclk", "gout_top_aclk_cam1_trex_vra_528" };
+PNAME(cam1_mux_aclk_cam1_trex_b_528_user_p) = { "oscclk", "gout_top_aclk_cam1_trex_b_528" };
+PNAME(cam1_mux_aclk_cam1_bus_264_user_p) = { "oscclk", "gout_top_aclk_cam1_bus_264" };
+PNAME(cam1_mux_aclk_cam1_peri_84_user_p) = { "oscclk", "gout_top_aclk_cam1_peri_84" };
+PNAME(cam1_mux_aclk_cam1_csis2_414_user_p) = { "oscclk", "gout_top_aclk_cam1_csis2_414" };
+PNAME(cam1_mux_aclk_cam1_csis3_132_user_p) = { "oscclk", "gout_top_aclk_cam1_csis3_132" };
+PNAME(cam1_mux_aclk_cam1_scl_566_user_p) = { "oscclk", "gout_top_aclk_cam1_scl_566" };
+PNAME(cam1_mux_sclk_cam1_isp_spi0_user_p) = { "oscclk", "gout_top_sclk_cam1_isp_spi0" };
+PNAME(cam1_mux_sclk_cam1_isp_spi1_user_p) = { "oscclk", "gout_top_sclk_cam1_isp_spi1" };
+PNAME(cam1_mux_sclk_cam1_isp_uart_user_p) = { "oscclk", "gout_top_sclk_cam1_isp_uart" };
+PNAME(cam1_mux_phyclk_rxbyteclkhs0_csis2_user_p) = { "oscclk", "phyclk_rxbyteclkhs0_csis2_phy" };
+PNAME(cam1_mux_phyclk_rxbyteclkhs1_csis2_user_p) = { "oscclk", "phyclk_rxbyteclkhs1_csis2_phy" };
+PNAME(cam1_mux_phyclk_rxbyteclkhs2_csis2_user_p) = { "oscclk", "phyclk_rxbyteclkhs2_csis2_phy" };
+PNAME(cam1_mux_phyclk_rxbyteclkhs3_csis2_user_p) = { "oscclk", "phyclk_rxbyteclkhs3_csis2_phy" };
+PNAME(cam1_mux_phyclk_rxbyteclkhs0_csis3_user_p) = { "oscclk", "phyclk_rxbyteclkhs0_csis3_phy" };
+
+static const struct samsung_mux_clock cam1_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_CAM1_ACLK_CAM1_ARM_672_USER, "mout_cam1_aclk_cam1_arm_672_user",
+	    cam1_mux_aclk_cam1_arm_672_user_p, CLK_CON_MUX_ACLK_CAM1_ARM_672_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_ACLK_CAM1_TREX_VRA_528_USER, "mout_cam1_aclk_cam1_trex_vra_528_user",
+	    cam1_mux_aclk_cam1_trex_vra_528_user_p, CLK_CON_MUX_ACLK_CAM1_TREX_VRA_528_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_ACLK_CAM1_TREX_B_528_USER, "mout_cam1_aclk_cam1_trex_b_528_user",
+	    cam1_mux_aclk_cam1_trex_b_528_user_p, CLK_CON_MUX_ACLK_CAM1_TREX_B_528_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_ACLK_CAM1_BUS_264_USER, "mout_cam1_aclk_cam1_bus_264_user",
+	    cam1_mux_aclk_cam1_bus_264_user_p, CLK_CON_MUX_ACLK_CAM1_BUS_264_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_ACLK_CAM1_PERI_84_USER, "mout_cam1_aclk_cam1_peri_84_user",
+	    cam1_mux_aclk_cam1_peri_84_user_p, CLK_CON_MUX_ACLK_CAM1_PERI_84_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_ACLK_CAM1_CSIS2_414_USER, "mout_cam1_aclk_cam1_csis2_414_user",
+	    cam1_mux_aclk_cam1_csis2_414_user_p, CLK_CON_MUX_ACLK_CAM1_CSIS2_414_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_ACLK_CAM1_CSIS3_132_USER, "mout_cam1_aclk_cam1_csis3_132_user",
+	    cam1_mux_aclk_cam1_csis3_132_user_p, CLK_CON_MUX_ACLK_CAM1_CSIS3_132_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_ACLK_CAM1_SCL_566_USER, "mout_cam1_aclk_cam1_scl_566_user",
+	    cam1_mux_aclk_cam1_scl_566_user_p, CLK_CON_MUX_ACLK_CAM1_SCL_566_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_SCLK_CAM1_ISP_SPI0_USER, "mout_cam1_sclk_cam1_isp_spi0_user",
+	    cam1_mux_sclk_cam1_isp_spi0_user_p, CLK_CON_MUX_SCLK_CAM1_ISP_SPI0_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_SCLK_CAM1_ISP_SPI1_USER, "mout_cam1_sclk_cam1_isp_spi1_user",
+	    cam1_mux_sclk_cam1_isp_spi1_user_p, CLK_CON_MUX_SCLK_CAM1_ISP_SPI1_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_SCLK_CAM1_ISP_UART_USER, "mout_cam1_sclk_cam1_isp_uart_user",
+	    cam1_mux_sclk_cam1_isp_uart_user_p, CLK_CON_MUX_SCLK_CAM1_ISP_UART_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_PHYCLK_RXBYTECLKHS0_CSIS2_USER, "mout_cam1_phyclk_rxbyteclkhs0_csis2_user",
+	    cam1_mux_phyclk_rxbyteclkhs0_csis2_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS2_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_PHYCLK_RXBYTECLKHS1_CSIS2_USER, "mout_cam1_phyclk_rxbyteclkhs1_csis2_user",
+	    cam1_mux_phyclk_rxbyteclkhs1_csis2_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS1_CSIS2_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_PHYCLK_RXBYTECLKHS2_CSIS2_USER, "mout_cam1_phyclk_rxbyteclkhs2_csis2_user",
+	    cam1_mux_phyclk_rxbyteclkhs2_csis2_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS2_CSIS2_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_PHYCLK_RXBYTECLKHS3_CSIS2_USER, "mout_cam1_phyclk_rxbyteclkhs3_csis2_user",
+	    cam1_mux_phyclk_rxbyteclkhs3_csis2_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS3_CSIS2_USER, 12, 1),
+	MUX(CLK_MOUT_CAM1_PHYCLK_RXBYTECLKHS0_CSIS3_USER, "mout_cam1_phyclk_rxbyteclkhs0_csis3_user",
+	    cam1_mux_phyclk_rxbyteclkhs0_csis3_user_p, CLK_CON_MUX_PHYCLK_RXBYTECLKHS0_CSIS3_USER, 12, 1),
+};
+
+static const struct samsung_div_clock cam1_div_clks[] __initconst = {
+	DIV(CLK_DOUT_CAM1_PCLK_CAM1_ARM_168, "dout_cam1_pclk_cam1_arm_168",
+	    "mout_cam1_aclk_cam1_arm_672_user", CLK_CON_DIV_PCLK_CAM1_ARM_168, 0, 3),
+	DIV(CLK_DOUT_CAM1_PCLK_CAM1_TREX_VRA_264, "dout_cam1_pclk_cam1_trex_vra_264",
+	    "mout_cam1_aclk_cam1_trex_vra_528_user", CLK_CON_DIV_PCLK_CAM1_TREX_VRA_264, 0, 3),
+	DIV(CLK_DOUT_CAM1_PCLK_CAM1_BUS_132, "dout_cam1_pclk_cam1_bus_132",
+	    "mout_cam1_aclk_cam1_bus_264_user", CLK_CON_DIV_PCLK_CAM1_BUS_132, 0, 3),
+};
+
+static const struct samsung_gate_clock cam1_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_CAM1_ACLK_ARM, "gout_cam1_aclk_arm",
+	     "mout_cam1_aclk_cam1_arm_672_user", CLK_ENABLE_ACLK_CAM1_ARM_672_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_ARM, "gout_cam1_pclk_arm",
+	     "dout_cam1_pclk_cam1_arm_168", CLK_ENABLE_PCLK_CAM1_ARM_168, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_SMMU_VRA, "gout_cam1_aclk_smmu_vra",
+	     "mout_cam1_aclk_cam1_trex_vra_528_user", CLK_ENABLE_ACLK_CAM1_TREX_VRA_528_CAM1, 1, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_VRA, "gout_cam1_aclk_vra",
+	     "mout_cam1_aclk_cam1_trex_vra_528_user", CLK_ENABLE_ACLK_CAM1_TREX_VRA_528_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_VRA, "gout_cam1_pclk_vra",
+	     "dout_cam1_pclk_cam1_trex_vra_264", CLK_ENABLE_PCLK_CAM1_TREX_VRA_264, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_LH_SI, "gout_cam1_aclk_lh_si",
+	     "mout_cam1_aclk_cam1_trex_b_528_user", CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1, 7, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_TREX_CAM1, "gout_cam1_aclk_trex_cam1",
+	     "mout_cam1_aclk_cam1_trex_b_528_user", CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1, 6, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_XIU_FROM_ISP1, "gout_cam1_aclk_xiu_from_isp1",
+	     "mout_cam1_aclk_cam1_trex_b_528_user", CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1, 5, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_SMMU_IS_B, "gout_cam1_aclk_smmu_is_b",
+	     "mout_cam1_aclk_cam1_trex_b_528_user", CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1, 4, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_SFW, "gout_cam1_aclk_sfw",
+	     "mout_cam1_aclk_cam1_trex_b_528_user", CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1, 3, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_ASYNC_CA7_TO_DRAM, "gout_cam1_aclk_async_ca7_to_dram",
+	     "mout_cam1_aclk_cam1_trex_b_528_user", CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1, 2, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_SMMU_ISPCPU, "gout_cam1_aclk_smmu_ispcpu",
+	     "mout_cam1_aclk_cam1_trex_b_528_user", CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1, 1, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_TREX_B, "gout_cam1_aclk_trex_b",
+	     "mout_cam1_aclk_cam1_trex_b_528_user", CLK_ENABLE_ACLK_CAM1_TREX_B_528_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_LH_MI, "gout_cam1_aclk_lh_mi",
+	     "mout_cam1_aclk_cam1_bus_264_user", CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1, 6, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_PERI, "gout_cam1_aclk_peri",
+	     "mout_cam1_aclk_cam1_bus_264_user", CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1, 5, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_CSIS3, "gout_cam1_pclk_csis3",
+	     "mout_cam1_aclk_cam1_bus_264_user", CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1, 4, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_CSIS2, "gout_cam1_pclk_csis2",
+	     "mout_cam1_aclk_cam1_bus_264_user", CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1, 3, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_XIU_TO_CAM0, "gout_cam1_aclk_xiu_to_cam0",
+	     "mout_cam1_aclk_cam1_bus_264_user", CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1, 2, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_XIU_TO_ISP1, "gout_cam1_aclk_xiu_to_isp1",
+	     "mout_cam1_aclk_cam1_bus_264_user", CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1, 1, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_XIU_TO_ISP0, "gout_cam1_aclk_xiu_to_isp0",
+	     "mout_cam1_aclk_cam1_bus_264_user", CLK_ENABLE_ACLK_CAM1_BUS_264_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_CMU_LOCAL, "gout_cam1_pclk_cmu_local",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 10, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_SYSREG_CAM1, "gout_cam1_pclk_sysreg_cam1",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 9, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_PMU_CAM1, "gout_cam1_pclk_pmu_cam1",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 8, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_TREX_CAM1, "gout_cam1_pclk_trex_cam1",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 7, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_XIU_FROM_ISP1, "gout_cam1_pclk_xiu_from_isp1",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 6, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_PERI, "gout_cam1_pclk_peri",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 5, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_SMMU_ISPCPU, "gout_cam1_pclk_smmu_ispcpu",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 4, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_SMMU_VRA, "gout_cam1_pclk_smmu_vra",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 3, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_SMMU_IS_B, "gout_cam1_pclk_smmu_is_b",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 2, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_SFW, "gout_cam1_pclk_sfw",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 1, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_TREX_B, "gout_cam1_pclk_trex_b",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_BUS_132, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_WDT, "gout_cam1_pclk_wdt",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 11, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_UART, "gout_cam1_pclk_uart",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 10, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_SPI1, "gout_cam1_pclk_spi1",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 9, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_SPI0, "gout_cam1_pclk_spi0",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 8, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_PWM, "gout_cam1_pclk_pwm",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 7, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_MCUCTL, "gout_cam1_pclk_mcuctl",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 6, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_I2C3, "gout_cam1_pclk_i2c3",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 5, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_I2C2, "gout_cam1_pclk_i2c2",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 4, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_I2C1, "gout_cam1_pclk_i2c1",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 3, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_I2C0, "gout_cam1_pclk_i2c0",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 2, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_PDMA, "gout_cam1_aclk_pdma",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 1, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_BRIDGE_PERI, "gout_cam1_aclk_bridge_peri",
+	     "mout_cam1_aclk_cam1_peri_84_user", CLK_ENABLE_PCLK_CAM1_PERI_84, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_CSIS2, "gout_cam1_aclk_csis2",
+	     "mout_cam1_aclk_cam1_csis2_414_user", CLK_ENABLE_ACLK_CAM1_CSIS2_414_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_CSIS3, "gout_cam1_aclk_csis3",
+	     "mout_cam1_aclk_cam1_csis3_132_user", CLK_ENABLE_ACLK_CAM1_CSIS3_132_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_SMMU_MC_SC, "gout_cam1_aclk_smmu_mc_sc",
+	     "mout_cam1_aclk_cam1_scl_566_user", CLK_ENABLE_ACLK_CAM1_SCL_566_CAM1, 1, 0, 0),
+	GATE(CLK_GOUT_CAM1_ACLK_MC_SC, "gout_cam1_aclk_mc_sc",
+	     "mout_cam1_aclk_cam1_scl_566_user", CLK_ENABLE_ACLK_CAM1_SCL_566_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PCLK_SMMU_MC_SC, "gout_cam1_pclk_smmu_mc_sc",
+	     "dout_cam1_pclk_cam1_bus_132", CLK_ENABLE_PCLK_CAM1_MCS_132, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_SCLK_ISP_PERI_IS_B_SPI0_EXT_CLK_ISP, "gout_cam1_sclk_isp_peri_is_b_spi0_ext_clk_isp",
+	     "mout_cam1_sclk_cam1_isp_spi0_user", CLK_ENABLE_SCLK_CAM1_ISP_SPI0_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_SCLK_ISP_PERI_IS_B_SPI1_EXT_CLK_ISP, "gout_cam1_sclk_isp_peri_is_b_spi1_ext_clk_isp",
+	     "mout_cam1_sclk_cam1_isp_spi1_user", CLK_ENABLE_SCLK_CAM1_ISP_SPI1_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_SCLK_ISP_PERI_IS_B_UART_EXT_CLK_ISP, "gout_cam1_sclk_isp_peri_is_b_uart_ext_clk_isp",
+	     "mout_cam1_sclk_cam1_isp_uart_user", CLK_ENABLE_SCLK_CAM1_ISP_UART_CAM1, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_SCLK_CAM1_ISP_IS_B_OSCCLK_I2C3_ISP, "gout_cam1_sclk_cam1_isp_is_b_oscclk_i2c3_isp",
+	     "oscclk", CLK_ENABLE_SCLK_ISP_PERI_IS_B, 4, 0, 0),
+	GATE(CLK_GOUT_CAM1_SCLK_CAM1_ISP_IS_B_OSCCLK_I2C2_ISP, "gout_cam1_sclk_cam1_isp_is_b_oscclk_i2c2_isp",
+	     "oscclk", CLK_ENABLE_SCLK_ISP_PERI_IS_B, 3, 0, 0),
+	GATE(CLK_GOUT_CAM1_SCLK_CAM1_ISP_IS_B_OSCCLK_I2C1_ISP, "gout_cam1_sclk_cam1_isp_is_b_oscclk_i2c1_isp",
+	     "oscclk", CLK_ENABLE_SCLK_ISP_PERI_IS_B, 2, 0, 0),
+	GATE(CLK_GOUT_CAM1_SCLK_CAM1_ISP_IS_B_OSCCLK_I2C0_ISP, "gout_cam1_sclk_cam1_isp_is_b_oscclk_i2c0_isp",
+	     "oscclk", CLK_ENABLE_SCLK_ISP_PERI_IS_B, 1, 0, 0),
+	GATE(CLK_GOUT_CAM1_SCLK_ISP_PERI_IS_B_PWM_ISP, "gout_cam1_sclk_isp_peri_is_b_pwm_isp",
+	     "oscclk", CLK_ENABLE_SCLK_ISP_PERI_IS_B, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PHYCLK_HS0_CSIS2_RX_BYTE, "gout_cam1_phyclk_hs0_csis2_rx_byte",
+	     "mout_cam1_phyclk_rxbyteclkhs0_csis2_user", CLK_ENABLE_PHYCLK_HS0_CSIS2_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PHYCLK_HS1_CSIS2_RX_BYTE, "gout_cam1_phyclk_hs1_csis2_rx_byte",
+	     "mout_cam1_phyclk_rxbyteclkhs1_csis2_user", CLK_ENABLE_PHYCLK_HS1_CSIS2_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PHYCLK_HS2_CSIS2_RX_BYTE, "gout_cam1_phyclk_hs2_csis2_rx_byte",
+	     "mout_cam1_phyclk_rxbyteclkhs2_csis2_user", CLK_ENABLE_PHYCLK_HS2_CSIS2_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PHYCLK_HS3_CSIS2_RX_BYTE, "gout_cam1_phyclk_hs3_csis2_rx_byte",
+	     "mout_cam1_phyclk_rxbyteclkhs3_csis2_user", CLK_ENABLE_PHYCLK_HS3_CSIS2_RX_BYTE, 0, 0, 0),
+	GATE(CLK_GOUT_CAM1_PHYCLK_HS0_CSIS3_RX_BYTE, "gout_cam1_phyclk_hs0_csis3_rx_byte",
+	     "mout_cam1_phyclk_rxbyteclkhs0_csis3_user", CLK_ENABLE_PHYCLK_HS0_CSIS3_RX_BYTE, 0, 0, 0),
+};
+
+static const struct samsung_cmu_info cam1_cmu_info __initconst = {
+	.fixed_clks		= cam1_fixed_clks,
+	.nr_fixed_clks		= ARRAY_SIZE(cam1_fixed_clks),
+	.mux_clks		= cam1_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(cam1_mux_clks),
+	.div_clks		= cam1_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(cam1_div_clks),
+	.gate_clks		= cam1_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(cam1_gate_clks),
+	.nr_clk_ids		= CAM1_NR_CLK,
+	.clk_regs		= cam1_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(cam1_clk_regs),
+};
+
+/* ---- CMU_ISP0 ---------------------------------------------------------- */
+
+/* Register Offset definitions for CMU_ISP0 */
+#define CLK_CON_MUX_ACLK_ISP0_528_USER			0x0200
+#define CLK_CON_MUX_ACLK_ISP0_TPU_400_USER			0x0204
+#define CLK_CON_MUX_ACLK_ISP0_TREX_528_USER			0x0208
+#define CLK_CON_MUX_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D_USER			0x020C
+#define CLK_CON_DIV_PCLK_ISP0			0x0400
+#define CLK_CON_DIV_PCLK_ISP0_TPU			0x0404
+#define CLK_CON_DIV_PCLK_ISP0_TREX_264			0x0408
+#define CLK_CON_DIV_PCLK_ISP0_TREX_132			0x040C
+#define CLK_ENABLE_ACLK_ISP0			0x0800
+#define CLK_ENABLE_PCLK_ISP0			0x0808
+#define CLK_ENABLE_ACLK_ISP0_TPU			0x080C
+#define CLK_ENABLE_PCLK_ISP0_TPU			0x0814
+#define CLK_ENABLE_ACLK_ISP0_TREX			0x0818
+#define CLK_ENABLE_PCLK_TREX_264			0x081C
+#define CLK_ENABLE_PCLK_HPM_APBIF_ISP0			0x0820
+#define CLK_ENABLE_PCLK_TREX_132			0x0824
+#define CLK_ENABLE_SCLK_PROMISE_ISP0			0x0828
+#define CLK_ENABLE_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D			0x082C
+
+static const unsigned long isp0_clk_regs[] __initconst = {
+	CLK_CON_MUX_ACLK_ISP0_528_USER,
+	CLK_CON_MUX_ACLK_ISP0_TPU_400_USER,
+	CLK_CON_MUX_ACLK_ISP0_TREX_528_USER,
+	CLK_CON_MUX_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D_USER,
+	CLK_CON_DIV_PCLK_ISP0,
+	CLK_CON_DIV_PCLK_ISP0_TPU,
+	CLK_CON_DIV_PCLK_ISP0_TREX_264,
+	CLK_CON_DIV_PCLK_ISP0_TREX_132,
+	CLK_ENABLE_ACLK_ISP0,
+	CLK_ENABLE_PCLK_ISP0,
+	CLK_ENABLE_ACLK_ISP0_TPU,
+	CLK_ENABLE_PCLK_ISP0_TPU,
+	CLK_ENABLE_ACLK_ISP0_TREX,
+	CLK_ENABLE_PCLK_TREX_264,
+	CLK_ENABLE_PCLK_HPM_APBIF_ISP0,
+	CLK_ENABLE_PCLK_TREX_132,
+	CLK_ENABLE_SCLK_PROMISE_ISP0,
+	CLK_ENABLE_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D,
+};
+
+PNAME(isp0_mux_aclk_isp0_528_user_p) = { "oscclk", "gout_top_aclk_isp0_528" };
+PNAME(isp0_mux_aclk_isp0_tpu_400_user_p) = { "oscclk", "gout_top_aclk_isp0_tpu_400" };
+PNAME(isp0_mux_aclk_isp0_trex_528_user_p) = { "oscclk", "gout_top_aclk_isp0_trex_528" };
+PNAME(isp0_mux_aclk_isp0_pxl_asbs_is_c_from_is_d_user_p) = { "oscclk", "gout_top_aclk_isp0_pxl_asbs_is_c_from_is_d" };
+
+static const struct samsung_mux_clock isp0_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_ISP0_ACLK_ISP0_528_USER, "mout_isp0_aclk_isp0_528_user",
+	    isp0_mux_aclk_isp0_528_user_p, CLK_CON_MUX_ACLK_ISP0_528_USER, 12, 1),
+	MUX(CLK_MOUT_ISP0_ACLK_ISP0_TPU_400_USER, "mout_isp0_aclk_isp0_tpu_400_user",
+	    isp0_mux_aclk_isp0_tpu_400_user_p, CLK_CON_MUX_ACLK_ISP0_TPU_400_USER, 12, 1),
+	MUX(CLK_MOUT_ISP0_ACLK_ISP0_TREX_528_USER, "mout_isp0_aclk_isp0_trex_528_user",
+	    isp0_mux_aclk_isp0_trex_528_user_p, CLK_CON_MUX_ACLK_ISP0_TREX_528_USER, 12, 1),
+	MUX(CLK_MOUT_ISP0_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D_USER, "mout_isp0_aclk_isp0_pxl_asbs_is_c_from_is_d_user",
+	    isp0_mux_aclk_isp0_pxl_asbs_is_c_from_is_d_user_p, CLK_CON_MUX_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D_USER, 12, 1),
+};
+
+static const struct samsung_div_clock isp0_div_clks[] __initconst = {
+	DIV(CLK_DOUT_ISP0_PCLK_ISP0, "dout_isp0_pclk_isp0",
+	    "mout_isp0_aclk_isp0_528_user", CLK_CON_DIV_PCLK_ISP0, 0, 3),
+	DIV(CLK_DOUT_ISP0_PCLK_ISP0_TPU, "dout_isp0_pclk_isp0_tpu",
+	    "mout_isp0_aclk_isp0_tpu_400_user", CLK_CON_DIV_PCLK_ISP0_TPU, 0, 3),
+	DIV(CLK_DOUT_ISP0_PCLK_ISP0_TREX_264, "dout_isp0_pclk_isp0_trex_264",
+	    "mout_isp0_aclk_isp0_trex_528_user", CLK_CON_DIV_PCLK_ISP0_TREX_264, 0, 3),
+	DIV(CLK_DOUT_ISP0_PCLK_ISP0_TREX_132, "dout_isp0_pclk_isp0_trex_132",
+	    "mout_isp0_aclk_isp0_trex_528_user", CLK_CON_DIV_PCLK_ISP0_TREX_132, 0, 3),
+};
+
+static const struct samsung_gate_clock isp0_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_ISP0_ACLK_FIMC_ISP0, "gout_isp0_aclk_fimc_isp0",
+	     "mout_isp0_aclk_isp0_528_user", CLK_ENABLE_ACLK_ISP0, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_PCLK_FIMC_ISP0, "gout_isp0_pclk_fimc_isp0",
+	     "dout_isp0_pclk_isp0", CLK_ENABLE_PCLK_ISP0, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_ACLK_FIMC_TPU, "gout_isp0_aclk_fimc_tpu",
+	     "mout_isp0_aclk_isp0_tpu_400_user", CLK_ENABLE_ACLK_ISP0_TPU, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_PCLK_FIMC_TPU, "gout_isp0_pclk_fimc_tpu",
+	     "dout_isp0_pclk_isp0_tpu", CLK_ENABLE_PCLK_ISP0_TPU, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_ACLK_SYSMMU601, "gout_isp0_aclk_sysmmu601",
+	     "mout_isp0_aclk_isp0_trex_528_user", CLK_ENABLE_ACLK_ISP0_TREX, 2, 0, 0),
+	GATE(CLK_GOUT_ISP0_CLK_C_TREX_C, "gout_isp0_clk_c_trex_c",
+	     "mout_isp0_aclk_isp0_trex_528_user", CLK_ENABLE_ACLK_ISP0_TREX, 1, 0, 0),
+	GATE(CLK_GOUT_ISP0_CLK_AXI_LH_ASYNC_SI_TOP_ISP0, "gout_isp0_clk_axi_lh_async_si_top_isp0",
+	     "mout_isp0_aclk_isp0_trex_528_user", CLK_ENABLE_ACLK_ISP0_TREX, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_PCLK_SYSREG_ISP0, "gout_isp0_pclk_sysreg_isp0",
+	     "dout_isp0_pclk_isp0_trex_264", CLK_ENABLE_PCLK_TREX_264, 3, 0, 0),
+	GATE(CLK_GOUT_ISP0_PCLK_PMU_ISP0, "gout_isp0_pclk_pmu_isp0",
+	     "dout_isp0_pclk_isp0_trex_264", CLK_ENABLE_PCLK_TREX_264, 2, 0, 0),
+	GATE(CLK_GOUT_ISP0_ACLK_XIU_N_ASYNC_MI, "gout_isp0_aclk_xiu_n_async_mi",
+	     "dout_isp0_pclk_isp0_trex_264", CLK_ENABLE_PCLK_TREX_264, 1, 0, 0),
+	GATE(CLK_GOUT_ISP0_PCLK_ISP0, "gout_isp0_pclk_isp0",
+	     "dout_isp0_pclk_isp0_trex_264", CLK_ENABLE_PCLK_TREX_264, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_PCLK_HPM_APBIF_ISP0, "gout_isp0_pclk_hpm_apbif_isp0",
+	     "dout_isp0_pclk_isp0_trex_264", CLK_ENABLE_PCLK_HPM_APBIF_ISP0, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_PCLK_SYSMMU601, "gout_isp0_pclk_sysmmu601",
+	     "dout_isp0_pclk_isp0_trex_132", CLK_ENABLE_PCLK_TREX_132, 1, 0, 0),
+	GATE(CLK_GOUT_ISP0_PCLK_TREX_C, "gout_isp0_pclk_trex_c",
+	     "dout_isp0_pclk_isp0_trex_132", CLK_ENABLE_PCLK_TREX_132, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_SCLK_PROMISE_ISP0, "gout_isp0_sclk_promise_isp0",
+	     "gout_top_sclk_promise_int", CLK_ENABLE_SCLK_PROMISE_ISP0, 0, 0, 0),
+	GATE(CLK_GOUT_ISP0_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D, "gout_isp0_aclk_isp0_pxl_asbs_is_c_from_is_d",
+	     "mout_isp0_aclk_isp0_pxl_asbs_is_c_from_is_d_user", CLK_ENABLE_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D, 0, 0, 0),
+};
+
+static const struct samsung_cmu_info isp0_cmu_info __initconst = {
+	.mux_clks		= isp0_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(isp0_mux_clks),
+	.div_clks		= isp0_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(isp0_div_clks),
+	.gate_clks		= isp0_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(isp0_gate_clks),
+	.nr_clk_ids		= ISP0_NR_CLK,
+	.clk_regs		= isp0_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(isp0_clk_regs),
+};
+
+/* ---- CMU_ISP1 ---------------------------------------------------------- */
+
+/* Register Offset definitions for CMU_ISP1 */
+#define CLK_CON_MUX_ACLK_ISP1_468_USER			0x0200
+#define CLK_CON_DIV_PCLK_ISP1_234			0x0400
+#define CLK_ENABLE_ACLK_ISP1			0x0800
+#define CLK_ENABLE_PCLK_ISP1_234			0x0808
+#define CLK_ENABLE_PCLK_HPM_APBIF_ISP1			0x080C
+#define CLK_ENABLE_SCLK_PROMISE_ISP1			0x0810
+
+static const unsigned long isp1_clk_regs[] __initconst = {
+	CLK_CON_MUX_ACLK_ISP1_468_USER,
+	CLK_CON_DIV_PCLK_ISP1_234,
+	CLK_ENABLE_ACLK_ISP1,
+	CLK_ENABLE_PCLK_ISP1_234,
+	CLK_ENABLE_PCLK_HPM_APBIF_ISP1,
+	CLK_ENABLE_SCLK_PROMISE_ISP1,
+};
+
+PNAME(isp1_mux_aclk_isp1_468_user_p) = { "oscclk", "gout_top_aclk_isp1_468" };
+
+static const struct samsung_mux_clock isp1_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_ISP1_ACLK_ISP1_468_USER, "mout_isp1_aclk_isp1_468_user",
+	    isp1_mux_aclk_isp1_468_user_p, CLK_CON_MUX_ACLK_ISP1_468_USER, 12, 1),
+};
+
+static const struct samsung_div_clock isp1_div_clks[] __initconst = {
+	DIV(CLK_DOUT_ISP1_PCLK_ISP1_234, "dout_isp1_pclk_isp1_234",
+	    "mout_isp1_aclk_isp1_468_user", CLK_CON_DIV_PCLK_ISP1_234, 0, 3),
+};
+
+static const struct samsung_gate_clock isp1_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_ISP1_ACLK_XIU_N_ASYNC_SI, "gout_isp1_aclk_xiu_n_async_si",
+	     "mout_isp1_aclk_isp1_468_user", CLK_ENABLE_ACLK_ISP1, 1, 0, 0),
+	GATE(CLK_GOUT_ISP1_ACLK_FIMC_ISP1, "gout_isp1_aclk_fimc_isp1",
+	     "mout_isp1_aclk_isp1_468_user", CLK_ENABLE_ACLK_ISP1, 0, 0, 0),
+	GATE(CLK_GOUT_ISP1_PCLK_SYSREG_ISP1, "gout_isp1_pclk_sysreg_isp1",
+	     "dout_isp1_pclk_isp1_234", CLK_ENABLE_PCLK_ISP1_234, 4, 0, 0),
+	GATE(CLK_GOUT_ISP1_PCLK_PMU_ISP1, "gout_isp1_pclk_pmu_isp1",
+	     "dout_isp1_pclk_isp1_234", CLK_ENABLE_PCLK_ISP1_234, 3, 0, 0),
+	GATE(CLK_GOUT_ISP1_ACLK_AXI2APB_BRIDGE_IS2P, "gout_isp1_aclk_axi2apb_bridge_is2p",
+	     "dout_isp1_pclk_isp1_234", CLK_ENABLE_PCLK_ISP1_234, 2, 0, 0),
+	GATE(CLK_GOUT_ISP1_ACLK_XIU_N_ASYNC_MI, "gout_isp1_aclk_xiu_n_async_mi",
+	     "dout_isp1_pclk_isp1_234", CLK_ENABLE_PCLK_ISP1_234, 1, 0, 0),
+	GATE(CLK_GOUT_ISP1_PCLK_FIMC_ISP1, "gout_isp1_pclk_fimc_isp1",
+	     "dout_isp1_pclk_isp1_234", CLK_ENABLE_PCLK_ISP1_234, 0, 0, 0),
+	GATE(CLK_GOUT_ISP1_PCLK_HPM_APBIF_ISP1, "gout_isp1_pclk_hpm_apbif_isp1",
+	     "dout_isp1_pclk_isp1_234", CLK_ENABLE_PCLK_HPM_APBIF_ISP1, 0, 0, 0),
+	GATE(CLK_GOUT_ISP1_SCLK_PROMISE_ISP1, "gout_isp1_sclk_promise_isp1",
+	     "gout_top_sclk_promise_int", CLK_ENABLE_SCLK_PROMISE_ISP1, 0, 0, 0),
+};
+
+static const struct samsung_cmu_info isp1_cmu_info __initconst = {
+	.mux_clks		= isp1_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(isp1_mux_clks),
+	.div_clks		= isp1_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(isp1_div_clks),
+	.gate_clks		= isp1_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(isp1_gate_clks),
+	.nr_clk_ids		= ISP1_NR_CLK,
+	.clk_regs		= isp1_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(isp1_clk_regs),
+};
+
 static int __init exynos8890_cmu_probe(struct platform_device *pdev)
 {
 	const struct samsung_cmu_info *info;
@@ -8683,6 +9466,18 @@ static const struct of_device_id exynos8890_cmu_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8890-cmu-peric1",
 		.data = &peric1_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8890-cmu-cam0",
+		.data = &cam0_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8890-cmu-cam1",
+		.data = &cam1_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8890-cmu-isp0",
+		.data = &isp0_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8890-cmu-isp1",
+		.data = &isp1_cmu_info,
 	},
 	{ },
 };

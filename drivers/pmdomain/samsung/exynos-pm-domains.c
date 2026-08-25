@@ -113,6 +113,13 @@ static const struct exynos_pm_domain_config exynos8890_disp_cfg = {
 	.flags			= GENPD_FLAG_ALWAYS_ON,
 };
 
+// CAM0/CAM1/ISP0/ISP1: same OPTION=0x2/always-on quirk as MFC/DISP above, confirmed against vendor's S5E8890-pmu.c
+static const struct exynos_pm_domain_config exynos8890_cam_isp_cfg = {
+	.local_pwr_cfg		= 0xf,
+	.power_on_option	= 0x2,
+	.flags			= GENPD_FLAG_ALWAYS_ON,
+};
+
 static const struct of_device_id exynos_pm_domain_of_match[] = {
 	{
 		.compatible = "samsung,exynos4210-pd",
@@ -126,6 +133,9 @@ static const struct of_device_id exynos_pm_domain_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8890-disp-pd",
 		.data = &exynos8890_disp_cfg,
+	}, {
+		.compatible = "samsung,exynos8890-cam-isp-pd",
+		.data = &exynos8890_cam_isp_cfg,
 	},
 	{ },
 };
