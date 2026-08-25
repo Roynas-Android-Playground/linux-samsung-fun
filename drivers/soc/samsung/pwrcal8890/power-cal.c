@@ -685,8 +685,7 @@ int cal_init(void)
 	if (cal_pm_ops.pm_init)
 		cal_pm_ops.pm_init();
 
-	vclk_unused_disable();
-
+	/* CCF owns unused-clock policy and the corresponding CMU writes. */
 	if (cal_pd_ops.pd_init)
 		if (cal_pd_ops.pd_init())
 			return -1;

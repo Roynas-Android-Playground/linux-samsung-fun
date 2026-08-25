@@ -2723,7 +2723,7 @@ static void __init exynos8890_cmu_top_init(struct device_node *np)
 
 	exynos8890_ect_dt_init();
 #ifdef CONFIG_EXYNOS8890_PWRCAL
-	if (!cal_init())
+	if (cal_init())
 		pr_err("%s: unable to initialize power cal\n", __func__);
 #endif
 }

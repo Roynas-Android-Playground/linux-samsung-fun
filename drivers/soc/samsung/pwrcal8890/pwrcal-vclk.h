@@ -315,7 +315,6 @@ extern int dfs_disable(struct vclk *vclk);
 extern int dfs_is_enabled(struct vclk *vclk);
 extern unsigned long dfs_get_max_freq(struct vclk *vclk);
 extern unsigned long dfs_get_min_freq(struct vclk *vclk);
-extern void vclk_unused_disable(void);
 extern void vclk_init(void);
 
 /* for debug */
