@@ -281,11 +281,12 @@
 			no-map;
 		};
 
+		// same base/size as vendor's stock kernel (confirmed via real dmesg: ramoops attached 0x200000@0x92000000)
 		ramoops@92000000 {
 			compatible = "ramoops";
-			reg = <0x0 0x92000000 0x8000>;
-			console-size = <0x4000>;
-			record-size = <0x4000>;
+			reg = <0x0 0x92000000 0x200000>;
+			console-size = <0x40000>;
+			record-size = <0x40000>;
 		};
 
 		cont_splash_mem: framebuffer@e2a00000 {
