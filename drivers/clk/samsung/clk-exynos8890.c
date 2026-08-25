@@ -2030,8 +2030,9 @@ static const struct samsung_div_clock top_div_clks[] __initconst = {
 	    "umout_top_sclk_peric1_uart2", CLK_CON_DIV_SCLK_PERIC1_UART2, 0, 4),
 	DIV(CLK_DOUT_TOP_SCLK_PERIC1_UART3, "dout_top_sclk_peric1_uart3",
 	    "umout_top_sclk_peric1_uart3", CLK_CON_DIV_SCLK_PERIC1_UART3, 0, 4),
-	DIV(CLK_DOUT_TOP_SCLK_PERIC1_UART4, "dout_top_sclk_peric1_uart4",
-	    "umout_top_sclk_peric1_uart4", CLK_CON_DIV_SCLK_PERIC1_UART4, 0, 4),
+	DIV_STAT(CLK_DOUT_TOP_SCLK_PERIC1_UART4, "dout_top_sclk_peric1_uart4",
+		 "umout_top_sclk_peric1_uart4", CLK_CON_DIV_SCLK_PERIC1_UART4,
+		 0, 4, CLK_CON_DIV_SCLK_PERIC1_UART4, 25, 1),
 	DIV(CLK_DOUT_TOP_SCLK_PERIC1_UART5, "dout_top_sclk_peric1_uart5",
 	    "umout_top_sclk_peric1_uart5", CLK_CON_DIV_SCLK_PERIC1_UART5, 0, 4),
 	DIV(CLK_DOUT_TOP_SCLK_CAM1_ISP_SPI0, "dout_top_sclk_cam1_isp_spi0",
@@ -2718,13 +2719,33 @@ static const struct samsung_cmu_info top_cmu_info __initconst = {
 
 static void __init exynos8890_cmu_top_init(struct device_node *np)
 {
+#ifdef CONFIG_EXYNOS8890_PWRCAL
+	struct exynos8890_pwrcal_uart4_clks uart4_clks = { };
+	struct samsung_clk_provider *ctx;
+	int ret;
+#endif
+
 	exynos8890_init_clocks(np, &top_cmu_info);
+#ifdef CONFIG_EXYNOS8890_PWRCAL
+	ctx = samsung_cmu_register_one(np, &top_cmu_info);
+#else
 	samsung_cmu_register_one(np, &top_cmu_info);
+#endif
 
 	exynos8890_ect_dt_init();
 #ifdef CONFIG_EXYNOS8890_PWRCAL
-	if (cal_init())
+	ret = cal_init();
+	if (ret) {
 		pr_err("%s: unable to initialize power cal\n", __func__);
+		return;
+	}
+
+	uart4_clks.rate_hw = ctx->clk_data.hws[CLK_DOUT_TOP_SCLK_PERIC1_UART4];
+	uart4_clks.parent_hw = ctx->clk_data.hws[CLK_GOUT_TOP_SCLK_PERIC1_UART4];
+	ret = exynos8890_pwrcal_bind_uart4(&uart4_clks);
+	if (ret)
+		pr_err("%s: failed to bind UART4 rate clock: %d\n",
+		       __func__, ret);
 #endif
 }
 
@@ -9405,11 +9426,34 @@ static const struct samsung_cmu_info isp1_cmu_info __initconst = {
 static int __init exynos8890_cmu_probe(struct platform_device *pdev)
 {
 	const struct samsung_cmu_info *info;
+#ifdef CONFIG_EXYNOS8890_PWRCAL
+	struct exynos8890_pwrcal_uart4_clks uart4_clks = { };
+	struct samsung_clk_provider *ctx;
+#endif
 	struct device *dev = &pdev->dev;
+#ifdef CONFIG_EXYNOS8890_PWRCAL
+	int ret;
+#endif
 
 	info = of_device_get_match_data(dev);
 	exynos8890_init_clocks(dev->of_node, info);
+#ifdef CONFIG_EXYNOS8890_PWRCAL
+	ctx = samsung_cmu_register_one(dev->of_node, info);
+#else
 	samsung_cmu_register_one(dev->of_node, info);
+#endif
+
+#ifdef CONFIG_EXYNOS8890_PWRCAL
+	if (info == &peric1_cmu_info) {
+		uart4_clks.mux_hw =
+			ctx->clk_data.hws[CLK_MOUT_PERIC1_SCLK_UART4_USER];
+		uart4_clks.gate_hw =
+			ctx->clk_data.hws[CLK_GOUT_PERIC1_SCLK_UART4];
+		ret = exynos8890_pwrcal_bind_uart4(&uart4_clks);
+		if (ret)
+			dev_err(dev, "failed to bind UART4 gate clock: %d\n", ret);
+	}
+#endif
 
 	return 0;
 }

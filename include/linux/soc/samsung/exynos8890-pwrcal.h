@@ -7,6 +7,15 @@ extern "C" {
 
 #define BLKPWR_MAGIC	0xB1380000
 
+struct clk_hw;
+
+struct exynos8890_pwrcal_uart4_clks {
+	struct clk_hw *rate_hw;
+	struct clk_hw *parent_hw;
+	struct clk_hw *mux_hw;
+	struct clk_hw *gate_hw;
+};
+
 extern unsigned int cal_clk_get(char *name);
 extern unsigned int cal_clk_is_enabled(unsigned int vclkid);
 extern int cal_clk_setrate(unsigned int vclkid, unsigned long rate);
@@ -83,6 +92,7 @@ extern void cal_asv_set_ssa0(unsigned int id, unsigned int ssa0);
 extern void cal_dram_print_info(void);
 
 extern int cal_init(void);
+int exynos8890_pwrcal_bind_uart4(const struct exynos8890_pwrcal_uart4_clks *clks);
 
 /* It is for debugging. */
 extern void cal_vclk_dbg_info(unsigned int id);

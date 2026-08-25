@@ -14,6 +14,10 @@
 #define	vclk_group_dfs	(0x0A000000 | 0x00070000)
 #define	vclk_group_mask	(0x0A000000 | 0x000F0000)
 
+#ifdef PWRCAL_TARGET_LINUX
+struct clk;
+#endif
+
 struct vclk {
 	unsigned int type;
 	struct vclk *parent;
@@ -21,6 +25,13 @@ struct vclk {
 	unsigned long vfreq;
 	char *name;
 	struct vclk_ops *ops;
+#ifdef PWRCAL_TARGET_LINUX
+	bool ccf_owned;
+	struct clk *ccf_clk;
+	struct clk *ccf_rate_clk;
+	struct clk *ccf_parent_clk;
+	struct clk *ccf_mux_clk;
+#endif
 };
 
 struct vclk_ops {

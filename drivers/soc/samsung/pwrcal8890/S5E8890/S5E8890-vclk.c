@@ -5,6 +5,11 @@
 #include "S5E8890-vclk.h"
 #include "S5E8890-vclk-internal.h"
 
+#ifdef PWRCAL_TARGET_LINUX
+#include <linux/clk-provider.h>
+#include <linux/err.h>
+#include <linux/soc/samsung/exynos8890-pwrcal.h>
+#endif
 
 struct pwrcal_vclk_grpgate *vclk_grpgate_list[num_of_grpgate];
 struct pwrcal_vclk_m1d1g1 *vclk_m1d1g1_list[num_of_m1d1g1];
@@ -296,6 +301,56 @@ M1D1G1(sclk_promise_int,	0,	TOP_MUX_SCLK_PROMISE_INT,	TOP_DIV_SCLK_PROMISE_INT,	
 M1D1G1(sclk_promise_disp,	0,	TOP_MUX_SCLK_PROMISE_DISP,	TOP_DIV_SCLK_PROMISE_DISP,	TOP_GATE_SCLK_PROMISE_DISP,	0);
 M1D1G1(sclk_ap2cp_mif_pll_out,	0,	TOP_MUX_SCLK_AP2CP_MIF_PLL_OUT,	TOP_DIV_SCLK_AP2CP_MIF_PLL_OUT,	TOP_GATE_SCLK_AP2CP_MIF_PLL_OUT,	0);
 M1D1G1(sclk_isp_spi0,	gate_cam1_common,	TOP_MUX_SCLK_CAM1_ISP_SPI0,	TOP_DIV_SCLK_CAM1_ISP_SPI0,	TOP_GATE_SCLK_CAM1_ISP_SPI0,	CAM1_MUX_SCLK_CAM1_ISP_SPI0_USER);
+
+#ifdef PWRCAL_TARGET_LINUX
+static int bind_uart4_clk(struct clk **slot, struct clk_hw *hw,
+			  const char *con_id)
+{
+	struct clk *clk;
+
+	if (IS_ERR_OR_NULL(hw))
+		return hw ? PTR_ERR(hw) : 0;
+	if (*slot)
+		return -EEXIST;
+
+	clk = clk_hw_get_clk(hw, con_id);
+	if (IS_ERR(clk))
+		return PTR_ERR(clk);
+
+	*slot = clk;
+	return 0;
+}
+
+int exynos8890_pwrcal_bind_uart4(const struct exynos8890_pwrcal_uart4_clks *clks)
+{
+	struct vclk *vclk = &vclk_sclk_uart4.vclk;
+	int ret;
+
+	if (!clks)
+		return -EINVAL;
+
+	/* Once claimed by CCF, a failed or partial bind must not fall back. */
+	vclk->ccf_owned = true;
+	ret = bind_uart4_clk(&vclk->ccf_rate_clk, clks->rate_hw,
+			     "pwrcal-uart4-rate");
+	if (ret)
+		return ret;
+
+	ret = bind_uart4_clk(&vclk->ccf_parent_clk, clks->parent_hw,
+			     "pwrcal-uart4-parent");
+	if (ret)
+		return ret;
+
+	ret = bind_uart4_clk(&vclk->ccf_mux_clk, clks->mux_hw,
+			     "pwrcal-uart4-mux");
+	if (ret)
+		return ret;
+
+	return bind_uart4_clk(&vclk->ccf_clk, clks->gate_hw,
+			      "pwrcal-uart4-gate");
+}
+#endif
+
 M1D1G1(sclk_isp_spi1,	gate_cam1_common,	TOP_MUX_SCLK_CAM1_ISP_SPI1,	TOP_DIV_SCLK_CAM1_ISP_SPI1,	TOP_GATE_SCLK_CAM1_ISP_SPI1,	CAM1_MUX_SCLK_CAM1_ISP_SPI1_USER);
 M1D1G1(sclk_isp_uart,	0,	TOP_MUX_SCLK_CAM1_ISP_UART,	TOP_DIV_SCLK_CAM1_ISP_UART,	TOP_GATE_SCLK_CAM1_ISP_UART,	CAM1_MUX_SCLK_CAM1_ISP_UART_USER);
 M1D1G1(sclk_isp_sensor0,	0,	TOP_MUX_SCLK_ISP_SENSOR0,	TOP_DIV_SCLK_ISP_SENSOR0,	TOP_GATE_SCLK_ISP_SENSOR0,	0);

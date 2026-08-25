@@ -4,6 +4,9 @@
 #include "pwrcal-clk.h"
 #include "pwrcal-rae.h"
 
+#ifdef PWRCAL_TARGET_LINUX
+#include <linux/clk.h>
+#endif
 
 #define is_vclk(id)	((id & 0x0F000000) == 0x0A000000)
 
@@ -505,10 +508,29 @@ struct vclk_ops umux_ops = {
 /*
  * m1d1g1 functions list
  */
+#ifdef PWRCAL_TARGET_LINUX
+static bool m1d1g1_uses_ccf(struct vclk *vclk)
+{
+	return vclk->ccf_owned;
+}
+
+static bool m1d1g1_ccf_ready(struct vclk *vclk)
+{
+	return vclk->ccf_clk && vclk->ccf_rate_clk &&
+		vclk->ccf_parent_clk && vclk->ccf_mux_clk;
+}
+#endif
+
 static unsigned long m1d1g1_get(struct vclk *vclk)
 {
 	struct pwrcal_vclk_m1d1g1 *m1d1g1;
 	unsigned long ret = -1;
+
+#ifdef PWRCAL_TARGET_LINUX
+	if (m1d1g1_uses_ccf(vclk))
+		return m1d1g1_ccf_ready(vclk) ?
+			clk_get_rate(vclk->ccf_clk) : 0;
+#endif
 
 	m1d1g1 = to_m1d1g1(vclk);
 
@@ -537,6 +559,23 @@ static int m1d1g1_set(struct vclk *vclk, unsigned long freq_to)
 	unsigned int num_of_parents;
 	unsigned int max_ratio;
 	int ret = -1;
+
+#ifdef PWRCAL_TARGET_LINUX
+	if (m1d1g1_uses_ccf(vclk)) {
+		if (!m1d1g1_ccf_ready(vclk))
+			return -EPROBE_DEFER;
+		/* CCF has no count-safe "rate zero means off" operation. */
+		if (!freq_to)
+			return -EINVAL;
+
+		ret = clk_set_parent(vclk->ccf_mux_clk,
+				     vclk->ccf_parent_clk);
+		if (ret)
+			return ret;
+
+		return clk_set_rate(vclk->ccf_rate_clk, freq_to);
+	}
+#endif
 
 	m1d1g1 = to_m1d1g1(vclk);
 
@@ -641,6 +680,20 @@ static int m1d1g1_enable(struct vclk *vclk)
 	struct pwrcal_vclk_m1d1g1 *m1d1g1;
 	int ret = -1;
 
+#ifdef PWRCAL_TARGET_LINUX
+	if (m1d1g1_uses_ccf(vclk)) {
+		if (!m1d1g1_ccf_ready(vclk))
+			return -EPROBE_DEFER;
+
+		ret = clk_set_parent(vclk->ccf_mux_clk,
+				     vclk->ccf_parent_clk);
+		if (ret)
+			return ret;
+
+		return clk_prepare_enable(vclk->ccf_clk);
+	}
+#endif
+
 	m1d1g1 = to_m1d1g1(vclk);
 
 	if (m1d1g1->mux != CLK_NONE) {
@@ -687,6 +740,15 @@ static int m1d1g1_disable(struct vclk *vclk)
 {
 	struct pwrcal_vclk_m1d1g1 *m1d1g1;
 	int ret = 0;
+
+#ifdef PWRCAL_TARGET_LINUX
+	if (m1d1g1_uses_ccf(vclk)) {
+		if (!m1d1g1_ccf_ready(vclk))
+			return -EPROBE_DEFER;
+		clk_disable_unprepare(vclk->ccf_clk);
+		return 0;
+	}
+#endif
 
 	m1d1g1 = to_m1d1g1(vclk);
 
@@ -1032,6 +1094,7 @@ out:
 int vclk_enable(struct vclk *vclk)
 {
 	int ret = 0;
+	int parent_enabled = 0;
 	unsigned int tmp;
 #ifdef CONFIG_EXYNOS_SNAPSHOT_CLK
 	const char *name = "vclk_enable";
@@ -1043,11 +1106,15 @@ int vclk_enable(struct vclk *vclk)
 		ret = vclk_enable(vclk->parent);
 
 	if (ret)
-		goto out;
+		goto err_ref;
+	if (vclk->parent != VCLK_NONE)
+		parent_enabled = 1;
 
 	ret = vclk->ops->enable(vclk);
+	if (ret)
+		goto err_parent;
 
-	if (ret || !vclk->vfreq || !vclk->ops->set_rate)
+	if (!vclk->vfreq || !vclk->ops->set_rate)
 		goto out;
 
 	tmp = vclk->vfreq;
@@ -1060,30 +1127,35 @@ int vclk_enable(struct vclk *vclk)
 
 out:
 	return ret;
+
+err_parent:
+	if (parent_enabled)
+		vclk_disable(vclk->parent);
+err_ref:
+	vclk->ref_count--;
+	return ret;
 }
 int vclk_disable(struct vclk *vclk)
 {
 	int ret = 0;
-	int parent_disable = 0;
 #ifdef CONFIG_EXYNOS_SNAPSHOT_CLK
 	const char *name = "vclk_disable";
 #endif
-	if (vclk->ref_count)
-		parent_disable = 1;
+	if (!vclk->ref_count)
+		goto out;
 
-	if (vclk->ref_count)
-		vclk->ref_count--;
-
+	vclk->ref_count--;
 	if (vclk->ref_count)
 		goto out;
 
 	ret = vclk->ops->disable(vclk);
 
 	if (ret) {
+		vclk->ref_count++;
 		goto out;
 	}
 
-	if (parent_disable && vclk->parent != VCLK_NONE)
+	if (vclk->parent != VCLK_NONE)
 		ret = vclk_disable(vclk->parent);
 
 out:

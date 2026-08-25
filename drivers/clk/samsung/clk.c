@@ -12,6 +12,7 @@
 #include <linux/clkdev.h>
 #include <linux/clk-provider.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of_address.h>
 #include <linux/regmap.h>
@@ -208,6 +209,97 @@ void __init samsung_clk_register_mux(struct samsung_clk_provider *ctx,
 	}
 }
 
+struct samsung_status_divider {
+	struct clk_divider divider;
+	void __iomem *stat_reg;
+	u8 stat_shift;
+	u8 stat_width;
+};
+
+#define to_samsung_status_divider(_hw) \
+	container_of(to_clk_divider(_hw), struct samsung_status_divider, divider)
+
+static unsigned long
+samsung_status_divider_recalc_rate(struct clk_hw *hw,
+				   unsigned long parent_rate)
+{
+	return clk_divider_ops.recalc_rate(hw, parent_rate);
+}
+
+static int samsung_status_divider_determine_rate(struct clk_hw *hw,
+						 struct clk_rate_request *req)
+{
+	return clk_divider_ops.determine_rate(hw, req);
+}
+
+static int samsung_status_divider_set_rate(struct clk_hw *hw,
+					   unsigned long rate,
+					   unsigned long parent_rate)
+{
+	struct samsung_status_divider *div =
+		to_samsung_status_divider(hw);
+	u32 mask = GENMASK(div->stat_shift + div->stat_width - 1,
+			   div->stat_shift);
+	u32 val;
+	int ret;
+
+	ret = clk_divider_ops.set_rate(hw, rate, parent_rate);
+	if (ret)
+		return ret;
+
+	ret = readl_poll_timeout_atomic(div->stat_reg, val, !(val & mask),
+					1, 1000);
+	if (ret)
+		pr_err("%s: divider transition timed out\n",
+		       clk_hw_get_name(hw));
+
+	return ret;
+}
+
+static const struct clk_ops samsung_status_divider_ops = {
+	.recalc_rate = samsung_status_divider_recalc_rate,
+	.determine_rate = samsung_status_divider_determine_rate,
+	.set_rate = samsung_status_divider_set_rate,
+};
+
+static struct clk_hw * __init
+samsung_clk_register_status_div(struct samsung_clk_provider *ctx,
+				const struct samsung_div_clock *list)
+{
+	struct samsung_status_divider *div;
+	struct clk_init_data init = { };
+	const char *parent_name = list->parent_name;
+	int ret;
+
+	div = kzalloc_obj(*div, GFP_KERNEL);
+	if (!div)
+		return ERR_PTR(-ENOMEM);
+
+	init.name = list->name;
+	init.ops = &samsung_status_divider_ops;
+	init.flags = list->flags;
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
+
+	div->divider.reg = ctx->reg_base + list->offset;
+	div->divider.shift = list->shift;
+	div->divider.width = list->width;
+	div->divider.flags = list->div_flags;
+	div->divider.lock = &ctx->lock;
+	div->divider.hw.init = &init;
+	div->stat_reg = ctx->reg_base + list->stat_offset;
+	div->stat_shift = list->stat_shift;
+	div->stat_width = list->stat_width;
+
+	ret = clk_hw_register(ctx->dev, &div->divider.hw);
+	if (ret) {
+		kfree(div);
+		return ERR_PTR(ret);
+	}
+
+	return &div->divider.hw;
+}
+
 /* register a list of div clocks */
 void __init samsung_clk_register_div(struct samsung_clk_provider *ctx,
 				const struct samsung_div_clock *list,
@@ -217,7 +309,9 @@ void __init samsung_clk_register_div(struct samsung_clk_provider *ctx,
 	unsigned int idx;
 
 	for (idx = 0; idx < nr_clk; idx++, list++) {
-		if (list->table)
+		if (list->stat_width)
+			clk_hw = samsung_clk_register_status_div(ctx, list);
+		else if (list->table)
 			clk_hw = clk_hw_register_divider_table(ctx->dev,
 				list->name, list->parent_name, list->flags,
 				ctx->reg_base + list->offset,

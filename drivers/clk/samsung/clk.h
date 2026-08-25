@@ -178,6 +178,9 @@ struct samsung_mux_clock {
  * @width: width of the bitfield
  * @div_flags: flags for div-type clock
  * @table: array of divider/value pairs ending with a div set to 0
+ * @stat_offset: offset of the divider transition-status register
+ * @stat_shift: starting bit of the transition-status field
+ * @stat_width: width of the transition-status field, or zero if unused
  */
 struct samsung_div_clock {
 	unsigned int		id;
@@ -189,6 +192,9 @@ struct samsung_div_clock {
 	u8			width;
 	u8			div_flags;
 	struct clk_div_table	*table;
+	unsigned long		stat_offset;
+	u8			stat_shift;
+	u8			stat_width;
 };
 
 #define __DIV(_id, cname, pname, o, s, w, f, df, t)	\
@@ -212,6 +218,19 @@ struct samsung_div_clock {
 
 #define DIV_T(_id, cname, pname, o, s, w, t)			\
 	__DIV(_id, cname, pname, o, s, w, 0, 0, t)
+
+#define DIV_STAT(_id, cname, pname, o, s, w, so, ss, sw)	\
+	{							\
+		.id		= _id,				\
+		.name		= cname,			\
+		.parent_name	= pname,			\
+		.offset		= o,				\
+		.shift		= s,				\
+		.width		= w,				\
+		.stat_offset	= so,				\
+		.stat_shift	= ss,				\
+		.stat_width	= sw,				\
+	}
 
 /**
  * struct samsung_gate_clock - information about gate clock
