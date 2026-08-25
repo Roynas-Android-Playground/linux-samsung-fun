@@ -1,230 +1,48 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Exynos8890 Samsung SSP sensor-hub protocol core.
+ * Exynos8890 Samsung SSP sensor-hub transport registration.
  *
- * Speaks the Samsung "SSP" application-layer command/response protocol to
- * the sensor-hub MCU reachable through the shared BCM4773 GNSS/sensor SPI
- * transport (drivers/gnss/bcm4773.c). This driver owns no hardware of its
- * own: it only calls bcm4773_sensor_send() and receives bytes via a
- * registered callback, per the boundary in
- * Documentation/driver-api/iio/exynos8890-sensorhub.rst.
- *
- * This first milestone only proves the SSP link is alive end to end (the
- * vendor's own WHOAMI bring-up gate) — no sensor enumeration or IIO channel
- * presentation yet.
+ * The BCM4773 firmware lifecycle is owned by userspace: stock registers the
+ * BBD/SSP devices first, then lhd downloads the runtime patch and announces
+ * ESW:READY before it asks the MCU for its identity.  Kernel probe must not
+ * send WHOAMI or sensor commands to an unpatched MCU.
  */
 
-#include <linux/bits.h>
-#include <linux/completion.h>
 #include <linux/err.h>
 #include <linux/gnss/bcm4773.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/string.h>
-#include <linux/unaligned.h>
-
-/*
- * SSP command header — [VENDOR] ssp.h struct ssp_msg { u8 cmd; u16 length;
- * u16 options; u32 data; } __packed, dumped to the wire in the AP's native
- * (little-endian) byte order.
- */
-#define SSP_MSG_HEADER_SIZE		9
-
-/* [VENDOR] ssp.h SSP_SPI_MASK and the transaction-type values it selects */
-#define SSP_SPI_MASK			GENMASK(1, 0)
-#define SSP_AP2HUB_READ			0
-#define SSP_AP2HUB_WRITE		1
-#define SSP_HUB2AP_WRITE		2
-#define SSP_AP2HUB_READY		3
-#define SSP_AP2HUB_RETURN		4
-
-/* [VENDOR] ssp.h MSG2SSP_AP_* command ids */
-#define MSG2SSP_AP_WHOAMI		0x0F
-#define MSG2SSP_AP_FIRMWARE_REV	0xF0
-
-/* [VENDOR] ssp.h MSG2SSP_INST_* — bypass-sensor enable/disable instructions */
-#define MSG2SSP_INST_BYPASS_SENSOR_ADD		0xA1
-#define MSG2SSP_INST_BYPASS_SENSOR_REMOVE	0xA2
-
-/* [VENDOR] sensor_list.h enum sensor_type - only the ones this phase uses */
-#define SSP_SENSOR_ACCELEROMETER	0
-
-/* [VENDOR] ssp.h DEVICE_ID — the only valid WHOAMI response byte */
-#define SSP_DEVICE_ID			0x55
-
-/*
- * [VENDOR] ssp_sysfs.c set_sensor_cmd(): ADD_SENSOR/CHANGE_DELAY payload is
- * always period_ms(u32 LE) + max_batch_report_latency_ms(u32 LE) +
- * batch_options(u8) - 9 bytes after the sensor-type prefix byte
- * send_instruction() itself prepends.
- */
-#define SSP_ADD_SENSOR_PAYLOAD_LEN	9
-
-#define SSP_TRANSACT_TIMEOUT_MS	1000
 
 struct exynos8890_ssp {
-	struct device		*dev;
-	struct bcm4773		*bcm;
-
-	struct mutex		lock; /* serializes one transaction at a time */
-	struct completion	done;
-	u8			*rsp_buf;
-	size_t			rsp_cap;
-	int			rsp_len;
+	struct device *dev;
+	struct bcm4773 *bcm;
 };
 
 /*
- * exynos8890_ssp_recv() — bcm4773_sensor_ops callback.
- *
- * Called from IRQ-thread context with bcm4773's transport lock held (see
- * struct bcm4773_sensor_ops in <linux/gnss/bcm4773.h>): must not block and
- * must not call back into bcm4773_sensor_send(). Storing the response and
- * completing a waiter satisfies both constraints.
- *
- * Phase 1 only: any bytes received while no transaction is outstanding are
- * dropped. Unsolicited HUB2AP_WRITE reports (sensor data streaming) are a
- * future-phase concern, not handled here.
+ * Responses are ignored until a userspace-facing firmware/readiness lifecycle
+ * exists.  This callback runs with the BCM4773 transport lock held and must
+ * not block or call back into the transport.
  */
 static void exynos8890_ssp_recv(void *priv, const u8 *data, size_t len)
 {
 	struct exynos8890_ssp *ssp = priv;
 
-	if (completion_done(&ssp->done))
-		return;
-
-	ssp->rsp_len = min(len, ssp->rsp_cap);
-	memcpy(ssp->rsp_buf, data, ssp->rsp_len);
-	complete(&ssp->done);
+	dev_dbg(ssp->dev,
+		"ignoring %zu sensor byte(s) at %p before userspace readiness\n",
+		len, data);
 }
 
 static const struct bcm4773_sensor_ops exynos8890_ssp_ops = {
 	.recv = exynos8890_ssp_recv,
 };
 
-/*
- * exynos8890_ssp_transact() — send one SSP command, wait for its response.
- *
- * Only one transaction may be outstanding at a time, serialized by @lock —
- * sufficient for probe-time bring-up and matching the vendor driver's own
- * synchronous ssp_spi_sync() usage during initialize_mcu().
- *
- * Returns the response length on success (which may be less than @rsp_cap
- * if the MCU replied with fewer bytes than requested), or a negative errno.
- */
-static int exynos8890_ssp_transact(struct exynos8890_ssp *ssp, u8 cmd,
-				   u16 options, u8 *rsp, size_t rsp_cap)
-{
-	u8 req[SSP_MSG_HEADER_SIZE] = { 0 };
-	int ret;
-
-	mutex_lock(&ssp->lock);
-
-	reinit_completion(&ssp->done);
-	ssp->rsp_buf = rsp;
-	ssp->rsp_cap = rsp_cap;
-	ssp->rsp_len = 0;
-
-	req[0] = cmd;
-	put_unaligned_le16(rsp_cap, &req[1]);
-	put_unaligned_le16(options, &req[3]);
-	/* req[5..8] ("data") left zero — unused by the commands sent here */
-
-	ret = bcm4773_sensor_send(ssp->bcm, req, sizeof(req));
-	if (ret < 0)
-		goto out;
-
-	if (!wait_for_completion_timeout(&ssp->done,
-			msecs_to_jiffies(SSP_TRANSACT_TIMEOUT_MS))) {
-		ret = -ETIMEDOUT;
-		goto out;
-	}
-
-	ret = ssp->rsp_len;
-
-out:
-	mutex_unlock(&ssp->lock);
-
-	return ret;
-}
-
-/*
- * exynos8890_ssp_instruct() — send one fire-and-forget SSP instruction.
- *
- * MSG2SSP_INST_BYPASS_SENSOR_ADD/REMOVE (vendor's send_instruction() in
- * ssp_i2c.c) are AP2HUB_WRITE-only: the MCU never sends a synchronous
- * reply, only the sensor data stream that follows once it's enabled -
- * which this phase does not yet parse (see exynos8890_ssp_recv()). So
- * this does not wait on @ssp->done the way exynos8890_ssp_transact()
- * does for WHOAMI; success here only proves the write reached the MCU
- * over SPI, not that it accepted the instruction.
- */
-static int exynos8890_ssp_instruct(struct exynos8890_ssp *ssp, u8 cmd,
-				   u8 sensor_type, const u8 *payload,
-				   size_t payload_len)
-{
-	u8 req[SSP_MSG_HEADER_SIZE + 1 + SSP_ADD_SENSOR_PAYLOAD_LEN];
-	size_t body_len = 1 + payload_len;
-
-	if (payload_len > SSP_ADD_SENSOR_PAYLOAD_LEN)
-		return -EINVAL;
-
-	req[0] = cmd;
-	put_unaligned_le16(body_len, &req[1]);
-	put_unaligned_le16(SSP_AP2HUB_WRITE, &req[3]);
-	/* req[5..8] ("data") left zero — unused by these instructions */
-	req[SSP_MSG_HEADER_SIZE] = sensor_type;
-	if (payload_len)
-		memcpy(&req[SSP_MSG_HEADER_SIZE + 1], payload, payload_len);
-
-	return bcm4773_sensor_send(ssp->bcm, req, SSP_MSG_HEADER_SIZE + body_len);
-}
-
-/*
- * exynos8890_ssp_enable_sensor() — MSG2SSP_INST_BYPASS_SENSOR_ADD.
- * @period_ms: requested sampling period.
- * @max_latency_ms: batch max report latency, 0 disables batching.
- */
-static int exynos8890_ssp_enable_sensor(struct exynos8890_ssp *ssp,
-					u8 sensor_type, u32 period_ms,
-					u32 max_latency_ms)
-{
-	u8 payload[SSP_ADD_SENSOR_PAYLOAD_LEN];
-
-	put_unaligned_le32(period_ms, &payload[0]);
-	put_unaligned_le32(max_latency_ms, &payload[4]);
-	payload[8] = 0; /* batch_options - unused with max_latency_ms == 0 */
-
-	return exynos8890_ssp_instruct(ssp, MSG2SSP_INST_BYPASS_SENSOR_ADD,
-				       sensor_type, payload, sizeof(payload));
-}
-
-/*
- * exynos8890_ssp_disable_sensor() — MSG2SSP_INST_BYPASS_SENSOR_REMOVE.
- *
- * Vendor's REMOVE_SENSOR path shares send_instruction() with ADD but the
- * only observed real caller in ssp_sysfs.c passes just the sensor-type
- * prefix and no extra payload; unlike the ADD wire format (independently
- * confirmed against ssp_sysfs.c's set_sensor_cmd()), the zero-length
- * REMOVE payload is inferred from that call pattern, not from a payload
- * struct definition - flagging it as such rather than treating it as
- * equally confirmed.
- */
-static int exynos8890_ssp_disable_sensor(struct exynos8890_ssp *ssp,
-					 u8 sensor_type)
-{
-	return exynos8890_ssp_instruct(ssp, MSG2SSP_INST_BYPASS_SENSOR_REMOVE,
-				       sensor_type, NULL, 0);
-}
-
 static int exynos8890_ssp_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct exynos8890_ssp *ssp;
-	u8 whoami = 0;
 	int ret;
 
 	ssp = devm_kzalloc(dev, sizeof(*ssp), GFP_KERNEL);
@@ -232,9 +50,6 @@ static int exynos8890_ssp_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ssp->dev = dev;
-	mutex_init(&ssp->lock);
-	init_completion(&ssp->done);
-
 	ssp->bcm = bcm4773_get(dev);
 	if (IS_ERR(ssp->bcm))
 		return dev_err_probe(dev, PTR_ERR(ssp->bcm),
@@ -248,48 +63,7 @@ static int exynos8890_ssp_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, ssp);
-
-	/*
-	 * Phase 2 first-probe milestone (see
-	 * Documentation/driver-api/iio/exynos8890-sensorhub.rst): the
-	 * vendor's own first bring-up gate, reused verbatim. A mismatch or
-	 * timeout is diagnostic, not fatal — the sensor-hub MCU may
-	 * legitimately be absent or unpowered on early bring-up boards, and
-	 * this driver must never be able to wedge or crash the AP.
-	 */
-	ret = exynos8890_ssp_transact(ssp, MSG2SSP_AP_WHOAMI, SSP_AP2HUB_READ,
-				      &whoami, sizeof(whoami));
-	if (ret == sizeof(whoami) && whoami == SSP_DEVICE_ID)
-		dev_info(dev, "sensor-hub WHOAMI ok (0x%02x)\n", whoami);
-	else if (ret >= 0)
-		dev_warn(dev, "sensor-hub WHOAMI mismatch: %d byte(s), 0x%02x\n",
-			 ret, whoami);
-	else
-		dev_warn(dev, "sensor-hub WHOAMI failed: %d\n", ret);
-
-	/*
-	 * Phase 3 first-probe milestone: prove the ADD/REMOVE_SENSOR
-	 * instruction wire format (see exynos8890_ssp_enable_sensor()) round
-	 * trips over the transport at all. Only meaningful once WHOAMI has
-	 * already proven the MCU is alive; a failure here is still
-	 * diagnostic-only; no sensor data is parsed yet (see
-	 * exynos8890_ssp_recv()), so there is nothing further to verify
-	 * against until that lands.
-	 */
-	if (ret == sizeof(whoami) && whoami == SSP_DEVICE_ID) {
-		ret = exynos8890_ssp_enable_sensor(ssp, SSP_SENSOR_ACCELEROMETER,
-						   200, 0);
-		if (ret < 0)
-			dev_warn(dev, "accelerometer ADD_SENSOR failed: %d\n",
-				 ret);
-		else
-			dev_info(dev, "accelerometer ADD_SENSOR sent\n");
-
-		ret = exynos8890_ssp_disable_sensor(ssp, SSP_SENSOR_ACCELEROMETER);
-		if (ret < 0)
-			dev_warn(dev, "accelerometer REMOVE_SENSOR failed: %d\n",
-				 ret);
-	}
+	dev_info(dev, "registered; awaiting userspace firmware readiness\n");
 
 	return 0;
 }
@@ -318,5 +92,5 @@ static struct platform_driver exynos8890_ssp_driver = {
 };
 module_platform_driver(exynos8890_ssp_driver);
 
-MODULE_DESCRIPTION("Exynos8890 Samsung SSP sensor-hub protocol core");
+MODULE_DESCRIPTION("Exynos8890 Samsung SSP sensor-hub transport");
 MODULE_LICENSE("GPL");

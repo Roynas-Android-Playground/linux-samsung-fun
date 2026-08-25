@@ -10,5 +10,5 @@ config EXYNOS8890_SSP
 	  Samsung "SSP" application-layer protocol core for the sensor-hub
 	  MCU reachable through the BCM4773 GNSS/sensor SPI transport on
 	  Exynos8890 Galaxy S7 (herolte) devices. This first milestone only
-	  probes the link (WHOAMI handshake); it does not yet enumerate or
-	  expose individual sensors as IIO devices.
+	  registers the shared transport consumer without probing MCU readiness;
+	  it does not yet expose individual sensors as IIO devices.

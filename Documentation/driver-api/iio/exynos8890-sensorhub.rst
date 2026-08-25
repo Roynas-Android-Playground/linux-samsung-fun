@@ -135,19 +135,16 @@ Implementation phases
   step's job is to prove the TX encoder is symmetric with the already
   hardware-plausible RX decoder, not to parse firmware version semantics.
 
-2. SSP protocol core skeleton and first real probe
-------------------------------------------------------
+2. Passive SSP transport registration
+--------------------------------------
 
 * New driver, DT-instantiated via a phandle to the ``bcm4773`` node.
-* Implement ``struct ssp_msg`` request/response framing and a
-  completion-based synchronous transact() call.
-* First probe: send ``MSG2SSP_AP_WHOAMI`` (``0x0F``) at driver probe, expect
-  a single byte equal to ``DEVICE_ID`` (``0x55``) back. This is the vendor's
-  own first bring-up gate, reused verbatim as ours. Log pass/fail; do not
-  fail probe() on a WHOAMI mismatch or timeout (the sensorhub MCU may be
-  legitimately absent/unpowered on early bring-up boards) — this driver must
-  never be able to wedge or crash the AP.
-* No sensor enumeration, no IIO channels, no unsolicited-report handling yet.
+* Register as the BCM4773 sensor transport consumer without sending WHOAMI or
+  any state-changing sensor command from kernel probe.
+* Match the stock lifecycle: userspace first downloads the runtime patch,
+  observes ``ESW:READY``, and only then asks the MCU whether it is alive.
+* No sensor enumeration, IIO channels, unsolicited-report handling, or
+  userspace request ABI exists yet.
 
 3. Sensor enumeration and IIO presentation (future work, not in this pass)
 -------------------------------------------------------------------------
@@ -167,10 +164,11 @@ Required tests
   TX encode, SPI transaction shape, and RX decode are mutually consistent on
   real hardware) — log the raw bytes for manual inspection, no assertion on
   content.
-* Phase 2: confirm WHOAMI returns exactly ``0x55``; if it returns a different
-  byte or times out, that is diagnostic information (wrong chip variant,
-  MCU not powered, TL frame malformed in a way phase 1 didn't exercise) but
-  must not be fatal to driver load.
+* Phase 2: confirm probe registers the SSP transport consumer without emitting
+  WHOAMI, ADD_SENSOR, or REMOVE_SENSOR traffic.
+* A later userspace daemon must not issue WHOAMI until the runtime patch is
+  complete and ``ESW:READY`` has been observed. A timeout or mismatch remains
+  diagnostic and must not affect kernel driver registration.
 * Do not proceed to phase 3 (individual sensor drivers, unsolicited report
-  parsing, any state-changing sensor-enable command) until phase 2 passes
-  reliably on real hardware.
+  parsing, or state-changing sensor-enable commands) until this userspace
+  readiness sequence passes reliably on real hardware.
