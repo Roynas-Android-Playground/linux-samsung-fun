@@ -324,24 +324,6 @@
 		startup-delay-us = <2000>;
 	};
 
-	/*
-	 * Vendor DT toggles this GPIO directly as an LDO enable line for the
-	 * SX9310 grip/proximity sensor instead of describing it through the
-	 * regulator framework. The in-tree sx9310 driver doesn't call
-	 * regulator_get()/enable() on vdd-supply/svdd-supply at all, so
-	 * nothing would ever switch this rail on if it depended on a
-	 * consumer; force it on unconditionally instead, matching the
-	 * vendor driver's own always-on GPIO toggle.
-	 */
-	grip_ldo: regulator-fixed-grip {
-		compatible = "regulator-fixed";
-		regulator-name = "grip_ldo_en";
-
-		enable-active-high;
-		regulator-always-on;
-		gpio = <&gpa1 7 GPIO_ACTIVE_HIGH>;
-	};
-
 	gpu_opp_table: opp-table-gpu {
 		compatible = "operating-points-v2";
 
@@ -521,8 +503,8 @@
 		reg = <0x28>;
 		interrupt-parent = <&gpa2>;
 		interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
-		vdd-supply = <&grip_ldo>;
-		svdd-supply = <&grip_ldo>;
+		pinctrl-0 = <&grip_irq>;
+		pinctrl-names = "default";
 		#io-channel-cells = <1>;
 		status = "okay";
 	};
@@ -1296,6 +1278,13 @@
 };
 
 &pinctrl_alive {
+	grip_irq: grip-irq-pins {
+		samsung,pins = "gpa2-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
 	ssp_host_req: ssp-host-req-pins {
 		samsung,pins = "gpa3-4";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;

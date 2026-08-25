@@ -246,6 +246,11 @@ static const struct exynos_hsi2c_variant exynos8895_hsi2c_data = {
 	.hw		= I2C_TYPE_EXYNOS8895,
 };
 
+static const struct exynos_hsi2c_variant exynos8890_hsi2c_data = {
+	.fifo_depth	= 16,
+	.hw		= I2C_TYPE_EXYNOS5,
+};
+
 static const struct of_device_id exynos5_i2c_match[] = {
 	{
 		.compatible = "samsung,exynos5-hsi2c",
@@ -262,6 +267,9 @@ static const struct of_device_id exynos5_i2c_match[] = {
 	}, {
 		.compatible = "samsung,exynosautov9-hsi2c",
 		.data = &exynosautov9_hsi2c_data
+	}, {
+		.compatible = "samsung,exynos8890-hsi2c",
+		.data = &exynos8890_hsi2c_data
 	}, {
 		.compatible = "samsung,exynos8895-hsi2c",
 		.data = &exynos8895_hsi2c_data
