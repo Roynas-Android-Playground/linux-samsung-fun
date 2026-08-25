@@ -583,15 +583,39 @@
 	};
 };
 
+&pinctrl_fsys0 {
+	wpc_en: wpc-en-pins {
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pins = "gpi1-2";
+	};
+};
+
 &hsi2c_12 {
 	status = "okay";
 
+	// reg/pins/FOD+vout calibration cross-checked against vendor's herolte_battery.dtsi p9220-charger@61
 	wireless-charger@61 {
 		compatible = "idt,p9220";
 		reg = <0x61>;
-		detect-gpios = <&gpa2 0 GPIO_ACTIVE_HIGH>;
-		pinctrl-0 = <&wpc_detect>;
+
+		detect-gpios = <&gpa3 5 GPIO_ACTIVE_HIGH>;
+		en-gpios = <&gpi1 2 GPIO_ACTIVE_HIGH>;
+		interrupt-parent = <&gpa3>;
+		interrupts = <2 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-0 = <&wpc_detect &wpc_int &wpc_en>;
 		pinctrl-names = "default";
+
+		idt,fod-data = /bits/ 8 <194 15 133 48 174 240 150 17 160 251 158 251>;
+		idt,fod-data-cv = /bits/ 8 <194 45 133 78 174 14 150 47 160 25 158 25>;
+		idt,fod-hv-data = /bits/ 8 <194 15 133 48 174 240 150 17 160 251 158 251>;
+		idt,fod-hv-data-cv = /bits/ 8 <194 45 133 78 174 14 150 47 160 25 158 25>;
+		idt,cc-cv-vout-mv = <5500>;
+		idt,cv-call-vout-mv = <5000>;
+		idt,cc-call-vout-mv = <5000>;
+		idt,cc-cv-threshold-percent = <85>;
+		idt,hv-vout-workaround = <0x41>;
 	};
 };
 
@@ -929,10 +953,17 @@
 };
 
 &pinctrl_alive {
+	// real pin per vendor's battery,wpc_det (was wrongly gpa2-0)
 	wpc_detect: wpc-detect-pins {
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
-		samsung,pins = "gpa2-0";
+		samsung,pins = "gpa3-5";
+	};
+
+	wpc_int: wpc-int-pins {
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pins = "gpa3-2";
 	};
 
 	key_power: key-power-pins {
