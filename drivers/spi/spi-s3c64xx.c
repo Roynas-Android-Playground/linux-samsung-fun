@@ -1545,6 +1545,18 @@ static const struct s3c64xx_spi_port_config exynos7_spi_port_config = {
 	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO,
 };
 
+static const struct s3c64xx_spi_port_config exynos8890_spi_port_config = {
+	/* All eight PERIC SPI controllers have 64-byte FIFOs. */
+	.fifo_lvl_mask	= { 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f,
+			    0x7f, 0x7f },
+	.rx_lvl_offset	= 15,
+	.tx_st_done	= 25,
+	.clk_div	= 2,
+	.high_speed	= true,
+	.clk_from_cmu	= true,
+	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO,
+};
+
 static const struct s3c64xx_spi_port_config exynos5433_spi_port_config = {
 	/* fifo_lvl_mask is deprecated. Use {rx, tx}_fifomask instead. */
 	.fifo_lvl_mask	= { 0x1ff, 0x7f, 0x7f, 0x7f, 0x7f, 0x1ff},
@@ -1635,6 +1647,9 @@ static const struct of_device_id s3c64xx_spi_dt_match[] = {
 	},
 	{ .compatible = "samsung,exynos7-spi",
 			.data = &exynos7_spi_port_config,
+	},
+	{ .compatible = "samsung,exynos8890-spi",
+			.data = &exynos8890_spi_port_config,
 	},
 	{ .compatible = "samsung,exynos5433-spi",
 			.data = &exynos5433_spi_port_config,

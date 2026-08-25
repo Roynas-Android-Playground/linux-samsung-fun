@@ -1216,7 +1216,7 @@
 	};
 
 	spi_0: spi@14d20000 {
-		compatible = "samsung,exynos7-spi";
+		compatible = "samsung,exynos8890-spi", "samsung,exynos7-spi";
 		reg = <0x14d20000 0x100>;
 		interrupts = <GIC_SPI 448 IRQ_TYPE_LEVEL_HIGH>;
 
@@ -1353,7 +1353,7 @@
 
 &soc {
 	spi_1: spi@14d30000 {
-		compatible = "samsung,exynos7-spi";
+		compatible = "samsung,exynos8890-spi", "samsung,exynos7-spi";
 		reg = <0x14d30000 0x100>;
 		interrupts = <GIC_SPI 449 IRQ_TYPE_LEVEL_HIGH>;
 

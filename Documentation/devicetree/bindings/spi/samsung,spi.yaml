@@ -30,6 +30,9 @@ properties:
               - samsung,exynos8895-spi
               - samsung,exynosautov920-spi
           - const: samsung,exynos850-spi
+      - items:
+          - const: samsung,exynos8890-spi
+          - const: samsung,exynos7-spi
       - const: samsung,exynos7-spi
         deprecated: true
 
