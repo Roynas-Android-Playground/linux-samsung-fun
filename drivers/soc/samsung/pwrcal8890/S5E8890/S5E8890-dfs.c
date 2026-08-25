@@ -1123,7 +1123,7 @@ static int dfsint_mfc_lock;
 static unsigned int mfc_mux_table[32];
 static unsigned int mfc_div_table[32];
 
-DEFINE_SPINLOCK(dfs_int_spinlock);
+DEFINE_PWRCAL_DFS_LOCK(dfs_int_lock);
 
 static int dfsint_rate_lock(unsigned int para)
 {
@@ -1135,7 +1135,7 @@ static int dfsint_rate_lock(unsigned int para)
 	table = vclk_dvfs_int.table;
 
 	if (!dfsint_mfc_lock && para) {
-		spin_lock_irqsave(&dfs_int_spinlock, flag);
+		pwrcal_dfs_lock(&dfs_int_lock, flag);
 		for (i = 0; i < dfsint_table.num_of_lv; i++) {
 			mfc_mux_table[i] = get_value(table, i, 9);
 			mfc_div_table[i] = get_value(table, i, 37);
@@ -1146,10 +1146,10 @@ static int dfsint_rate_lock(unsigned int para)
 		pwrcal_div_set_ratio(CLK(TOP_DIV_ACLK_MFC_600), 4);
 		pwrcal_mux_set_src(CLK(TOP_MUX_ACLK_MFC_600), 1);
 		dfsint_mfc_lock = para;
-		spin_unlock_irqrestore(&dfs_int_spinlock, flag);
+		pwrcal_dfs_unlock(&dfs_int_lock, flag);
 		pr_info("[%s] MFC Locked", __func__);
 	} else if (dfsint_mfc_lock && !para) {
-		spin_lock_irqsave(&dfs_int_spinlock, flag);
+		pwrcal_dfs_lock(&dfs_int_lock, flag);
 		for (i = 0; i < dfsint_table.num_of_lv; i++) {
 			set_value(table, i, 9) = mfc_mux_table[i];
 			set_value(table, i, 37) = mfc_div_table[i];
@@ -1163,7 +1163,7 @@ static int dfsint_rate_lock(unsigned int para)
 		pwrcal_mux_set_src(CLK(TOP_MUX_ACLK_MFC_600), get_value(table, i, 9));
 		pwrcal_div_set_ratio(CLK(TOP_DIV_ACLK_MFC_600), get_value(table, i, 37) + 1);
 		dfsint_mfc_lock = para;
-		spin_unlock_irqrestore(&dfs_int_spinlock, flag);
+		pwrcal_dfs_unlock(&dfs_int_lock, flag);
 		pr_info("[%s] MFC UnLocked", __func__);
 	}
 
@@ -1233,14 +1233,14 @@ static struct vclk_dfs_ops dfsdisp_dfsops = {
 	.get_margin_param = common_get_margin_param,
 };
 
-static DEFINE_SPINLOCK(dvfs_big_lock);
-static DEFINE_SPINLOCK(dvfs_little_lock);
-static DEFINE_SPINLOCK(dvfs_g3d_lock);
-static DEFINE_SPINLOCK(dvfs_mif_lock);
-static DEFINE_SPINLOCK(dvfs_int_lock);
-static DEFINE_SPINLOCK(dvfs_disp_lock);
-static DEFINE_SPINLOCK(dvfs_cam_lock);
-static DEFINE_SPINLOCK(dvs_g3dm_lock);
+static DEFINE_PWRCAL_DFS_LOCK(dvfs_big_lock);
+static DEFINE_PWRCAL_DFS_LOCK(dvfs_little_lock);
+static DEFINE_PWRCAL_DFS_LOCK(dvfs_g3d_lock);
+static DEFINE_PWRCAL_DFS_LOCK(dvfs_mif_lock);
+static DEFINE_PWRCAL_DFS_LOCK(dvfs_int_lock);
+static DEFINE_PWRCAL_DFS_LOCK(dvfs_disp_lock);
+static DEFINE_PWRCAL_DFS_LOCK(dvfs_cam_lock);
+static DEFINE_PWRCAL_DFS_LOCK(dvs_g3dm_lock);
 
 DFS(dvfs_big) = {
 	.vclk.type	= vclk_group_dfs,

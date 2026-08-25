@@ -30,9 +30,9 @@ static void get_underrun_info_for_dump(struct decon_device *decon)
 	idx = dsim->under_list_idx;
 
 	dsim->under_list[idx].time = ktime_get();
-	dsim->under_list[idx].mif_freq = cal_dfs_get_rate(dvfs_mif);
-	dsim->under_list[idx].int_freq = cal_dfs_get_rate(dvfs_int);
-	dsim->under_list[idx].disp_freq = cal_dfs_get_rate(dvfs_disp);
+	dsim->under_list[idx].mif_freq = cal_dfs_cached_get_rate(dvfs_mif);
+	dsim->under_list[idx].int_freq = cal_dfs_cached_get_rate(dvfs_int);
+	dsim->under_list[idx].disp_freq = cal_dfs_cached_get_rate(dvfs_disp);
 #if defined(CONFIG_EXYNOS8890_BTS_OPTIMIZATION)
 	dsim->under_list[idx].prev_bw = decon->prev_total_bw;
 	dsim->under_list[idx].cur_bw = decon->total_bw;
@@ -62,9 +62,9 @@ static void decon_oneshot_underrun_log(struct decon_device *decon)
 				decon->underrun_stat.chmap,
 				decon->underrun_stat.used_windows);
 		decon_warn("    mif(%lu), int(%lu), disp(%lu)\n",
-				cal_dfs_get_rate(dvfs_mif),
-				cal_dfs_get_rate(dvfs_int),
-				cal_dfs_get_rate(dvfs_disp));
+				cal_dfs_cached_get_rate(dvfs_mif),
+				cal_dfs_cached_get_rate(dvfs_int),
+				cal_dfs_cached_get_rate(dvfs_disp));
 #else
 		decon_warn("[underrun]: (cnt %d), tot_bw %d, int_bw %d, disp_bw %d\n",
 				decon->underrun_stat.underrun_cnt,

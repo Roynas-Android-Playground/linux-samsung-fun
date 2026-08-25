@@ -297,7 +297,7 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 
 	dfs = to_dfs(vclk);
 
-	spin_lock_irqsave(dfs->lock, flag);
+	pwrcal_dfs_lock(dfs->lock, flag);
 
 	if (!vclk->ref_count) {
 		vclk->vfreq = rate;
@@ -315,7 +315,7 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 		vclk->vfreq = rate;
 	}
 out:
-	spin_unlock_irqrestore(dfs->lock, flag);
+	pwrcal_dfs_unlock(dfs->lock, flag);
 	return ret;
 }
 
@@ -332,7 +332,7 @@ int cal_dfs_set_rate_switch(unsigned int id, unsigned long switch_rate)
 
 	dfs = to_dfs(vclk);
 
-	spin_lock_irqsave(dfs->lock, flag);
+	pwrcal_dfs_lock(dfs->lock, flag);
 
 	if (!vclk->ref_count) {
 		ret = -1;
@@ -349,16 +349,13 @@ int cal_dfs_set_rate_switch(unsigned int id, unsigned long switch_rate)
 	if (!ret)
 		vclk->vfreq = switch_rate;
 out:
-	spin_unlock_irqrestore(dfs->lock, flag);
+	pwrcal_dfs_unlock(dfs->lock, flag);
 	return ret;
 }
 
 unsigned long cal_dfs_cached_get_rate(unsigned int id)
 {
-	struct pwrcal_vclk_dfs *dfs;
 	struct vclk *vclk;
-	unsigned long flag;
-	unsigned long ret = 0;
 #ifdef CONFIG_EXYNOS_SNAPSHOT_CLK
 	const char *name = "cal_dfs_get_rate";
 #endif
@@ -366,19 +363,12 @@ unsigned long cal_dfs_cached_get_rate(unsigned int id)
 	if (!vclk)
 		return 0;
 
-	dfs = to_dfs(vclk);
-
-	spin_lock_irqsave(dfs->lock, flag);
-
-	if (!vclk->ref_count) {
+	if (!READ_ONCE(vclk->ref_count)) {
 		pr_err("%s : %s reference count is zero \n", __func__, vclk->name);
-		goto out;
+		return 0;
 	}
 
-	ret = vclk->vfreq;
-out:
-	spin_unlock_irqrestore(dfs->lock, flag);
-	return ret;
+	return READ_ONCE(vclk->vfreq);
 }
 
 unsigned long cal_dfs_get_rate(unsigned int id)
@@ -396,7 +386,7 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 
 	dfs = to_dfs(vclk);
 
-	spin_lock_irqsave(dfs->lock, flag);
+	pwrcal_dfs_lock(dfs->lock, flag);
 
 	if (!vclk->ref_count) {
 		pr_err("%s : %s reference count is zero \n", __func__, vclk->name);
@@ -412,7 +402,7 @@ unsigned long cal_dfs_get_rate(unsigned int id)
 		vclk->vfreq = (unsigned long)ret;
 	}
 out:
-	spin_unlock_irqrestore(dfs->lock, flag);
+	pwrcal_dfs_unlock(dfs->lock, flag);
 	return ret;
 }
 

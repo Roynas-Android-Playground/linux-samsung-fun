@@ -153,7 +153,7 @@ struct pwrcal_vclk_dfs {
 	struct dfs_table *table;
 	struct vclk_dfs_ops *dfsops;
 	int volt_margin;
-	spinlock_t	*lock;
+	pwrcal_dfs_lock_t *lock;
 
 };
 extern struct vclk_ops dfs_ops;
