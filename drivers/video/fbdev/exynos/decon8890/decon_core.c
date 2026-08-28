@@ -5381,29 +5381,39 @@ static int decon_probe(struct platform_device *pdev)
 	switch (decon->id) {
 	case 0:
 		ret = decon_f_register_irq(pdev, decon);
-		if (ret)
+		if (ret) {
+			decon_err("failed to register decon_f irq\n");
 			goto fail;
+		}
 
 		ret = decon_f_create_vsync_thread(decon);
-		if (ret)
-			goto fail;
+		if (ret) {
+			decon_err("failed to create decon_f vsync thread\n");
+			goto fail_vsync_thread;
+		}
 
 		ret = decon_f_create_psr_thread(decon);
-		if (ret)
-			goto fail_vsync_thread;
+		if (ret) {
+			decon_err("failed to create decon_f psr thread\n");
+			goto fail_psr_thread;
+		}
 
 		snprintf(debug_name, MAX_NAME_SIZE, "decon");
 		break;
 	case 1:
 
 		ret = decon_s_register_irq(pdev, decon);
-		if (ret)
+		if (ret) {
+			decon_err("failed to register decon_s irq\n");
 			goto fail;
+		}
 		break;
 	case 2:
 		ret = decon_t_register_irq(pdev, decon);
-		if (ret)
+		if (ret) {
+			decon_err("failed to register decon_t irq\n");
 			goto fail;
+		}
 
 		decon_t_set_lcd_info(decon);
 		break;
@@ -5413,13 +5423,16 @@ static int decon_probe(struct platform_device *pdev)
 		((decon->pdata->out_type == DECON_OUT_DSI) ||
 		(decon->pdata->out_type == DECON_OUT_EDP))) {
 		ret = decon_config_eint_for_te(pdev, decon);
-		if (ret)
+		if (ret) {
+			decon_err("failed to config eint for te\n");
 			goto fail_psr_thread;
+		}
 
 		ret = decon_register_lpd_work(decon);
-		if (ret)
+		if (ret) {
+			decon_err("failed to register lpd work\n");
 			goto fail_psr_thread;
-
+		}
 	}
 
 	decon->pinctrl = devm_pinctrl_get(dev);
@@ -5441,8 +5454,10 @@ static int decon_probe(struct platform_device *pdev)
 
 	/* register internal and external DECON as entity */
 	ret = decon_register_entity(decon);
-	if (ret)
-		goto fail_psr_thread;
+	if (ret) {
+		decon_err("failed to register decon entity\n");
+		goto fail_entity;
+	}
 
 	md = (struct exynos_md *)module_name_to_driver_data(MDEV_MODULE_NAME);
 	if (!md) {
@@ -5454,22 +5469,30 @@ static int decon_probe(struct platform_device *pdev)
 
 	/* mapping SYSTEM registers */
 	ret = decon_get_disp_ss_addr(decon);
-	if (ret)
+	if (ret) {
+		decon_err("failed to get sysreg-disp address\n");
 		goto fail_entity;
+	}
 
 	/* link creation: vpp <-> decon / decon <-> output */
 	ret = decon_create_links(decon, md);
-	if (ret)
+	if (ret) {
+		decon_err("failed to create links\n");
 		goto fail_entity;
+	}
 
 	ret = decon_register_subdev_nodes(decon, md);
-	if (ret)
+	if (ret) {
+		decon_err("failed to register subdev nodes\n");
 		goto fail_entity;
+	}
 
 	/* configure windows */
 	ret = decon_acquire_window(decon);
-	if (ret)
+	if (ret) {
+		decon_err("failed to acquire window\n");
 		goto fail_entity;
+	}
 
 	/* register framebuffer */
 	fbinfo = decon->windows[decon->pdata->default_win]->fbinfo;
