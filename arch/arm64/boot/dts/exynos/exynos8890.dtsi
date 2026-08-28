@@ -1690,10 +1690,7 @@
 		};
 
 		dsim8890_0: dsim@13900000 {
-			/* vendor's own of_device_id table has this literal
-			 * typo (space after the comma) in both places it's
-			 * matched - must be reproduced exactly. */
-			compatible = "samsung, exynos8-mipi-dsi";
+			compatible = "samsung,exynos8-mipi-dsi";
 			reg = <0x13900000 0x100>;
 			interrupts = <GIC_SPI 186 IRQ_TYPE_LEVEL_HIGH>;
 			power-domains = <&pd_disp0>;
