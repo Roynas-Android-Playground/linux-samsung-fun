@@ -967,11 +967,21 @@ static int vpp_probe(struct platform_device *pdev)
 	vpp_irq = vpp_reg_get_irq_status(vpp->id);
 	vpp_reg_set_clear_irq(vpp->id, vpp_irq);
 
+	/*
+	 * The bootloader hands the panel over with one channel still
+	 * scanning out its splash framebuffer, so a busy OP_STATUS here is
+	 * expected rather than fatal. Force it idle - vpp_reg_init() resets
+	 * the channel before first use anyway.
+	 */
 	ret = vpp_reg_wait_op_status(vpp->id);
 	if (ret < 0) {
-		dev_err(dev, "%s : vpp-%d is working\n",
-				__func__, vpp->id);
-		return ret;
+		dev_info(dev, "vpp-%d busy at probe, resetting\n", vpp->id);
+		ret = vpp_reg_set_sw_reset(vpp->id);
+		if (ret < 0) {
+			dev_err(dev, "%s : vpp-%d is working\n",
+					__func__, vpp->id);
+			return ret;
+		}
 	}
 
 	vpp_clk_disable(vpp);
