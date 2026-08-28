@@ -118,7 +118,6 @@ struct exynos8890_shmem {
 	struct mutex map_lock;
 	unsigned int boot_users;
 	unsigned int ipc_users;
-	bool attached;
 };
 
 /* Wire layouts. Validate every size/offset against the pinned vendor ABI. */
