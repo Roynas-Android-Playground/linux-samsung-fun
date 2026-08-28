@@ -347,6 +347,25 @@
 			clock-names = "oscclk", "bus";
 		};
 
+		/*
+		 * PL330 DMA controller feeding spi_4 (fingerprint) and other
+		 * PERIC1 peripherals. Vendor's node (exynos8890_Oneui.dtsi)
+		 * also carries a "dma-arwrapper" property for a Samsung-
+		 * patched pl330.c that writes DMA addresses above 4GB via
+		 * extra wrapper registers - not present in our stock
+		 * upstream drivers/dma/pl330.c, so deliberately omitted here.
+		 * Consumers of this controller must stay within a 32-bit DMA
+		 * address range.
+		 */
+		pdma0: dma-controller@10e10000 {
+			compatible = "arm,pl330", "arm,primecell";
+			reg = <0x10e10000 0x1000>;
+			interrupts = <GIC_SPI 214 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cmu_fsys0 CLK_GOUT_FSYS0_ACLK_PDMA0>;
+			clock-names = "apb_pclk";
+			#dma-cells = <1>;
+		};
+
 		pinctrl_fsys0: pinctrl@10e60000 {
 			compatible = "samsung,exynos8890-pinctrl";
 			reg = <0x10e60000 0x1000>;
