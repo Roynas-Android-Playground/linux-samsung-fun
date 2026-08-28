@@ -768,4 +768,15 @@ config KEYBOARD_CYPRESS_SF
 	  To compile this driver as a module, choose M here: the
 	  module will be called cypress-sf.
 
+config KEYBOARD_ABOV_MC96FT16XX
+	tristate "ABOV mc96ft16xx touchkey support"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say Y here to enable support for the ABOV mc96ft16xx
+	  capacitive touchkey controller.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called abov_touchkey.
+
 endif
