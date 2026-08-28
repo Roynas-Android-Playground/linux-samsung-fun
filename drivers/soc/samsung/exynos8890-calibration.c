@@ -836,9 +836,8 @@ static int exynos8890_calib_build_mif_voltage(unsigned int store_index,
 
 	count = (size_t)margin_store->data.num_levels *
 		margin_store->data.num_parameters;
-	if (margin_store->data.num_parameters != 1 ||
-	    margin_store->data.num_levels != mif->num_asv_levels ||
-	    count != mif->num_asv_levels)
+	/* Vendor PWRCAL consumes the first ASV-row values of this flat payload. */
+	if (count < mif->num_asv_levels)
 		return -EINVAL;
 
 	asv_voltage_uv = kcalloc(mif->num_asv_levels,
@@ -889,6 +888,10 @@ static int exynos8890_calib_build_mif_voltage(unsigned int store_index,
 
 out_free_asv:
 	kfree(asv_voltage_uv);
+	if (ret) {
+		kfree(voltage_store->opp_voltage_uv);
+		voltage_store->opp_voltage_uv = NULL;
+	}
 	return ret;
 }
 
@@ -900,27 +903,53 @@ static int exynos8890_calib_build_mif_voltages(void)
 	struct exynos8890_calib_mif_voltage_store *fallback;
 	int ret;
 
-	for (i = 0; i < num_timing_stores; i++)
-		if ((timing_stores[i].data.key & 0xff) == 0x3)
+	for (i = 0; i < num_timing_stores; i++) {
+		size_t count;
+
+		if ((timing_stores[i].data.key & 0xff) != 0x3)
+			continue;
+		count = (size_t)timing_stores[i].data.num_levels *
+			timing_stores[i].data.num_parameters;
+		if (count >= mif->num_asv_levels)
 			num_stores++;
+	}
 	/* One extra row is the vendor-compatible no-keyed-margin fallback. */
 	mif_voltage_stores = kcalloc(num_stores + 1,
 				     sizeof(*mif_voltage_stores), GFP_KERNEL);
 	if (!mif_voltage_stores)
 		return -ENOMEM;
-	num_mif_voltage_stores = num_stores + 1;
 
 	for (i = 0; i < num_timing_stores; i++) {
+		size_t count;
+		bool duplicate = false;
+
 		if ((timing_stores[i].data.key & 0xff) != 0x3)
 			continue;
-		for (j = 0; j < store_index; j++)
+		count = (size_t)timing_stores[i].data.num_levels *
+			timing_stores[i].data.num_parameters;
+		if (count < mif->num_asv_levels) {
+			pr_warn("Exynos8890 calibration: ignoring short MIF margin key %#llx (%zu values, need %u)\n",
+				(unsigned long long)timing_stores[i].data.key,
+				count, mif->num_asv_levels);
+			continue;
+		}
+		for (j = 0; j < store_index; j++) {
 			if (mif_voltage_stores[j].data.key ==
-			    timing_stores[i].data.key)
-				return -EINVAL;
+			    timing_stores[i].data.key) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (duplicate) {
+			pr_warn("Exynos8890 calibration: ignoring duplicate MIF margin key %#llx\n",
+				(unsigned long long)timing_stores[i].data.key);
+			continue;
+		}
 		ret = exynos8890_calib_build_mif_voltage(store_index, i);
 		if (ret)
 			return ret;
 		store_index++;
+		num_mif_voltage_stores = store_index;
 	}
 
 	fallback = &mif_voltage_stores[store_index];
@@ -934,6 +963,7 @@ static int exynos8890_calib_build_mif_voltages(void)
 	fallback->data.key = 0;
 	fallback->data.opp_voltage_uv = fallback->opp_voltage_uv;
 	fallback->data.num_opps = mif->data.num_opps;
+	num_mif_voltage_stores = store_index + 1;
 
 	return 0;
 }
