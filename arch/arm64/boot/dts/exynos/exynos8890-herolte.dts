@@ -1219,6 +1219,7 @@
 			compatible = "samsung,exynos7-i2s";
 			reg = <0x11440000 0x100>;
 			interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_aud>;
 
 			dmas = <&adma 0>, <&adma 2>;
 			dma-names = "tx", "rx";
