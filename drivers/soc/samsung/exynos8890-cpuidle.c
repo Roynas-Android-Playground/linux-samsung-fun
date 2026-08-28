@@ -81,6 +81,7 @@ static unsigned int boot_cluster;
 struct exynos8890_cpuidle {
 	void __iomem *pmu;
 	struct cpuidle_driver driver;
+	struct cpumask cpus;
 	atomic_t faulted;
 	unsigned int cpd_residency_us;
 };
@@ -337,14 +338,29 @@ static int exynos8890_cpuidle_probe(struct platform_device *pdev)
 		.enter = exynos8890_enter_c2,
 	};
 
+	/*
+	 * The boot cluster must never enter C2. Vendor Cronos only ever
+	 * registers its C2-capable idle state for non-boot-cluster CPUs;
+	 * on this hardware a boot-cluster (cpu0/Mongoose) PSCI CPU_SUSPEND
+	 * into 0x00010000 never wakes - RCU stalls on cpu0 with the core
+	 * unresponsive to pseudo-NMI, while every other core idles fine.
+	 * Restrict the whole driver to the non-boot cluster; boot-cluster
+	 * cores fall back to the default arch WFI loop.
+	 */
+	cpumask_clear(&idle->cpus);
+	for_each_possible_cpu(cpu) {
+		if (cluster_id_of(cpu) != boot_cluster)
+			cpumask_set_cpu(cpu, &idle->cpus);
+	}
+
 	platform_set_drvdata(pdev, idle);
-	ret = cpuidle_register(&idle->driver, NULL);
+	ret = cpuidle_register(&idle->driver, &idle->cpus);
 	if (ret)
 		goto err_unmap;
 
 	dev_info(&pdev->dev,
-		 "C2 registered (CPD residency %uus, boot-cluster collapse refused)\n",
-		 idle->cpd_residency_us);
+		 "C2 registered for non-boot cluster %*pbl (CPD residency %uus)\n",
+		 cpumask_pr_args(&idle->cpus), idle->cpd_residency_us);
 	return 0;
 
 err_unmap:
