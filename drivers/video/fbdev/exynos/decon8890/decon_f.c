@@ -171,6 +171,19 @@ static void underrun_filter_handler(struct work_struct *work)
 	decon->fifo_irq_status = UNDERRUN_FILTER_IDLE;
 }
 
+void decon_f_enable_irqs(struct decon_device *decon)
+{
+	unsigned int i;
+
+	if (decon->hw_irqs_enabled)
+		return;
+
+	for (i = 0; i < decon->nr_hw_irqs; i++)
+		enable_irq(decon->hw_irqs[i]);
+
+	decon->hw_irqs_enabled = true;
+}
+
 int decon_f_register_irq(struct platform_device *pdev, struct decon_device *decon)
 {
 	struct device *dev = decon->dev;
@@ -208,23 +221,25 @@ int decon_f_register_irq(struct platform_device *pdev, struct decon_device *deco
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
-	ret = devm_request_irq(dev, irq, decon_f_irq_handler, 0,
-			pdev->name, decon);
+	ret = devm_request_irq(dev, irq, decon_f_irq_handler,
+			       IRQF_NO_AUTOEN, pdev->name, decon);
 	if (ret) {
 		decon_err("failed to install FIFO irq\n");
 		return ret;
 	}
+	decon->hw_irqs[decon->nr_hw_irqs++] = irq;
 
 	/* 1: VSTATUS INFO irq */
 	irq = platform_get_irq(pdev, 1);
 	if (irq < 0)
 		return irq;
 	ret = devm_request_irq(dev, irq, decon_f_irq_handler,
-			0, pdev->name, decon);
+			IRQF_NO_AUTOEN, pdev->name, decon);
 	if (ret) {
 		decon_err("failed to install VSTATUS irq\n");
 		return ret;
 	}
+	decon->hw_irqs[decon->nr_hw_irqs++] = irq;
 
 	if (decon->pdata->psr_mode == DECON_MIPI_COMMAND_MODE) {
 		/* 2: I80 FrameDone irq */
@@ -232,11 +247,12 @@ int decon_f_register_irq(struct platform_device *pdev, struct decon_device *deco
 		if (irq < 0)
 			return irq;
 		ret = devm_request_irq(dev, irq, decon_f_irq_handler,
-				0, pdev->name, decon);
+				IRQF_NO_AUTOEN, pdev->name, decon);
 		if (ret) {
 			decon_err("failed to install FrameDone irq\n");
 			return ret;
 		}
+		decon->hw_irqs[decon->nr_hw_irqs++] = irq;
 	}
 
 	/* 3: Extra Interrupts: Resource Conflict irq */
@@ -244,11 +260,12 @@ int decon_f_register_irq(struct platform_device *pdev, struct decon_device *deco
 	if (irq < 0)
 		return irq;
 	ret = devm_request_irq(dev, irq, decon_f_irq_handler,
-			0, pdev->name, decon);
+			IRQF_NO_AUTOEN, pdev->name, decon);
 	if (ret) {
 		decon_err("failed to install Extra irq\n");
 		return ret;
 	}
+	decon->hw_irqs[decon->nr_hw_irqs++] = irq;
 
 	return ret;
 }

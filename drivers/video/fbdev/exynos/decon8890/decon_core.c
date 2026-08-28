@@ -5580,7 +5580,13 @@ static int decon_probe(struct platform_device *pdev)
 		dsim->decon = (void *)decon;
 
 		decon_to_init_param(decon, &p);
-		if (decon_reg_init(decon->id, decon->pdata->out_idx, &p) < 0)
+		ret = decon_reg_init(decon->id, decon->pdata->out_idx, &p);
+		if (ret == -EBUSY) {
+			decon_reg_set_int(decon->id, &p.psr, 1);
+			decon_f_enable_irqs(decon);
+			goto decon_init_done;
+		}
+		if (ret < 0)
 			goto decon_init_done;
 
 		memset(&win_regs, 0, sizeof(struct decon_window_regs));
@@ -5632,6 +5638,7 @@ static int decon_probe(struct platform_device *pdev)
 
 		decon_to_psr_info(decon, &psr);
 		decon_reg_set_int(decon->id, &psr, 1);
+		decon_f_enable_irqs(decon);
 		decon_reg_start(decon->id, &psr);
 
 		/* TODO:

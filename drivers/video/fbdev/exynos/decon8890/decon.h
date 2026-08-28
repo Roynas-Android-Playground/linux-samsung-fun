@@ -704,6 +704,9 @@ struct decon_device {
 	struct list_head		sbuf_active_list;
 
 	unsigned int			irq;
+	unsigned int			hw_irqs[4];
+	unsigned int			nr_hw_irqs;
+	bool				hw_irqs_enabled;
 
 	struct pinctrl			*pinctrl;
     struct pinctrl_state 		*decon_te_on;
@@ -836,6 +839,7 @@ bool decon_validate_x_alignment(struct decon_device *decon, int x, u32 w,
 int create_link_mipi(struct decon_device *decon, int id);
 int decon_int_remap_eint(struct decon_device *decon);
 int decon_f_register_irq(struct platform_device *pdev, struct decon_device *decon);
+void decon_f_enable_irqs(struct decon_device *decon);
 int decon_s_register_irq(struct platform_device *pdev, struct decon_device *decon);
 int decon_t_register_irq(struct platform_device *pdev, struct decon_device *decon);
 irqreturn_t decon_f_irq_handler(int irq, void *dev_data);
