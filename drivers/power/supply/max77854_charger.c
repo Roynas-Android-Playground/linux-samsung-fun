@@ -33,6 +33,12 @@
 #define MAX77854_AICL_STEP_CODE			3
 #define MAX77854_AICL_DELAY_MS			100
 
+#define MAX77854_WCIN_LIM_MASK			GENMASK(5, 0)
+#define MAX77854_WCIN_STEP_UA			30000
+/* Matches vendor's own stock default WCIN limit - conservative until thermal policy exists. */
+#define MAX77854_WCIN_MAX_UA			480000
+#define MAX77854_WCIN_AICL_MIN_UA		120000
+
 #define MAX77854_CHG_CC_MASK			GENMASK(5, 0)
 #define MAX77854_CHG_CC_MIN_UA			100000
 #define MAX77854_CHG_CC_HW_MAX_UA		3150000
@@ -72,6 +78,8 @@ struct max77854_charger {
 	struct mutex lock;
 	int max_charge_current_ua;
 	int charge_voltage_uv;
+	struct notifier_block wireless_nb;
+	bool wireless_active;
 };
 
 static const enum power_supply_property max77854_charger_props[] = {
@@ -130,7 +138,7 @@ static int max77854_get_online(struct max77854_charger *chg, int *val)
 	if (ret)
 		return ret;
 
-	*val = !!(data & MAX77843_CHG_CHGIN_OK);
+	*val = !!(data & (MAX77843_CHG_CHGIN_OK | MAX77843_CHG_WCIN_OK));
 	return 0;
 }
 
@@ -345,16 +353,29 @@ static int max77854_code_to_input_current(unsigned int code)
 	       (remainder == 1 ? 33000 : remainder == 2 ? 67000 : 0);
 }
 
+static unsigned int max77854_wcin_current_to_code(int ua)
+{
+	ua = clamp_val(ua, MAX77854_WCIN_STEP_UA, MAX77854_WCIN_MAX_UA);
+	return min_t(unsigned int, ua / MAX77854_WCIN_STEP_UA, MAX77854_WCIN_LIM_MASK);
+}
+
 static int max77854_set_input_current(struct max77854_charger *chg, int ua)
 {
-	unsigned int code;
+	unsigned int reg, mask, code;
 	int ret;
 
-	code = max77854_input_current_to_code(ua);
+	if (chg->wireless_active) {
+		reg = MAX77843_CHG_REG_CHG_CNFG_10;
+		mask = MAX77854_WCIN_LIM_MASK;
+		code = max77854_wcin_current_to_code(ua);
+	} else {
+		reg = MAX77843_CHG_REG_CHG_CNFG_09;
+		mask = MAX77854_CHGIN_LIM_MASK;
+		code = max77854_input_current_to_code(ua);
+	}
 
 	mutex_lock(&chg->lock);
-	ret = regmap_update_bits(chg->regmap, MAX77843_CHG_REG_CHG_CNFG_09,
-				 MAX77854_CHGIN_LIM_MASK, code);
+	ret = regmap_update_bits(chg->regmap, reg, mask, code);
 	mutex_unlock(&chg->lock);
 
 	return ret;
@@ -362,15 +383,32 @@ static int max77854_set_input_current(struct max77854_charger *chg, int ua)
 
 static int max77854_get_input_current(struct max77854_charger *chg, int *ua)
 {
-	unsigned int code;
+	unsigned int reg, code;
 	int ret;
 
-	ret = regmap_read(chg->regmap, MAX77843_CHG_REG_CHG_CNFG_09, &code);
+	reg = chg->wireless_active ? MAX77843_CHG_REG_CHG_CNFG_10 :
+				      MAX77843_CHG_REG_CHG_CNFG_09;
+
+	ret = regmap_read(chg->regmap, reg, &code);
 	if (ret)
 		return ret;
 
-	*ua = max77854_code_to_input_current(code);
+	*ua = chg->wireless_active ? (code & MAX77854_WCIN_LIM_MASK) * MAX77854_WCIN_STEP_UA :
+				      max77854_code_to_input_current(code);
 	return 0;
+}
+
+static int max77854_select_input(struct max77854_charger *chg, bool wireless)
+{
+	int ret;
+
+	ret = regmap_update_bits(chg->regmap, MAX77843_CHG_REG_CHG_CNFG_12,
+				 MAX77854_CHGINSEL, wireless ? 0 : MAX77854_CHGINSEL);
+	if (ret)
+		return ret;
+
+	return max77854_set_input_current(chg, wireless ? MAX77854_WCIN_MAX_UA :
+							    MAX77854_DEFAULT_INPUT_UA);
 }
 
 static int max77854_set_charge_current(struct max77854_charger *chg, int ua)
@@ -518,7 +556,13 @@ static irqreturn_t max77854_aicl_irq(int irq, void *data)
 {
 	struct max77854_charger *chg = data;
 	unsigned int int_ok, code;
-	unsigned int min_code = max77854_input_current_to_code(MAX77854_AICL_MIN_UA);
+	unsigned int reg = chg->wireless_active ? MAX77843_CHG_REG_CHG_CNFG_10 :
+						   MAX77843_CHG_REG_CHG_CNFG_09;
+	unsigned int mask = chg->wireless_active ? MAX77854_WCIN_LIM_MASK :
+						    MAX77854_CHGIN_LIM_MASK;
+	unsigned int min_code = chg->wireless_active ?
+		max77854_wcin_current_to_code(MAX77854_WCIN_AICL_MIN_UA) :
+		max77854_input_current_to_code(MAX77854_AICL_MIN_UA);
 	int ret, loops = 0;
 
 	mutex_lock(&chg->lock);
@@ -529,21 +573,18 @@ static irqreturn_t max77854_aicl_irq(int irq, void *data)
 		if (ret || (int_ok & MAX77843_CHG_AICL_OK))
 			break;
 
-		ret = regmap_read(chg->regmap, MAX77843_CHG_REG_CHG_CNFG_09,
-				  &code);
+		ret = regmap_read(chg->regmap, reg, &code);
 		if (ret)
 			break;
 
-		code &= MAX77854_CHGIN_LIM_MASK;
+		code &= mask;
 		if (code <= min_code)
 			break;
 
 		code = max_t(unsigned int, code - MAX77854_AICL_STEP_CODE,
 			     min_code);
 
-		ret = regmap_update_bits(chg->regmap,
-					 MAX77843_CHG_REG_CHG_CNFG_09,
-					 MAX77854_CHGIN_LIM_MASK, code);
+		ret = regmap_update_bits(chg->regmap, reg, mask, code);
 		if (ret)
 			break;
 
@@ -557,6 +598,44 @@ static irqreturn_t max77854_aicl_irq(int irq, void *data)
 	schedule_work(&chg->changed_work);
 
 	return IRQ_HANDLED;
+}
+
+static int max77854_wireless_notifier_call(struct notifier_block *nb,
+					    unsigned long event, void *data)
+{
+	struct max77854_charger *chg =
+		container_of(nb, struct max77854_charger, wireless_nb);
+	struct power_supply *wireless_psy = data;
+	union power_supply_propval online = { 0 };
+	unsigned int chgin_ok = 0;
+	bool wireless;
+
+	if (event != PSY_EVENT_PROP_CHANGED ||
+	    strcmp(wireless_psy->desc->name, "p9220-wireless"))
+		return NOTIFY_OK;
+
+	if (power_supply_get_property(wireless_psy, POWER_SUPPLY_PROP_ONLINE, &online))
+		return NOTIFY_OK;
+
+	/* Wired CHGIN always wins over wireless when both are present. */
+	regmap_read(chg->regmap, MAX77843_CHG_REG_CHG_INT_OK, &chgin_ok);
+	wireless = !(chgin_ok & MAX77843_CHG_CHGIN_OK) && !!online.intval;
+
+	if (wireless == chg->wireless_active)
+		return NOTIFY_OK;
+
+	chg->wireless_active = wireless;
+	max77854_select_input(chg, wireless);
+	schedule_work(&chg->changed_work);
+
+	return NOTIFY_OK;
+}
+
+static void max77854_unreg_wireless_notifier(void *data)
+{
+	struct max77854_charger *chg = data;
+
+	power_supply_unreg_notifier(&chg->wireless_nb);
 }
 
 static int max77854_charger_enable(struct max77854_charger *chg)
@@ -642,8 +721,10 @@ static int max77854_charger_initialize(struct max77854_charger *chg)
 		return ret;
 
 	/*
-	 * Select wired CHGIN and Samsung's 4.3 V regulation / 4.5 V UVLO
-	 * encoding for both inputs. WCIN itself stays unused in this stage.
+	 * Select wired CHGIN by default and Samsung's 4.3 V regulation / 4.5 V
+	 * UVLO encoding for both inputs. Switched to WCIN at runtime by the
+	 * wireless-supply notifier below when a pad is present and no wired
+	 * cable is plugged in.
 	 */
 	ret = regmap_update_bits(chg->regmap, MAX77843_CHG_REG_CHG_CNFG_12,
 				 MAX77854_CHGINSEL |
@@ -788,6 +869,11 @@ static int max77854_charger_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	ret = max77854_request_changed_irq(chg, irq_data, MAX77854_IRQ_WCIN,
+					   "max77854-wcin");
+	if (ret)
+		return ret;
+
 	{
 		int virq = regmap_irq_get_virq(irq_data, MAX77854_IRQ_AICL);
 
@@ -824,6 +910,32 @@ static int max77854_charger_probe(struct platform_device *pdev)
 	ret = devm_add_action_or_reset(dev, max77854_charger_disable, chg);
 	if (ret)
 		return ret;
+
+	chg->wireless_nb.notifier_call = max77854_wireless_notifier_call;
+	ret = power_supply_reg_notifier(&chg->wireless_nb);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to register wireless-supply notifier\n");
+
+	ret = devm_add_action_or_reset(dev, max77854_unreg_wireless_notifier, chg);
+	if (ret)
+		return ret;
+
+	/* Pick up a pad that's already reporting present at probe time. */
+	{
+		struct power_supply *wireless_psy = power_supply_get_by_name("p9220-wireless");
+
+		if (wireless_psy) {
+			union power_supply_propval online = { 0 };
+
+			if (!power_supply_get_property(wireless_psy, POWER_SUPPLY_PROP_ONLINE,
+							&online) && online.intval) {
+				chg->wireless_active = true;
+				max77854_select_input(chg, true);
+			}
+			power_supply_put(wireless_psy);
+		}
+	}
 
 	dev_info(dev,
 		 "wired charger ready: CV=%duV CC<=%duA input<=%duA\n",
