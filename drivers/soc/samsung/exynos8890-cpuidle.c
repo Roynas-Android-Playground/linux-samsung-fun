@@ -279,6 +279,23 @@ static int exynos8890_cpuidle_probe(struct platform_device *pdev)
 	u32 state = 0;
 	int cpu, ret;
 
+	/*
+	 * Hardware finding (herolte, 2026-08-25): every C2 variant tried -
+	 * boot-cluster included, CPD on or off - wedges a random core in
+	 * idle within ~20s of boot. The core stops responding to pseudo-NMI
+	 * while LOCAL_PWR_CFG reads powered-on again, i.e. the core went
+	 * down through CPU_SUSPEND and the wake never reached it.
+	 *
+	 * Vendor Cronos runs this exact PSCI call too, but its EL3 monitor
+	 * pairs it with CAL PM-table sequences (exynos_prepare_cp_call /
+	 * wakeup_cp_call via the exynos_pm notifier chain) that this port
+	 * does not have. Until those are ported, C2 stays disabled at the
+	 * DT level: the driver only probes when the node is enabled.
+	 */
+	if (!of_property_read_bool(pdev->dev.of_node, "status") ||
+	    !of_device_is_available(pdev->dev.of_node))
+		return -ENODEV;
+
 	ret = of_property_read_u32(pdev->dev.of_node,
 				   "samsung,psci-suspend-param", &state);
 	if (ret || state != EXYNOS8890_C2_STATE)
