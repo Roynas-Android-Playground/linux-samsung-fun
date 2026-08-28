@@ -33,6 +33,8 @@
 
 #define MAX86900_DEFAULT_LED_CURRENT	0x55
 
+static const char * const max86900_supplies[] = { "vdd", "led" };
+
 struct max86900_data {
 	struct i2c_client *client;
 	struct regmap *regmap;
@@ -232,7 +234,6 @@ static int max86900_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct max86900_data *max;
-	struct regulator *vdd, *led;
 	int ret;
 
 	max = devm_kzalloc(dev, sizeof(*max), GFP_KERNEL);
@@ -247,33 +248,20 @@ static int max86900_probe(struct i2c_client *client)
 	if (IS_ERR(max->regmap))
 		return PTR_ERR(max->regmap);
 
-	vdd = devm_regulator_get(dev, "vdd");
-	if (IS_ERR(vdd))
-		return dev_err_probe(dev, PTR_ERR(vdd), "failed to get vdd\n");
-	led = devm_regulator_get(dev, "led");
-	if (IS_ERR(led))
-		return dev_err_probe(dev, PTR_ERR(led), "failed to get led\n");
-
-	ret = regulator_enable(vdd);
+	ret = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(max86900_supplies),
+					     max86900_supplies);
 	if (ret)
-		return ret;
-	ret = regulator_enable(led);
-	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret,
+				     "failed to enable supplies\n");
 	usleep_range(1000, 1100);
 
 	ret = max86900_chip_init(max);
-	if (ret) {
-		regulator_disable(led);
-		regulator_disable(vdd);
+	if (ret)
 		return dev_err_probe(dev, ret, "chip init failed\n");
-	}
 
 	max->input = devm_input_allocate_device(dev);
-	if (!max->input) {
-		ret = -ENOMEM;
-		goto fail_regulator;
-	}
+	if (!max->input)
+		return -ENOMEM;
 
 	max->input->name = "hrm_sensor";
 	max->input->id.bustype = BUS_I2C;
@@ -285,7 +273,7 @@ static int max86900_probe(struct i2c_client *client)
 	ret = input_register_device(max->input);
 	if (ret) {
 		dev_err(dev, "failed to register input device: %d\n", ret);
-		goto fail_regulator;
+		return ret;
 	}
 
 	max->irq = client->irq;
@@ -294,16 +282,11 @@ static int max86900_probe(struct i2c_client *client)
 					 "max86900", max);
 	if (ret) {
 		dev_err(dev, "failed to request IRQ: %d\n", ret);
-		goto fail_regulator;
+		return ret;
 	}
 	disable_irq(max->irq);
 
 	return 0;
-
-fail_regulator:
-	regulator_disable(led);
-	regulator_disable(vdd);
-	return ret;
 }
 
 static const struct of_device_id max86900_of_match[] = {
