@@ -21,6 +21,17 @@ config PHY_EXYNOS_MIPI_VIDEO
 	  Support for MIPI CSI-2 and MIPI DSI DPHY found on Samsung S5P
 	  and Exynos SoCs.
 
+config PHY_EXYNOS8890_MIPI
+	tristate "Exynos8890 MIPI CSI-2/DSI D-PHY driver"
+	depends on HAS_IOMEM
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	select GENERIC_PHY
+	select MFD_SYSCON
+	help
+	  Isolation-bypass + reset-release control (through the PMU syscon)
+	  for the MIPI D-PHYs feeding Exynos8890's DSIM/CSIS host IP.
+	  dsim8890 (drivers/video/fbdev/exynos/decon8890/) requires this.
+
 config PHY_EXYNOS_PCIE
 	bool "Exynos PCIe PHY driver"
 	depends on OF && (ARCH_EXYNOS || COMPILE_TEST)
