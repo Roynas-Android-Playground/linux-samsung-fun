@@ -229,12 +229,17 @@ static int max86900_probe(struct i2c_client *client)
 	usleep_range(1000, 1100);
 
 	ret = max86900_chip_init(max);
-	if (ret)
+	if (ret) {
+		regulator_disable(led);
+		regulator_disable(vdd);
 		return dev_err_probe(dev, ret, "chip init failed\n");
+	}
 
 	max->input = devm_input_allocate_device(dev);
-	if (!max->input)
-		return -ENOMEM;
+	if (!max->input) {
+		ret = -ENOMEM;
+		goto fail_regulator;
+	}
 
 	max->input->name = "hrm_sensor";
 	max->input->id.bustype = BUS_I2C;
@@ -244,18 +249,27 @@ static int max86900_probe(struct i2c_client *client)
 	input_set_drvdata(max->input, max);
 
 	ret = input_register_device(max->input);
-	if (ret)
-		return ret;
+	if (ret) {
+		dev_err(dev, "failed to register input device: %d\n", ret);
+		goto fail_regulator;
+	}
 
 	max->irq = client->irq;
 	ret = devm_request_threaded_irq(dev, max->irq, NULL, max86900_irq_thread,
 					 IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 					 "max86900", max);
-	if (ret)
-		return ret;
+	if (ret) {
+		dev_err(dev, "failed to request IRQ: %d\n", ret);
+		goto fail_regulator;
+	}
 	disable_irq(max->irq);
 
 	return 0;
+
+fail_regulator:
+	regulator_disable(led);
+	regulator_disable(vdd);
+	return ret;
 }
 
 static const struct of_device_id max86900_of_match[] = {
