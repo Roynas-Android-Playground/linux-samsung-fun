@@ -57,6 +57,12 @@
 #define L2_LOCAL_PWR_CFG		0x7
 
 static struct regmap *pmureg;
+
+bool exynos8890_cpupm_ready(void)
+{
+	return pmureg != NULL;
+}
+EXPORT_SYMBOL_GPL(exynos8890_cpupm_ready);
 static unsigned int boot_cluster;
 static DEFINE_SPINLOCK(cpupm_lock);
 
