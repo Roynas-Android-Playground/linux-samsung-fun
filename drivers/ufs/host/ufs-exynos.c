@@ -454,6 +454,9 @@ static int exynos8890_ufs_secure_init(struct exynos_ufs *ufs)
 {
 	struct arm_smccc_res res;
 
+	ufs->hba->caps |= UFSHCD_CAP_CLK_GATING |
+			  UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
+
 	arm_smccc_smc(SMC_CMD_FMP_SECURITY_8890, EXYNOS8890_FMP_SECURITY,
 		      EXYNOS8890_UFS_FMP_BASE, 0, 0, 0, 0, 0, &res);
 	if (res.a0) {
