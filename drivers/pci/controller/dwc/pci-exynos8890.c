@@ -86,6 +86,7 @@ struct exynos8890_pcie {
 	bool core_clks_enabled;
 	bool phy_clks_enabled;
 	bool phy_powered;
+	bool irq_accessible;
 };
 
 static const char *const exynos8890_core_clk_names[] = {
@@ -225,6 +226,9 @@ static irqreturn_t exynos8890_pcie_irq_handler(int irq, void *arg)
 	struct exynos8890_pcie *ep = arg;
 	u32 level, pulse, special;
 
+	if (!READ_ONCE(ep->irq_accessible))
+		return IRQ_NONE;
+
 	pulse = exynos8890_elbi_readl(ep, PCIE_IRQ_PULSE);
 	level = exynos8890_elbi_readl(ep, PCIE_IRQ_LEVEL);
 	special = exynos8890_elbi_readl(ep, PCIE_IRQ_SPECIAL);
@@ -284,15 +288,27 @@ static void exynos8890_pcie_stop_link(struct dw_pcie *pci)
 {
 	struct exynos8890_pcie *ep = to_exynos8890_pcie(pci);
 
+	if (!ep->core_clks_enabled)
+		return;
+
 	exynos8890_elbi_writel(ep, PCIE_ELBI_LTSSM_DISABLE,
 			       PCIE_APP_LTSSM_ENABLE);
 	gpiod_set_value_cansleep(ep->perst, 1);
 }
 
+static void exynos8890_pcie_quiesce_irqs(struct exynos8890_pcie *ep)
+{
+	if (!ep->core_clks_enabled || !READ_ONCE(ep->irq_accessible))
+		return;
+
+	exynos8890_disable_irqs(ep);
+	WRITE_ONCE(ep->irq_accessible, false);
+	synchronize_irq(ep->irq);
+}
+
 static void exynos8890_pcie_power_off(struct exynos8890_pcie *ep)
 {
-	if (ep->core_clks_enabled)
-		exynos8890_disable_irqs(ep);
+	exynos8890_pcie_quiesce_irqs(ep);
 
 	if (ep->core_clks_enabled)
 		exynos8890_pcie_stop_link(&ep->pci);
@@ -389,13 +405,9 @@ static int exynos8890_pcie_host_init(struct dw_pcie_rp *pp)
 
 	exynos8890_elbi_writel(ep, 1, PCIE_L1_BUG_FIX_ENABLE);
 
-	ret = devm_request_irq(pci->dev, ep->irq, exynos8890_pcie_irq_handler,
-			       IRQF_SHARED | IRQF_NO_THREAD, "exynos8890-pcie",
-			       ep);
-	if (ret)
-		goto err_power_off;
-
-	exynos8890_enable_irqs(ep);
+	exynos8890_disable_irqs(ep);
+	exynos8890_clear_irqs(ep);
+	WRITE_ONCE(ep->irq_accessible, true);
 	return 0;
 
 err_power_off:
@@ -411,9 +423,18 @@ static void exynos8890_pcie_host_deinit(struct dw_pcie_rp *pp)
 	exynos8890_pcie_power_off(ep);
 }
 
+static void exynos8890_pcie_host_post_init(struct dw_pcie_rp *pp)
+{
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct exynos8890_pcie *ep = to_exynos8890_pcie(pci);
+
+	exynos8890_enable_irqs(ep);
+}
+
 static const struct dw_pcie_host_ops exynos8890_pcie_host_ops = {
 	.init = exynos8890_pcie_host_init,
 	.deinit = exynos8890_pcie_host_deinit,
+	.post_init = exynos8890_pcie_host_post_init,
 };
 
 static const struct dw_pcie_ops exynos8890_pcie_ops = {
@@ -512,6 +533,11 @@ static int exynos8890_pcie_probe(struct platform_device *pdev)
 	if (ep->irq < 0)
 		return ep->irq;
 	pp->irq = ep->irq;
+	ret = devm_request_irq(dev, ep->irq, exynos8890_pcie_irq_handler,
+			       IRQF_SHARED | IRQF_NO_THREAD, "exynos8890-pcie",
+			       ep);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request ELBI IRQ\n");
 
 	ret = dw_pcie_host_init(pp);
 	if (ret)
@@ -525,8 +551,33 @@ static void exynos8890_pcie_remove(struct platform_device *pdev)
 {
 	struct exynos8890_pcie *ep = platform_get_drvdata(pdev);
 
+	/* Quiesce MSI dispatch before the generic core removes its IRQ domain. */
+	exynos8890_pcie_quiesce_irqs(ep);
 	dw_pcie_host_deinit(&ep->pci.pp);
 }
+
+static int exynos8890_pcie_suspend_noirq(struct device *dev)
+{
+	struct exynos8890_pcie *ep = dev_get_drvdata(dev);
+
+	/* A failed resume has already powered the suspended controller off. */
+	if (ep->pci.suspended)
+		return 0;
+
+	return dw_pcie_suspend_noirq(&ep->pci);
+}
+
+static int exynos8890_pcie_resume_noirq(struct device *dev)
+{
+	struct exynos8890_pcie *ep = dev_get_drvdata(dev);
+
+	return dw_pcie_resume_noirq(&ep->pci);
+}
+
+static const struct dev_pm_ops exynos8890_pcie_pm_ops = {
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(exynos8890_pcie_suspend_noirq,
+				  exynos8890_pcie_resume_noirq)
+};
 
 static const struct of_device_id exynos8890_pcie_of_match[] = {
 	{ .compatible = "samsung,exynos8890-pcie" },
@@ -540,6 +591,7 @@ static struct platform_driver exynos8890_pcie_driver = {
 	.driver = {
 		.name = "exynos8890-pcie",
 		.of_match_table = exynos8890_pcie_of_match,
+		.pm = pm_sleep_ptr(&exynos8890_pcie_pm_ops),
 	},
 };
 module_platform_driver(exynos8890_pcie_driver);
