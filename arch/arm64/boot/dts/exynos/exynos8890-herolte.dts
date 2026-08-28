@@ -1152,17 +1152,17 @@
 			 <&cmu_fsys1 CLK_GOUT_FSYS1_PCLK_COMBO_PHY_WIFI0>,
 			 <&cmu_fsys1 CLK_GOUT_FSYS1_PHYCLK_PCIE_WIFI0_DIG_REFCLK>,
 			 <&cmu_fsys1 CLK_GOUT_FSYS1_PHYCLK_PCIE_WIFI0_TX0>,
-			 <&cmu_fsys1 CLK_GOUT_FSYS1_PHYCLK_PCIE_WIFI0_RX0>;
+			 <&cmu_fsys1 CLK_GOUT_FSYS1_PHYCLK_PCIE_WIFI0_RX0>,
+			 <&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_DIG_REFCLK_USER>,
+			 <&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_TX0_USER>,
+			 <&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_RX0_USER>,
+			 <&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_DIG_REFCLK_PHY>,
+			 <&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_TX0_PHY>,
+			 <&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_RX0_PHY>;
 		clock-names = "pcie", "dbi", "slv", "mstr", "ahb", "pcs",
-			      "phy-pclk", "phy-ref", "phy-tx", "phy-rx";
-		assigned-clocks =
-			<&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_DIG_REFCLK_USER>,
-			<&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_TX0_USER>,
-			<&cmu_fsys1 CLK_MOUT_FSYS1_PHYCLK_PCIE_WIFI0_RX0_USER>;
-		assigned-clock-parents =
-			<&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_DIG_REFCLK_PHY>,
-			<&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_TX0_PHY>,
-			<&cmu_fsys1 CLK_PHYCLK_PCIE_WIFI0_RX0_PHY>;
+			      "phy-pclk", "phy-ref", "phy-tx", "phy-rx",
+			      "phy-ref-mux", "phy-tx-mux", "phy-rx-mux",
+			      "phy-ref-source", "phy-tx-source", "phy-rx-source";
 
 		samsung,pmu-syscon = <&pmu_system_controller>;
 		reset-gpios = <&gpj1 2 GPIO_ACTIVE_LOW>;

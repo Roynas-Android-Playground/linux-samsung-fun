@@ -78,6 +78,8 @@ struct exynos8890_pcie {
 
 	struct clk_bulk_data core_clks[EXYNOS8890_NUM_CORE_CLKS];
 	struct clk_bulk_data phy_clks[EXYNOS8890_NUM_PHY_CLKS];
+	struct clk_bulk_data phy_muxes[EXYNOS8890_NUM_PHY_CLKS];
+	struct clk_bulk_data phy_sources[EXYNOS8890_NUM_PHY_CLKS];
 	struct gpio_desc *perst;
 	struct regulator *vpcie;
 	int irq;
@@ -98,6 +100,34 @@ static const char *const exynos8890_phy_clk_names[] = {
 	"phy-tx",
 	"phy-rx",
 };
+
+static const char *const exynos8890_phy_mux_names[] = {
+	"phy-ref-mux",
+	"phy-tx-mux",
+	"phy-rx-mux",
+};
+
+static const char *const exynos8890_phy_source_names[] = {
+	"phy-ref-source",
+	"phy-tx-source",
+	"phy-rx-source",
+};
+
+static int exynos8890_pcie_select_phy_parents(struct exynos8890_pcie *ep)
+{
+	int i, ret;
+
+	for (i = 0; i < EXYNOS8890_NUM_PHY_CLKS; i++) {
+		ret = clk_set_parent(ep->phy_muxes[i].clk,
+				     ep->phy_sources[i].clk);
+		if (ret)
+			return dev_err_probe(ep->pci.dev, ret,
+					     "failed to select %s parent\n",
+					     ep->phy_muxes[i].id);
+	}
+
+	return 0;
+}
 
 static inline struct exynos8890_pcie *to_exynos8890_pcie(struct dw_pcie *pci)
 {
@@ -393,6 +423,9 @@ static int exynos8890_pcie_host_init(struct dw_pcie_rp *pp)
 	exynos8890_elbi_writel(ep, val, PCIE_QCH_SEL);
 
 	exynos8890_pcie_phy_config(ep);
+	ret = exynos8890_pcie_select_phy_parents(ep);
+	if (ret)
+		goto err_power_off;
 
 	ret = clk_bulk_prepare_enable(EXYNOS8890_NUM_PHY_CLKS, ep->phy_clks);
 	if (ret)
@@ -453,6 +486,10 @@ static int exynos8890_pcie_get_clocks(struct device *dev,
 		ep->core_clks[i].id = exynos8890_core_clk_names[i];
 	for (i = 0; i < EXYNOS8890_NUM_PHY_CLKS; i++)
 		ep->phy_clks[i].id = exynos8890_phy_clk_names[i];
+	for (i = 0; i < EXYNOS8890_NUM_PHY_CLKS; i++) {
+		ep->phy_muxes[i].id = exynos8890_phy_mux_names[i];
+		ep->phy_sources[i].id = exynos8890_phy_source_names[i];
+	}
 
 	ret = devm_clk_bulk_get(dev, EXYNOS8890_NUM_CORE_CLKS, ep->core_clks);
 	if (ret)
@@ -462,6 +499,16 @@ static int exynos8890_pcie_get_clocks(struct device *dev,
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to get PCIe PHY clocks\n");
+
+	ret = devm_clk_bulk_get(dev, EXYNOS8890_NUM_PHY_CLKS, ep->phy_muxes);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to get PCIe PHY muxes\n");
+
+	ret = devm_clk_bulk_get(dev, EXYNOS8890_NUM_PHY_CLKS, ep->phy_sources);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to get PCIe PHY sources\n");
 
 	return 0;
 }
