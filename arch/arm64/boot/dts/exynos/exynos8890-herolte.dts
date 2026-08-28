@@ -620,7 +620,7 @@
 		reg = <0x61>;
 
 		detect-gpios = <&gpa3 5 GPIO_ACTIVE_HIGH>;
-		en-gpios = <&gpi1 2 GPIO_ACTIVE_HIGH>;
+		en-gpios = <&gpi1 2 GPIO_ACTIVE_LOW>;
 		interrupt-parent = <&gpa3>;
 		interrupts = <2 IRQ_TYPE_EDGE_FALLING>;
 
