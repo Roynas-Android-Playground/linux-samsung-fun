@@ -42,6 +42,7 @@ struct exynos8890_dvfs_member_desc {
 	const struct exynos8890_dvfs_clk_ref *parents;
 	unsigned int num_parents;
 	u64 max_value;
+	bool allow_zero;
 };
 
 struct exynos8890_dvfs_member {
@@ -51,6 +52,7 @@ struct exynos8890_dvfs_member {
 	unsigned int num_parents;
 	u64 max_value;
 	bool gate_owned;
+	bool allow_zero;
 };
 
 struct exynos8890_g3d_switch {
@@ -157,6 +159,14 @@ static const struct exynos8890_dvfs_clk_ref int_bus0_osc_parents[] = {
 	.max_value = ULONG_MAX, \
 }
 
+#define MEMBER_PLL_OFF(_name, _provider, _id) { \
+	.name = #_name, \
+	.type = EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ, \
+	.clock = REF_##_provider(_id), \
+	.max_value = ULONG_MAX, \
+	.allow_zero = true, \
+}
+
 #define MEMBER_MUX(_name, _provider, _id, _parents) { \
 	.name = #_name, \
 	.type = EXYNOS8890_CALIB_MEMBER_MUX_SELECTOR, \
@@ -181,6 +191,13 @@ static const struct exynos8890_dvfs_clk_ref int_bus0_osc_parents[] = {
 }
 
 static const struct exynos8890_dvfs_member_desc int_members[] = {
+	/*
+	 * Vendor PWRCAL exposes the shared physical MFC PLL through a separate
+	 * DVFS policy alias. CCF models that hardware once as fout_mfc_pll;
+	 * zero-valued rows turn it off only after every characterized mux has
+	 * moved to another source.
+	 */
+	MEMBER_PLL_OFF(MFC_PLL_DVFS, TOP, CLK_FOUT_MFC_PLL),
 	MEMBER_MUX(TOP_MUX_ACLK_BUS0_528, TOP, CLK_MOUT_TOP_ACLK_BUS0_528,
 		   int_bus0123_parents),
 	MEMBER_MUX(TOP_MUX_ACLK_BUS1_528, TOP, CLK_MOUT_TOP_ACLK_BUS1_528,
@@ -221,6 +238,9 @@ static const struct exynos8890_dvfs_member_desc int_members[] = {
 		   int_bus0123_isp_mfc_parents),
 	MEMBER_MUX(TOP_MUX_ACLK_ISP0_TPU_400, TOP,
 		   CLK_MOUT_TOP_ACLK_ISP0_TPU_400,
+		   int_bus0123_isp_mfc_parents),
+	MEMBER_MUX(TOP_MUX_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D, TOP,
+		   CLK_MOUT_TOP_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D,
 		   int_bus0123_isp_mfc_parents),
 	MEMBER_MUX(TOP_MUX_ACLK_ISP1_ISP1_468, TOP,
 		   CLK_MOUT_TOP_ACLK_ISP1_ISP1_468,
@@ -269,6 +289,8 @@ static const struct exynos8890_dvfs_member_desc int_members[] = {
 		   CLK_DOUT_TOP_ACLK_ISP0_ISP0_528),
 	MEMBER_DIV(TOP_DIV_ACLK_ISP0_TPU_400, TOP,
 		   CLK_DOUT_TOP_ACLK_ISP0_TPU_400),
+	MEMBER_DIV(TOP_DIV_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D, TOP,
+		   CLK_DOUT_TOP_ACLK_ISP0_PXL_ASBS_IS_C_FROM_IS_D),
 	MEMBER_DIV(TOP_DIV_ACLK_ISP1_ISP1_468, TOP,
 		   CLK_DOUT_TOP_ACLK_ISP1_ISP1_468),
 	MEMBER_DIV(TOP_DIV_ACLK_CAM1_ARM_672, TOP,
@@ -290,12 +312,6 @@ static const struct exynos8890_dvfs_member_desc int_members[] = {
 };
 
 static const struct exynos8890_dvfs_member_desc cam_members[] = {
-	/*
-	 * The vendor enable list's 425.75 MHz value is only its lifecycle
-	 * baseline.  ISP_PLL is also a DFS matrix member, but registration only
-	 * accepts an invariant matrix until its INT consumers are coordinated.
-	 */
-	MEMBER_PLL(ISP_PLL, TOP, CLK_FOUT_ISP_PLL),
 	MEMBER_MUX(TOP_MUX_ACLK_CAM0_TREX_528, TOP,
 		   CLK_MOUT_TOP_ACLK_CAM0_TREX_528,
 		   int_bus0123_isp_mfc_parents),
@@ -404,6 +420,8 @@ static struct clk *exynos8890_dvfs_get_clk(
 
 	switch (ref->provider) {
 	case DVFS_PROVIDER_TOP:
+		if (!top_hws)
+			return ERR_PTR(-EPROBE_DEFER);
 		hw = top_hws[ref->id];
 		break;
 	case DVFS_PROVIDER_G3D:
@@ -429,6 +447,7 @@ static struct clk *exynos8890_dvfs_get_clk(
 static bool exynos8890_dvfs_member_matches(
 		const struct exynos8890_dvfs_member *member, u64 value)
 {
+	struct clk_hw *hw;
 	struct clk *parent;
 	unsigned long parent_rate;
 	unsigned long rate;
@@ -436,6 +455,13 @@ static bool exynos8890_dvfs_member_matches(
 
 	switch (member->type) {
 	case EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ:
+		hw = __clk_get_hw(member->clk);
+		if (member->allow_zero) {
+			if (!value)
+				return hw && !clk_hw_is_enabled(hw);
+			return hw && clk_hw_is_enabled(hw) &&
+			       clk_get_rate(member->clk) == value;
+		}
 		return clk_get_rate(member->clk) == value;
 	case EXYNOS8890_CALIB_MEMBER_MUX_SELECTOR:
 		if (value >= member->num_parents)
@@ -462,13 +488,39 @@ static bool exynos8890_dvfs_member_matches(
 static int exynos8890_dvfs_set_member(struct exynos8890_dvfs_member *member,
 				      u64 value)
 {
+	bool claimed = false;
 	struct clk *parent;
 	unsigned long rate;
 	int ret;
 
 	switch (member->type) {
 	case EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ:
+		if (!value) {
+			if (!member->allow_zero)
+				return -EINVAL;
+			if (!member->gate_owned) {
+				ret = clk_prepare_enable(member->clk);
+				if (ret)
+					break;
+				member->gate_owned = true;
+			}
+			clk_disable_unprepare(member->clk);
+			member->gate_owned = false;
+			ret = 0;
+			break;
+		}
+		if (member->allow_zero && !member->gate_owned) {
+			ret = clk_prepare_enable(member->clk);
+			if (ret)
+				break;
+			member->gate_owned = true;
+			claimed = true;
+		}
 		ret = clk_set_rate(member->clk, value);
+		if (ret && claimed) {
+			clk_disable_unprepare(member->clk);
+			member->gate_owned = false;
+		}
 		break;
 	case EXYNOS8890_CALIB_MEMBER_MUX_SELECTOR:
 		if (value >= member->num_parents)
@@ -531,6 +583,7 @@ static int exynos8890_dvfs_bind_members(struct exynos8890_dvfs_clock *domain,
 		member = &domain->members[i];
 		member->type = desc->type;
 		member->max_value = desc->max_value;
+		member->allow_zero = desc->allow_zero;
 		member->clk = exynos8890_dvfs_get_clk(&desc->clock, g3d_hws);
 		if (IS_ERR(member->clk))
 			return PTR_ERR(member->clk);
@@ -580,7 +633,8 @@ exynos8890_dvfs_validate_rows(struct exynos8890_dvfs_clock *domain)
 			value = exynos8890_calib_member_value(calib, level, member);
 			switch (entry->type) {
 			case EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ:
-				if (value && value <= ULONG_MAX)
+				if ((!value && entry->allow_zero) ||
+				    (value && value <= ULONG_MAX))
 					continue;
 				break;
 			case EXYNOS8890_CALIB_MEMBER_MUX_SELECTOR:
@@ -621,6 +675,8 @@ exynos8890_dvfs_validate_rows(struct exynos8890_dvfs_clock *domain)
 
 			rate = exynos8890_calib_member_value(calib, level,
 							     member);
+			if (!rate && domain->members[member].allow_zero)
+				continue;
 			if (!rate || rate > ULONG_MAX) {
 				pr_err("exynos8890-dvfs: invalid %s PLL row %u for %s\n",
 				       calib->members[member].name, level,
@@ -652,6 +708,33 @@ exynos8890_dvfs_validate_rows(struct exynos8890_dvfs_clock *domain)
 				return -EBUSY;
 			}
 		}
+	}
+
+	return 0;
+}
+
+static int exynos8890_dvfs_claim_live_plls(
+		struct exynos8890_dvfs_clock *domain, unsigned int level)
+{
+	u64 value;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < domain->calib->num_members; i++) {
+		struct exynos8890_dvfs_member *member = &domain->members[i];
+
+		if (member->type != EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ ||
+		    !member->allow_zero)
+			continue;
+		value = exynos8890_calib_member_value(domain->calib, level, i);
+		if (!value)
+			continue;
+		ret = clk_prepare_enable(member->clk);
+		if (ret)
+			return ret;
+		member->gate_owned = true;
+		if (!exynos8890_dvfs_member_matches(member, value))
+			return -EUCLEAN;
 	}
 
 	return 0;
@@ -738,8 +821,10 @@ enum exynos8890_dvfs_stage {
 	DVFS_GATE_HIGH,
 	DVFS_DIV_HIGH,
 	DVFS_PLL_LOW,
+	DVFS_PLL_ENABLE,
 	DVFS_MUX_DIFF,
 	DVFS_PLL_HIGH,
+	DVFS_PLL_DISABLE,
 	DVFS_PLL_DIFF,
 	DVFS_DIV_LOW,
 	DVFS_GATE_LOW,
@@ -749,6 +834,7 @@ static int
 exynos8890_dvfs_get_member_value(struct exynos8890_dvfs_member *member,
 				 u64 *value)
 {
+	struct clk_hw *hw;
 	struct clk *parent;
 	unsigned long parent_rate;
 	unsigned long rate;
@@ -757,6 +843,11 @@ exynos8890_dvfs_get_member_value(struct exynos8890_dvfs_member *member,
 
 	switch (member->type) {
 	case EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ:
+		hw = __clk_get_hw(member->clk);
+		if (member->allow_zero && hw && !clk_hw_is_enabled(hw)) {
+			*value = 0;
+			return 0;
+		}
 		*value = clk_get_rate(member->clk);
 		return *value ? 0 : -EIO;
 	case EXYNOS8890_CALIB_MEMBER_MUX_SELECTOR:
@@ -805,13 +896,19 @@ static bool exynos8890_stage_applies(enum exynos8890_dvfs_stage stage,
 		       live_value < target;
 	case DVFS_PLL_LOW:
 		return type == EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ &&
-		       live_value > target;
+		       target && live_value > target;
+	case DVFS_PLL_ENABLE:
+		return type == EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ &&
+		       !live_value && target;
 	case DVFS_MUX_DIFF:
 		return type == EXYNOS8890_CALIB_MEMBER_MUX_SELECTOR &&
 		       live_value != target;
 	case DVFS_PLL_HIGH:
 		return type == EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ &&
-		       live_value < target;
+		       live_value && live_value < target;
+	case DVFS_PLL_DISABLE:
+		return type == EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ &&
+		       live_value && !target;
 	case DVFS_PLL_DIFF:
 		return type == EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ &&
 		       live_value != target;
@@ -868,8 +965,10 @@ exynos8890_dvfs_apply_no_switch(struct exynos8890_dvfs_clock *domain,
 		DVFS_GATE_HIGH,
 		DVFS_DIV_HIGH,
 		DVFS_PLL_LOW,
+		DVFS_PLL_ENABLE,
 		DVFS_MUX_DIFF,
 		DVFS_PLL_HIGH,
+		DVFS_PLL_DISABLE,
 		DVFS_DIV_LOW,
 		DVFS_GATE_LOW,
 	};
@@ -1200,10 +1299,11 @@ exynos8890_dvfs_prepare_plls(struct exynos8890_dvfs_clock *domain)
 	unsigned int i;
 	int ret;
 
-	/* Member clocks are not aggregate parents, so CCF cannot hold them. */
+	/* Allow-zero PLLs acquire their enable reference only while a row uses them. */
 	for (i = 0; i < domain->calib->num_members; i++) {
 		if (domain->members[i].type !=
-		    EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ)
+		    EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ ||
+		    domain->members[i].allow_zero)
 			continue;
 
 		ret = clk_prepare_enable(domain->members[i].clk);
@@ -1217,7 +1317,8 @@ unwind:
 	while (i > 0) {
 		i--;
 		if (domain->members[i].type ==
-		    EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ)
+		    EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ &&
+		    !domain->members[i].allow_zero)
 			clk_disable_unprepare(domain->members[i].clk);
 	}
 	return ret;
@@ -1230,7 +1331,8 @@ exynos8890_dvfs_unprepare_plls(struct exynos8890_dvfs_clock *domain)
 
 	for (i = domain->calib->num_members; i > 0; i--) {
 		if (domain->members[i - 1].type ==
-		    EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ)
+		    EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ &&
+		    !domain->members[i - 1].allow_zero)
 			clk_disable_unprepare(domain->members[i - 1].clk);
 	}
 }
@@ -1242,7 +1344,8 @@ exynos8890_dvfs_plls_are_prepared(struct exynos8890_dvfs_clock *domain)
 
 	for (i = 0; i < domain->calib->num_members; i++) {
 		if (domain->members[i].type !=
-		    EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ)
+		    EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ ||
+		    domain->members[i].allow_zero)
 			continue;
 		if (!__clk_is_enabled(domain->members[i].clk))
 			return 0;
@@ -1393,6 +1496,9 @@ exynos8890_dvfs_create(struct clk_hw **g3d_hws,
 		ret = level;
 		goto err_free;
 	}
+	ret = exynos8890_dvfs_claim_live_plls(domain, level);
+	if (ret)
+		goto err_free;
 	domain->current_rate = calib->opps[level].rate_hz;
 
 	domain->init.name = name;
