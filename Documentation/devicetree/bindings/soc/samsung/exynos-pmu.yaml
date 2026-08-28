@@ -45,6 +45,9 @@ properties:
           - const: samsung,exynos7-pmu
           - const: syscon
       - items:
+          - const: samsung,exynos8890-pmu-mngs
+          - const: syscon
+      - items:
           - enum:
               - samsung,exynos3250-pmu
               - samsung,exynos4210-pmu
@@ -116,6 +119,12 @@ properties:
     description:
       Phandle to PMU interrupt generation interface.
 
+  cpupm:
+    $ref: /schemas/power/samsung,exynos8890-cpupm.yaml#
+
+  pm:
+    $ref: /schemas/power/samsung,exynos8890-pm.yaml#
+
 required:
   - compatible
   - reg
@@ -123,6 +132,17 @@ required:
 additionalProperties: false
 
 allOf:
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              const: samsung,exynos8890-pmu
+    then:
+      properties:
+        cpupm: false
+        pm: false
+
   - if:
       properties:
         compatible:

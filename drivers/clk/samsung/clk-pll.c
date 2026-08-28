@@ -292,6 +292,11 @@ static int samsung_pll35xx_set_rate(struct clk_hw *hw, unsigned long drate,
 	tmp |= (rate->mdiv << mdiv_shift) |
 			(rate->pdiv << PLL35XX_PDIV_SHIFT) |
 			(rate->sdiv << PLL35XX_SDIV_SHIFT);
+	if (pll->type == pll_141xx) {
+		/* Preserve the Exynos8890 PWRCAL 141xx programming contract. */
+		tmp &= ~BIT(26);
+		tmp |= BIT(5);
+	}
 	writel_relaxed(tmp, pll->con_reg);
 
 	/* Wait for PLL lock if the PLL is enabled */

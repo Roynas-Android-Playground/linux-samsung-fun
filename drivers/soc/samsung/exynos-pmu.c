@@ -145,6 +145,11 @@ static const struct of_device_id exynos_pmu_of_device_ids[] = {
 		.data = exynos_pmu_data_arm_ptr(exynos5420_pmu_data),
 	}, {
 		.compatible = "samsung,exynos5433-pmu",
+#ifdef CONFIG_EXYNOS8890_PM
+	}, {
+		.compatible = "samsung,exynos8890-pmu",
+		.data = &exynos8890_pmu_data,
+#endif
 	}, {
 		.compatible = "samsung,exynos7-pmu",
 	}, {

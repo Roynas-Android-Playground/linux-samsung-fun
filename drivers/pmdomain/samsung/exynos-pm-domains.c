@@ -24,6 +24,8 @@ struct exynos_pm_domain_config {
 	u32 local_pwr_cfg;
 	/* Value written to OPTION before powering the domain on, if non-zero */
 	u32 power_on_option;
+	/* Whether the generic sequence is complete enough for a boot-off domain */
+	bool allow_boot_power_on;
 	unsigned int flags;
 };
 
@@ -88,8 +90,21 @@ static const struct exynos_pm_domain_config exynos5433_cfg = {
 };
 
 /*
- * Exynos8890 MFC needs OPTION=0x2 before LOCAL_PWR_CFG is asserted. Keep the
- * domain on until the SoC-specific power-off/Q-channel sequence is supported.
+ * Exynos8890 runtime domain transitions are intentionally not implemented.
+ * The vendor callbacks directly changed CMU muxes, PLLs, Q-channels and clock
+ * gates around the PMU LOCAL_PWR_CFG write; those PWRCAL objects are no longer
+ * built because CCF is the sole CMU owner.  Until each domain has a complete
+ * native sequence using clock/reset/interconnect APIs, every initially-on
+ * Exynos8890 domain below stays explicitly always-on.  A boot-off domain is
+ * withheld from genpd rather than powered through the incomplete generic
+ * sequence.  System sleep is independently blocked until its native owner
+ * choreography exists.
+ */
+
+/*
+ * Exynos8890 MFC needs OPTION=0x2 before LOCAL_PWR_CFG is asserted. Keep an
+ * initially-on domain on until the SoC-specific power/Q-channel sequence is
+ * supported.
  */
 static const struct exynos_pm_domain_config exynos8890_mfc_cfg = {
 	.local_pwr_cfg		= 0xf,
@@ -113,9 +128,20 @@ static const struct exynos_pm_domain_config exynos8890_disp_cfg = {
 	.flags			= GENPD_FLAG_ALWAYS_ON,
 };
 
-// AUD: same OPTION=0x2/always-on quirk as the domains above (vendor's aud_config(),
-// S5E8890-pmu.c:991-995 - aud_post()'s extra work is the same class of clock-gate
-// housekeeping already skipped for MFC/DISP/CAM/ISP)
+/*
+ * CAM0/CAM1/ISP0/ISP1 have the same OPTION=0x2/always-on constraint as
+ * MFC/DISP above, confirmed against the vendor's S5E8890-pmu.c.
+ */
+static const struct exynos_pm_domain_config exynos8890_cam_isp_cfg = {
+	.local_pwr_cfg		= 0xf,
+	.power_on_option	= 0x2,
+	.flags			= GENPD_FLAG_ALWAYS_ON,
+};
+
+/*
+ * AUD has the same OPTION=0x2/always-on constraint.  Its vendor post callback
+ * also performs the CMU clock-gate housekeeping deliberately omitted here.
+ */
 static const struct exynos_pm_domain_config exynos8890_aud_cfg = {
 	.local_pwr_cfg		= 0xf,
 	.power_on_option	= 0x2,
@@ -135,6 +161,9 @@ static const struct of_device_id exynos_pm_domain_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8890-disp-pd",
 		.data = &exynos8890_disp_cfg,
+	}, {
+		.compatible = "samsung,exynos8890-cam-isp-pd",
+		.data = &exynos8890_cam_isp_cfg,
 	}, {
 		.compatible = "samsung,exynos8890-aud-pd",
 		.data = &exynos8890_aud_cfg,
@@ -159,7 +188,9 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	struct of_phandle_args child, parent;
 	struct exynos_pm_domain *pd;
-	int on, ret;
+	u32 status;
+	bool on;
+	int ret;
 
 	pm_domain_cfg = of_device_get_match_data(dev);
 	pd = devm_kzalloc(dev, sizeof(*pd), GFP_KERNEL);
@@ -189,25 +220,39 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	    of_device_is_compatible(np, "samsung,exynos4210-pd"))
 		exynos_pd_power_off(&pd->pd);
 
-	on = readl_relaxed(pd->base + 0x4) & pd->local_pwr_cfg;
+	status = readl_relaxed(pd->base + 0x4);
+	on = (status & pd->local_pwr_cfg) == pd->local_pwr_cfg;
 
-	/*
-	 * An always-on domain still needs to be physically enabled before its
-	 * consumers probe. This is particularly important for Exynos8890 SYSMMU,
-	 * which reads its version register during probe before runtime PM starts.
-	 */
+	/* Never expose a boot-off domain through a known-incomplete sequence. */
 	if (!on && (pd->pd.flags & GENPD_FLAG_ALWAYS_ON)) {
+		if (!pm_domain_cfg->allow_boot_power_on) {
+			dev_warn(dev,
+				 "boot-off domain withheld: native power-on sequence is incomplete\n");
+			iounmap(pd->base);
+			return -ENODEV;
+		}
+
 		ret = exynos_pd_power_on(&pd->pd);
 		if (ret)
-			return ret;
-		on = readl_relaxed(pd->base + 0x4) & pd->local_pwr_cfg;
+			goto unmap;
+		status = readl_relaxed(pd->base + 0x4);
+		on = (status & pd->local_pwr_cfg) == pd->local_pwr_cfg;
+		if (!on) {
+			ret = -EIO;
+			goto unmap;
+		}
 	}
 
-	pm_genpd_init(&pd->pd, NULL, !on);
-	ret = of_genpd_add_provider_simple(np, &pd->pd);
+	ret = pm_genpd_init(&pd->pd, NULL, !on);
+	if (ret)
+		goto unmap;
 
-	if (ret == 0 && of_parse_phandle_with_args(np, "power-domains",
-				      "#power-domain-cells", 0, &parent) == 0) {
+	ret = of_genpd_add_provider_simple(np, &pd->pd);
+	if (ret)
+		goto remove_genpd;
+
+	if (!of_parse_phandle_with_args(np, "power-domains",
+					"#power-domain-cells", 0, &parent)) {
 		child.np = np;
 		child.args_count = 0;
 
@@ -217,9 +262,16 @@ static int exynos_pd_probe(struct platform_device *pdev)
 		else
 			pr_info("%pOF has as child subdomain: %pOF.\n",
 				parent.np, child.np);
+		of_node_put(parent.np);
 	}
 
 	pm_runtime_enable(dev);
+	return 0;
+
+remove_genpd:
+	pm_genpd_remove(&pd->pd);
+unmap:
+	iounmap(pd->base);
 	return ret;
 }
 

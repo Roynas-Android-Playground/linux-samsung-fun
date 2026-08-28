@@ -4,14 +4,18 @@ obj-$(CONFIG_EXYNOS_ASV_ARM)	+= exynos5422-asv.o
 obj-$(CONFIG_EXYNOS_CHIPID)	+= exynos_chipid.o
 exynos_chipid-y			+= exynos-chipid.o exynos-asv.o
 obj-$(CONFIG_EXYNOS8890_ECT)	+= exynos8890-ect.o
+obj-$(CONFIG_EXYNOS8890_CALIBRATION) += exynos8890-calibration.o
 obj-$(CONFIG_EXYNOS8890_CPUIDLE)	+= exynos8890-cpuidle.o
 obj-$(CONFIG_EXYNOS8890_CPUPM)	+= exynos8890-cpupm.o
+obj-$(CONFIG_EXYNOS8890_PM)	+= exynos8890-pm.o
 obj-$(CONFIG_EXYNOS8890_CPCTL)	+= exynos8890-cpctl.o
+obj-$(CONFIG_EXYNOS8890_APM)	+= exynos8890-apm.o
 
 obj-$(CONFIG_EXYNOS_USI)	+= exynos-usi.o
 
 obj-$(CONFIG_EXYNOS_PMU)	+= exynos_pmu.o
 exynos_pmu-y			+= exynos-pmu.o gs101-pmu.o
+exynos_pmu-$(CONFIG_EXYNOS8890_PM) += exynos8890-pmu.o
 
 obj-$(CONFIG_EXYNOS_PMU_ARM_DRIVERS)	+= exynos3250-pmu.o exynos4-pmu.o \
 					exynos5250-pmu.o exynos5420-pmu.o

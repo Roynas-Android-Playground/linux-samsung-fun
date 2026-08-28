@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/clock/samsung,exynos8890-cpu-clock.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 aggregate CPU clocks
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  The provider exposes one aggregate clock for each Exynos8890 CPU cluster.
+  A set-rate operation owns the complete characterized BUS-PLL safe-switch,
+  divider, PLL-lock and switch-back transaction. Member names are explicit
+  mappings for the immutable Exynos8890 calibration table and must remain in
+  the order shown below.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-cpu-clock
+
+  '#clock-cells':
+    const: 1
+
+  clocks:
+    minItems: 38
+    maxItems: 38
+
+  clock-names:
+    items:
+      - const: apollo-pll
+      - const: apollo-pll-user
+      - const: apollo-bus-user
+      - const: apollo-mux
+      - const: apollo-root
+      - const: apollo-switch-mux
+      - const: apollo-switch-div
+      - const: apollo-switch-gate
+      - const: mongoose-pll
+      - const: mongoose-pll-user
+      - const: mongoose-bus-user
+      - const: mongoose-mux
+      - const: mongoose-root
+      - const: mongoose-switch-mux
+      - const: mongoose-switch-div
+      - const: mongoose-switch-gate
+      - const: APOLLO_PLL
+      - const: APOLLO_DIV_ACLK_APOLLO
+      - const: APOLLO_DIV_PCLK_APOLLO
+      - const: APOLLO_DIV_ATCLK_APOLLO
+      - const: APOLLO_DIV_PCLK_DBG_APOLLO
+      - const: APOLLO_DIV_CNTCLK_APOLLO
+      - const: APOLLO_DIV_APOLLO_PLL
+      - const: APOLLO_DIV_SCLK_PROMISE_APOLLO
+      - const: APOLLO_DIV_APOLLO_RUN_MONITOR
+      - const: MNGS_PLL
+      - const: MNGS_DIV_MNGS
+      - const: MNGS_DIV_ACLK_MNGS
+      - const: MNGS_DIV_PCLK_MNGS
+      - const: MNGS_DIV_ATCLK_MNGS_CORE
+      - const: MNGS_DIV_PCLK_DBG_MNGS
+      - const: MNGS_DIV_CNTCLK_MNGS
+      - const: MNGS_DIV_MNGS_PLL
+      - const: MNGS_DIV_SCLK_PROMISE_MNGS
+      - const: MNGS_DIV_ATCLK_MNGS_SOC
+      - const: MNGS_DIV_ATCLK_MNGS_CSSYS_TRACECLK
+      - const: MNGS_DIV_ATCLK_MNGS_ASYNCATB_CAM1
+      - const: MNGS_DIV_ATCLK_MNGS_ASYNCATB_AUD
+
+  samsung,apollo-sysreg:
+    description: Phandle to the Apollo cluster system-register syscon.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,mongoose-sysreg:
+    description: Phandle to the Mongoose cluster system-register syscon.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,apollo-cmu:
+    description: |
+      Apollo CMU containing the characterized SMPL control register.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  samsung,mongoose-cmu:
+    description: |
+      Mongoose CMU containing the characterized SMPL control register.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+required:
+  - compatible
+  - '#clock-cells'
+  - clocks
+  - clock-names
+  - samsung,apollo-sysreg
+  - samsung,mongoose-sysreg
+  - samsung,apollo-cmu
+  - samsung,mongoose-cmu
+
+additionalProperties: false

@@ -1,0 +1,451 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Exynos8890 PMU system-sleep policy.
+ *
+ * This is the PMU-only subset of the vendor system-power sequence.  Functional
+ * clock, Q-channel, PLL, DREX, PSCDC and DDR-PHY state is deliberately absent:
+ * CCF and the owning device drivers save and restore those blocks.
+ */
+
+#include <linux/bitops.h>
+#include <linux/kernel.h>
+#include <linux/types.h>
+
+#include <linux/soc/samsung/exynos-pmu.h>
+
+#include "exynos-pmu.h"
+#include "exynos8890-pmu.h"
+
+#define EXYNOS8890_PMU_SYNC_CTRL			0x0020
+#define EXYNOS8890_UP_SCHEDULER			0x0120
+#define EXYNOS8890_CENTRAL_SEQ_CONFIGURATION		0x0200
+#define EXYNOS8890_CENTRAL_SEQ_OPTION			0x0208
+#define EXYNOS8890_CENTRAL_SEQ_OPTION1			0x020c
+#define EXYNOS8890_CENTRAL_SEQ_MIF_CONFIGURATION	0x0240
+#define EXYNOS8890_CENTRAL_SEQ_MIF_OPTION		0x0248
+#define EXYNOS8890_WAKEUP_MASK				0x0610
+#define EXYNOS8890_WAKEUP_MASK_MIF			0x0628
+
+#define EXYNOS8890_MNGS_NONCPU_OPTION			0x2408
+#define EXYNOS8890_MNGS_NONCPU_DURATION0		0x2410
+#define EXYNOS8890_APOLLO_NONCPU_OPTION			0x2428
+#define EXYNOS8890_APOLLO_NONCPU_DURATION0		0x2430
+#define EXYNOS8890_MNGS_L2_OPTION			0x2608
+#define EXYNOS8890_APOLLO_L2_OPTION			0x2628
+
+#define EXYNOS8890_TOP_BUS_MIF_OPTION			0x2c88
+#define EXYNOS8890_TOP_PWR_OPTION			0x2c48
+#define EXYNOS8890_TOP_PWR_MIF_OPTION			0x2cc8
+#define EXYNOS8890_MEMORY_TOP_OPTION			0x2e08
+#define EXYNOS8890_PWR_DDRPHY_OPTION			0x2fe8
+#define EXYNOS8890_PAD_RETENTION_MIF_OPTION		0x31e8
+#define EXYNOS8890_PS_HOLD_CONTROL			0x330c
+#define EXYNOS8890_CAM0_OPTION				0x4028
+#define EXYNOS8890_MSCL_OPTION				0x4048
+#define EXYNOS8890_G3D_OPTION				0x4068
+#define EXYNOS8890_DISP0_OPTION				0x4088
+#define EXYNOS8890_CAM1_OPTION				0x40a8
+#define EXYNOS8890_AUD_OPTION				0x40c8
+#define EXYNOS8890_FSYS0_OPTION				0x40e8
+#define EXYNOS8890_BUS0_OPTION				0x4108
+#define EXYNOS8890_ISP0_OPTION				0x4148
+#define EXYNOS8890_ISP1_OPTION				0x4168
+#define EXYNOS8890_MFC_OPTION				0x4188
+#define EXYNOS8890_DISP1_OPTION				0x41a8
+#define EXYNOS8890_FSYS1_OPTION				0x41c8
+
+#define EXYNOS8890_CENTRAL_SEQ_ENABLE			BIT(16)
+
+struct exynos8890_sleep_conf {
+	u16 offset;
+	u8 value;
+};
+
+/*
+ * SYS_SLEEP column of Cronos S5E8890-syspwr.c.  Writing zero-valued entries is
+ * intentional: the sequencer retains these registers across shallower modes.
+ */
+static const struct exynos8890_sleep_conf exynos8890_sleep_config[] = {
+	{ 0x1000, 0x8 }, /* MNGS_CPU0_SYS_PWR_REG */
+	{ 0x1004, 0x0 }, /* DIS_IRQ_MNGS_CPU0_LOCAL_SYS_PWR_REG */
+	{ 0x1008, 0x0 }, /* DIS_IRQ_MNGS_CPU0_CENTRAL_SYS_PWR_REG */
+	{ 0x100C, 0x0 }, /* DIS_IRQ_MNGS_CPU0_CPUSEQUENCER_SYS_PWR_REG */
+	{ 0x1010, 0x8 }, /* MNGS_CPU1_SYS_PWR_REG */
+	{ 0x1014, 0x0 }, /* DIS_IRQ_MNGS_CPU1_LOCAL_SYS_PWR_REG */
+	{ 0x1018, 0x0 }, /* DIS_IRQ_MNGS_CPU1_CENTRAL_SYS_PWR_REG */
+	{ 0x101C, 0x0 }, /* DIS_IRQ_MNGS_CPU1_CPUSEQUENCER_SYS_PWR_REG */
+	{ 0x1020, 0x8 }, /* MNGS_CPU2_SYS_PWR_REG */
+	{ 0x1024, 0x0 }, /* DIS_IRQ_MNGS_CPU2_LOCAL_SYS_PWR_REG */
+	{ 0x1028, 0x0 }, /* DIS_IRQ_MNGS_CPU2_CENTRAL_SYS_PWR_REG */
+	{ 0x102C, 0x0 }, /* DIS_IRQ_MNGS_CPU2_CPUSEQUENCER_SYS_PWR_REG */
+	{ 0x1030, 0x8 }, /* MNGS_CPU3_SYS_PWR_REG */
+	{ 0x1034, 0x0 }, /* DIS_IRQ_MNGS_CPU3_LOCAL_SYS_PWR_REG */
+	{ 0x1038, 0x0 }, /* DIS_IRQ_MNGS_CPU3_CENTRAL_SYS_PWR_REG */
+	{ 0x103C, 0x0 }, /* DIS_IRQ_MNGS_CPU3_CPUSEQUENCER_SYS_PWR_REG */
+	{ 0x1040, 0x8 }, /* APOLLO_CPU0_SYS_PWR_REG */
+	{ 0x1044, 0x0 }, /* DIS_IRQ_APOLLO_CPU0_LOCAL_SYS_PWR_REG */
+	{ 0x1048, 0x0 }, /* DIS_IRQ_APOLLO_CPU0_CENTRAL_SYS_PWR_REG */
+	{ 0x104C, 0x0 }, /* DIS_IRQ_APOLLO_CPU0_CPUSEQUENCER_SYS_PWR_REG */
+	{ 0x1050, 0x8 }, /* APOLLO_CPU1_SYS_PWR_REG */
+	{ 0x1054, 0x0 }, /* DIS_IRQ_APOLLO_CPU1_LOCAL_SYS_PWR_REG */
+	{ 0x1058, 0x0 }, /* DIS_IRQ_APOLLO_CPU1_CENTRAL_SYS_PWR_REG */
+	{ 0x105C, 0x0 }, /* DIS_IRQ_APOLLO_CPU1_CPUSEQUENCER_SYS_PWR_REG */
+	{ 0x1060, 0x8 }, /* APOLLO_CPU2_SYS_PWR_REG */
+	{ 0x1064, 0x0 }, /* DIS_IRQ_APOLLO_CPU2_LOCAL_SYS_PWR_REG */
+	{ 0x1068, 0x0 }, /* DIS_IRQ_APOLLO_CPU2_CENTRAL_SYS_PWR_REG */
+	{ 0x106C, 0x0 }, /* DIS_IRQ_APOLLO_CPU2_CPUSEQUENCER_SYS_PWR_REG */
+	{ 0x1070, 0x8 }, /* APOLLO_CPU3_SYS_PWR_REG */
+	{ 0x1074, 0x0 }, /* DIS_IRQ_APOLLO_CPU3_LOCAL_SYS_PWR_REG */
+	{ 0x1078, 0x0 }, /* DIS_IRQ_APOLLO_CPU3_CENTRAL_SYS_PWR_REG */
+	{ 0x107C, 0x0 }, /* DIS_IRQ_APOLLO_CPU3_CPUSEQUENCER_SYS_PWR_REG */
+	{ 0x1080, 0x8 }, /* MNGS_NONCPU_SYS_PWR_REG */
+	{ 0x1084, 0x8 }, /* APOLLO_NONCPU_SYS_PWR_REG */
+	{ 0x1088, 0x2 }, /* MNGS_DBG_SYS_PWR_REG */
+	{ 0x10A0, 0x0 }, /* CORTEXM3_APM_SYS_PWR_REG */
+	{ 0x10B0, 0x0 }, /* A7IS_SYS_PWR_REG */
+	{ 0x10B4, 0x0 }, /* DIS_IRQ_A7IS_LOCAL_SYS_PWR_REG */
+	{ 0x10B8, 0x0 }, /* DIS_IRQ_A7IS_CENTRAL_SYS_PWR_REG */
+	{ 0x10C0, 0x7 }, /* MNGS_L2_SYS_PWR_REG */
+	{ 0x10C4, 0x7 }, /* APOLLO_L2_SYS_PWR_REG */
+	{ 0x10D0, 0x0 }, /* MNGS_L2_PWR_SYS_PWR_REG */
+	{ 0x1100, 0x0 }, /* CLKSTOP_CMU_TOP_SYS_PWR_REG */
+	{ 0x1104, 0x0 }, /* CLKRUN_CMU_TOP_SYS_PWR_REG */
+	{ 0x1108, 0x3 }, /* RETENTION_CMU_TOP_SYS_PWR_REG */
+	{ 0x110C, 0x0 }, /* RESET_CMU_TOP_SYS_PWR_REG */
+	{ 0x111C, 0x0 }, /* RESET_CPUCLKSTOP_SYS_PWR_REG */
+	{ 0x1120, 0x1 }, /* CLKSTOP_CMU_MIF_SYS_PWR_REG */
+	{ 0x1124, 0x1 }, /* CLKRUN_CMU_MIF_SYS_PWR_REG */
+	{ 0x1128, 0x3 }, /* RETENTION_CMU_MIF_SYS_PWR_REG */
+	{ 0x112C, 0x0 }, /* RESET_CMU_MIF_SYS_PWR_REG */
+	{ 0x1130, 0x0 }, /* DDRPHY_CLKSTOP_SYS_PWR_REG */
+	{ 0x1134, 0x1 }, /* DDRPHY_ISO_SYS_PWR_REG */
+	{ 0x1138, 0x1 }, /* DDRPHY_SOC2_ISO_SYS_PWR_REG */
+	{ 0x113C, 0x0 }, /* DDRPHY_DLL_CLK_SYS_PWR_REG */
+	{ 0x1140, 0x0 }, /* DISABLE_PLL_CMU_TOP_SYS_PWR_REG */
+	{ 0x1144, 0x0 }, /* DISABLE_PLL_AUD_PLL_SYS_PWR_REG */
+	{ 0x1160, 0x0 }, /* DISABLE_PLL_CMU_MIF_SYS_PWR_REG */
+	{ 0x1170, 0x3 }, /* RESET_AHEAD_CP_SYS_PWR_REG */
+	{ 0x1180, 0x0 }, /* TOP_BUS_SYS_PWR_REG */
+	{ 0x1184, 0x3 }, /* TOP_RETENTION_SYS_PWR_REG */
+	{ 0x1188, 0x3 }, /* TOP_PWR_SYS_PWR_REG */
+	{ 0x118C, 0x3 }, /* CMU_PWR_SYS_PWR_REG */
+	{ 0x1190, 0x0 }, /* TOP_BUS_MIF_SYS_PWR_REG */
+	{ 0x1194, 0x3 }, /* TOP_RETENTION_MIF_SYS_PWR_REG */
+	{ 0x1198, 0x3 }, /* TOP_PWR_MIF_SYS_PWR_REG */
+	{ 0x119C, 0x0 }, /* PSCDC_MIF_SYS_PWR_REG */
+	{ 0x11A0, 0x0 }, /* LOGIC_RESET_SYS_PWR_REG */
+	{ 0x11A4, 0x0 }, /* OSCCLK_GATE_SYS_PWR_REG */
+	{ 0x11A8, 0x0 }, /* SLEEP_RESET_SYS_PWR_REG */
+	{ 0x11B0, 0x0 }, /* LOGIC_RESET_MIF_SYS_PWR_REG */
+	{ 0x11B4, 0x1 }, /* OSCCLK_GATE_MIF_SYS_PWR_REG */
+	{ 0x11B8, 0x0 }, /* SLEEP_RESET_MIF_SYS_PWR_REG */
+	{ 0x11C0, 0x0 }, /* MEMORY_TOP_SYS_PWR_REG */
+	{ 0x11CC, 0x1 }, /* CLEANY_BUS_SYS_PWR_REG */
+	{ 0x11D0, 0x3 }, /* LOGIC_RESET_CP_SYS_PWR_REG */
+	{ 0x11D4, 0x1 }, /* TCXO_GATE_SYS_PWR_REG */
+	{ 0x11D8, 0x3 }, /* RESET_ASB_CP_SYS_PWR_REG */
+	{ 0x11DC, 0x0 }, /* RESET_ASB_MIF_SYS_PWR_REG */
+	{ 0x11E0, 0x0 }, /* MEMORY_IMEM_ALIVEIRAM_SYS_PWR_REG */
+	{ 0x11E4, 0x3 }, /* MEMORY_MIF_TOP_SYS_PWR_REG */
+	{ 0x11F0, 0x0 }, /* LOGIC_RESET_DDRPHY_SYS_PWR_REG */
+	{ 0x11F4, 0x3 }, /* RETENTION_DDRPHY_SYS_PWR_REG */
+	{ 0x11FC, 0x3 }, /* PWR_DDRPHY_SYS_PWR_REG */
+	{ 0x1200, 0x0 }, /* PAD_RETENTION_LPDDR4_SYS_PWR_REG */
+	{ 0x1204, 0x0 }, /* PAD_RETENTION_AUD_SYS_PWR_REG */
+	{ 0x1208, 0x0 }, /* PAD_RETENTION_JTAG_SYS_PWR_REG */
+	{ 0x120C, 0x0 }, /* PAD_RETENTION_PCIE_SYS_PWR_REG */
+	{ 0x1210, 0x0 }, /* PAD_RETENTION_UFS_CARD_SYS_PWR_REG */
+	{ 0x1218, 0x0 }, /* PAD_RETENTION_MMC2_SYS_PWR_REG */
+	{ 0x1220, 0x0 }, /* PAD_RETENTION_TOP_SYS_PWR_REG */
+	{ 0x1224, 0x0 }, /* PAD_RETENTION_UART_SYS_PWR_REG */
+	{ 0x1228, 0x0 }, /* PAD_RETENTION_MMC0_SYS_PWR_REG */
+	{ 0x1230, 0x0 }, /* PAD_RETENTION_EBIA_SYS_PWR_REG */
+	{ 0x1234, 0x0 }, /* PAD_RETENTION_EBIB_SYS_PWR_REG */
+	{ 0x1238, 0x0 }, /* PAD_RETENTION_SPI_SYS_PWR_REG */
+	{ 0x123C, 0x0 }, /* PAD_RETENTION_MIF_SYS_PWR_REG */
+	{ 0x1240, 0x1 }, /* PAD_ISOLATION_SYS_PWR_REG */
+	{ 0x1248, 0x0 }, /* PAD_RETENTION_BOOTLDO_0_SYS_PWR_REG */
+	{ 0x124C, 0x0 }, /* PAD_RETENTION_UFS_SYS_PWR_REG */
+	{ 0x1250, 0x1 }, /* PAD_ISOLATION_MIF_SYS_PWR_REG */
+	{ 0x1254, 0x0 }, /* PAD_RETENTION_USB_SYS_PWR_REG */
+	{ 0x1258, 0x0 }, /* PAD_RETENTION_BOOTLDO_1_SYS_PWR_REG */
+	{ 0x1260, 0x0 }, /* PAD_ALV_SEL_SYS_PWR_REG */
+	{ 0x1284, 0x0 }, /* XXTI_SYS_PWR_REG */
+	{ 0x128C, 0x0 }, /* TCXO_SYS_PWR_REG */
+	{ 0x12C0, 0x0 }, /* EXT_REGULATOR_SYS_PWR_REG */
+	{ 0x12C4, 0x0 }, /* EXT_REGULATOR_MIF_SYS_PWR_REG */
+	{ 0x1300, 0x0 }, /* GPIO_MODE_SYS_PWR_REG */
+	{ 0x1304, 0x0 }, /* GPIO_MODE_FSYS0_SYS_PWR_REG */
+	{ 0x1308, 0x0 }, /* GPIO_MODE_FSYS1_SYS_PWR_REG */
+	{ 0x1320, 0x0 }, /* GPIO_MODE_MIF_SYS_PWR_REG */
+	{ 0x1340, 0x0 }, /* GPIO_MODE_AUD_SYS_PWR_REG */
+	{ 0x1380, 0x0 }, /* CLKSTOP_OPEN_CMU_TOP_SYS_PWR_REG */
+	{ 0x1384, 0x0 }, /* CLKSTOP_OPEN_CMU_MIF_SYS_PWR_REG */
+	{ 0x1388, 0x0 }, /* CLKSTOP_OPEN_CMU_CAM0_SYS_PWR_REG */
+	{ 0x138C, 0x0 }, /* CLKSTOP_OPEN_CMU_MSCL_SYS_PWR_REG */
+	{ 0x1390, 0x0 }, /* CLKSTOP_OPEN_CMU_G3D_SYS_PWR_REG */
+	{ 0x1394, 0x0 }, /* CLKSTOP_OPEN_CMU_DISP0_SYS_PWR_REG */
+	{ 0x1398, 0x0 }, /* CLKSTOP_OPEN_CMU_CAM1_SYS_PWR_REG */
+	{ 0x139C, 0x0 }, /* CLKSTOP_OPEN_CMU_AUD_SYS_PWR_REG */
+	{ 0x13A0, 0x0 }, /* CLKSTOP_OPEN_CMU_FSYS0_SYS_PWR_REG */
+	{ 0x13A4, 0x0 }, /* CLKSTOP_OPEN_CMU_BUS0_SYS_PWR_REG */
+	{ 0x13A8, 0x0 }, /* CLKSTOP_OPEN_CMU_ISP0_SYS_PWR_REG */
+	{ 0x13AC, 0x0 }, /* CLKSTOP_OPEN_CMU_ISP1_SYS_PWR_REG */
+	{ 0x13B0, 0x0 }, /* CLKSTOP_OPEN_CMU_MFC_SYS_PWR_REG */
+	{ 0x13B4, 0x0 }, /* CLKSTOP_OPEN_CMU_DISP1_SYS_PWR_REG */
+	{ 0x13B8, 0x0 }, /* CLKSTOP_OPEN_CMU_FSYS1_SYS_PWR_REG */
+	{ 0x1404, 0x0 }, /* CAM0_SYS_PWR_REG */
+	{ 0x1408, 0x0 }, /* MSCL_SYS_PWR_REG */
+	{ 0x140C, 0x0 }, /* G3D_SYS_PWR_REG */
+	{ 0x1410, 0x0 }, /* DISP0_SYS_PWR_REG */
+	{ 0x1414, 0x0 }, /* CAM1_SYS_PWR_REG */
+	{ 0x1418, 0x0 }, /* AUD_SYS_PWR_REG */
+	{ 0x141C, 0x0 }, /* FSYS0_SYS_PWR_REG */
+	{ 0x1420, 0x0 }, /* BUS0_SYS_PWR_REG */
+	{ 0x1424, 0x0 }, /* ISP0_SYS_PWR_REG */
+	{ 0x1428, 0x0 }, /* ISP1_SYS_PWR_REG */
+	{ 0x142C, 0x0 }, /* MFC_SYS_PWR_REG */
+	{ 0x1430, 0x0 }, /* DISP1_SYS_PWR_REG */
+	{ 0x1434, 0x0 }, /* FSYS1_SYS_PWR_REG */
+	{ 0x1444, 0x0 }, /* CLKRUN_CMU_CAM0_SYS_PWR_REG */
+	{ 0x1448, 0x0 }, /* CLKRUN_CMU_MSCL_SYS_PWR_REG */
+	{ 0x144C, 0x0 }, /* CLKRUN_CMU_G3D_SYS_PWR_REG */
+	{ 0x1450, 0x0 }, /* CLKRUN_CMU_DISP0_SYS_PWR_REG */
+	{ 0x1454, 0x0 }, /* CLKRUN_CMU_CAM1_SYS_PWR_REG */
+	{ 0x1458, 0x0 }, /* CLKRUN_CMU_AUD_SYS_PWR_REG */
+	{ 0x145C, 0x0 }, /* CLKRUN_CMU_FSYS0_SYS_PWR_REG */
+	{ 0x1460, 0x0 }, /* CLKRUN_CMU_BUS0_SYS_PWR_REG */
+	{ 0x1468, 0x0 }, /* CLKRUN_CMU_ISP0_SYS_PWR_REG */
+	{ 0x146C, 0x0 }, /* CLKRUN_CMU_ISP1_SYS_PWR_REG */
+	{ 0x1470, 0x0 }, /* CLKRUN_CMU_MFC_SYS_PWR_REG */
+	{ 0x1474, 0x0 }, /* CLKRUN_CMU_DISP1_SYS_PWR_REG */
+	{ 0x1478, 0x0 }, /* CLKRUN_CMU_FSYS1_SYS_PWR_REG */
+	{ 0x1484, 0x0 }, /* CLKSTOP_CMU_CAM0_SYS_PWR_REG */
+	{ 0x1488, 0x0 }, /* CLKSTOP_CMU_MSCL_SYS_PWR_REG */
+	{ 0x148C, 0x0 }, /* CLKSTOP_CMU_G3D_SYS_PWR_REG */
+	{ 0x1490, 0x0 }, /* CLKSTOP_CMU_DISP0_SYS_PWR_REG */
+	{ 0x1494, 0x0 }, /* CLKSTOP_CMU_CAM1_SYS_PWR_REG */
+	{ 0x1498, 0x0 }, /* CLKSTOP_CMU_AUD_SYS_PWR_REG */
+	{ 0x149C, 0x0 }, /* CLKSTOP_CMU_FSYS0_SYS_PWR_REG */
+	{ 0x14A0, 0x0 }, /* CLKSTOP_CMU_BUS0_SYS_PWR_REG */
+	{ 0x14A8, 0x0 }, /* CLKSTOP_CMU_ISP0_SYS_PWR_REG */
+	{ 0x14AC, 0x0 }, /* CLKSTOP_CMU_ISP1_SYS_PWR_REG */
+	{ 0x14B0, 0x0 }, /* CLKSTOP_CMU_MFC_SYS_PWR_REG */
+	{ 0x14B4, 0x0 }, /* CLKSTOP_CMU_DISP1_SYS_PWR_REG */
+	{ 0x14B8, 0x0 }, /* CLKSTOP_CMU_FSYS1_SYS_PWR_REG */
+	{ 0x14C4, 0x0 }, /* DISABLE_PLL_CMU_CAM0_SYS_PWR_REG */
+	{ 0x14C8, 0x0 }, /* DISABLE_PLL_CMU_MSCL_SYS_PWR_REG */
+	{ 0x14CC, 0x0 }, /* DISABLE_PLL_CMU_G3D_SYS_PWR_REG */
+	{ 0x14D0, 0x0 }, /* DISABLE_PLL_CMU_DISP0_SYS_PWR_REG */
+	{ 0x14D4, 0x0 }, /* DISABLE_PLL_CMU_CAM1_SYS_PWR_REG */
+	{ 0x14D8, 0x0 }, /* DISABLE_PLL_CMU_AUD_SYS_PWR_REG */
+	{ 0x14DC, 0x0 }, /* DISABLE_PLL_CMU_FSYS0_SYS_PWR_REG */
+	{ 0x14E0, 0x0 }, /* DISABLE_PLL_CMU_BUS0_SYS_PWR_REG */
+	{ 0x14E8, 0x0 }, /* DISABLE_PLL_CMU_ISP0_SYS_PWR_REG */
+	{ 0x14EC, 0x0 }, /* DISABLE_PLL_CMU_ISP1_SYS_PWR_REG */
+	{ 0x14F0, 0x0 }, /* DISABLE_PLL_CMU_MFC_SYS_PWR_REG */
+	{ 0x14F4, 0x0 }, /* DISABLE_PLL_CMU_DISP1_SYS_PWR_REG */
+	{ 0x14F8, 0x0 }, /* DISABLE_PLL_CMU_FSYS1_SYS_PWR_REG */
+	{ 0x1504, 0x0 }, /* RESET_LOGIC_CAM0_SYS_PWR_REG */
+	{ 0x1508, 0x0 }, /* RESET_LOGIC_MSCL_SYS_PWR_REG */
+	{ 0x150C, 0x0 }, /* RESET_LOGIC_G3D_SYS_PWR_REG */
+	{ 0x1510, 0x0 }, /* RESET_LOGIC_DISP0_SYS_PWR_REG */
+	{ 0x1514, 0x0 }, /* RESET_LOGIC_CAM1_SYS_PWR_REG */
+	{ 0x1518, 0x0 }, /* RESET_LOGIC_AUD_SYS_PWR_REG */
+	{ 0x151C, 0x0 }, /* RESET_LOGIC_FSYS0_SYS_PWR_REG */
+	{ 0x1520, 0x0 }, /* RESET_LOGIC_BUS0_SYS_PWR_REG */
+	{ 0x1528, 0x0 }, /* RESET_LOGIC_ISP0_SYS_PWR_REG */
+	{ 0x152C, 0x0 }, /* RESET_LOGIC_ISP1_SYS_PWR_REG */
+	{ 0x1530, 0x0 }, /* RESET_LOGIC_MFC_SYS_PWR_REG */
+	{ 0x1534, 0x0 }, /* RESET_LOGIC_DISP1_SYS_PWR_REG */
+	{ 0x1538, 0x0 }, /* RESET_LOGIC_FSYS1_SYS_PWR_REG */
+	{ 0x1544, 0x0 }, /* MEMORY_CAM0_SYS_PWR_REG */
+	{ 0x1548, 0x0 }, /* MEMORY_MSCL_SYS_PWR_REG */
+	{ 0x154C, 0x0 }, /* MEMORY_G3D_SYS_PWR_REG */
+	{ 0x1550, 0x0 }, /* MEMORY_DISP0_SYS_PWR_REG */
+	{ 0x1554, 0x0 }, /* MEMORY_CAM1_SYS_PWR_REG */
+	{ 0x1558, 0x0 }, /* MEMORY_AUD_SYS_PWR_REG */
+	{ 0x155C, 0x0 }, /* MEMORY_FSYS0_SYS_PWR_REG */
+	{ 0x1560, 0x0 }, /* MEMORY_BUS0_SYS_PWR_REG */
+	{ 0x1568, 0x0 }, /* MEMORY_ISP0_SYS_PWR_REG */
+	{ 0x156C, 0x0 }, /* MEMORY_ISP1_SYS_PWR_REG */
+	{ 0x1570, 0x0 }, /* MEMORY_MFC_SYS_PWR_REG */
+	{ 0x1574, 0x0 }, /* MEMORY_DISP1_SYS_PWR_REG */
+	{ 0x1578, 0x0 }, /* MEMORY_FSYS1_SYS_PWR_REG */
+	{ 0x1584, 0x0 }, /* RESET_CMU_CAM0_SYS_PWR_REG */
+	{ 0x1588, 0x0 }, /* RESET_CMU_MSCL_SYS_PWR_REG */
+	{ 0x158C, 0x0 }, /* RESET_CMU_G3D_SYS_PWR_REG */
+	{ 0x1590, 0x0 }, /* RESET_CMU_DISP0_SYS_PWR_REG */
+	{ 0x1594, 0x0 }, /* RESET_CMU_CAM1_SYS_PWR_REG */
+	{ 0x1598, 0x0 }, /* RESET_CMU_AUD_SYS_PWR_REG */
+	{ 0x159C, 0x0 }, /* RESET_CMU_FSYS0_SYS_PWR_REG */
+	{ 0x15A0, 0x0 }, /* RESET_CMU_BUS0_SYS_PWR_REG */
+	{ 0x15A8, 0x0 }, /* RESET_CMU_ISP0_SYS_PWR_REG */
+	{ 0x15AC, 0x0 }, /* RESET_CMU_ISP1_SYS_PWR_REG */
+	{ 0x15B0, 0x0 }, /* RESET_CMU_MFC_SYS_PWR_REG */
+	{ 0x15B4, 0x0 }, /* RESET_CMU_DISP1_SYS_PWR_REG */
+	{ 0x15B8, 0x0 }, /* RESET_CMU_FSYS1_SYS_PWR_REG */
+	{ 0x15DC, 0x0 }, /* RESET_SLEEP_FSYS0_SYS_PWR_REG */
+	{ 0x15E0, 0x0 }, /* RESET_SLEEP_BUS0_SYS_PWR_REG */
+	{ 0x15F8, 0x0 }, /* RESET_SLEEP_FSYS1_SYS_PWR_REG */
+};
+
+static const u16 exynos8890_feedback_options[] = {
+	EXYNOS8890_TOP_PWR_OPTION,
+	EXYNOS8890_TOP_PWR_MIF_OPTION,
+	EXYNOS8890_PWR_DDRPHY_OPTION,
+	EXYNOS8890_CAM0_OPTION,
+	EXYNOS8890_MSCL_OPTION,
+	EXYNOS8890_G3D_OPTION,
+	EXYNOS8890_DISP0_OPTION,
+	EXYNOS8890_CAM1_OPTION,
+	EXYNOS8890_AUD_OPTION,
+	EXYNOS8890_FSYS0_OPTION,
+	EXYNOS8890_BUS0_OPTION,
+	EXYNOS8890_ISP0_OPTION,
+	EXYNOS8890_ISP1_OPTION,
+	EXYNOS8890_MFC_OPTION,
+	EXYNOS8890_DISP1_OPTION,
+	EXYNOS8890_FSYS1_OPTION,
+};
+
+static const u16 exynos8890_cpu_options[] = {
+	0x2008, 0x2088, 0x2108, 0x2188,
+	0x2208, 0x2288, 0x2308, 0x2388,
+};
+
+static const u16 exynos8890_cpu_durations[] = {
+	0x2010, 0x2090, 0x2110, 0x2190,
+	0x2210, 0x2290, 0x2310, 0x2390,
+};
+
+static void exynos8890_pmu_update_bits(u32 offset, u32 mask, u32 value)
+{
+	u32 val = pmu_raw_readl(offset);
+
+	val &= ~mask;
+	val |= value & mask;
+	pmu_raw_writel(val, offset);
+}
+
+static void exynos8890_pmu_init(void)
+{
+	const u32 cpu_option_mask =
+		BIT(31) | BIT(30) | BIT(28) | BIT(27) | BIT(26) | BIT(25) |
+		BIT(24) | BIT(20) | BIT(17) | BIT(16) | BIT(15) | BIT(12) |
+		BIT(9) | BIT(8) | BIT(5) | BIT(4) | BIT(3) | BIT(2) |
+		BIT(1) | BIT(0);
+	const u32 cpu_option_value =
+		BIT(28) | BIT(16) | BIT(8) | BIT(3) | BIT(0);
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(exynos8890_feedback_options); i++)
+		exynos8890_pmu_update_bits(exynos8890_feedback_options[i],
+					   BIT(1) | BIT(0), BIT(1));
+
+	exynos8890_pmu_update_bits(EXYNOS8890_MNGS_NONCPU_OPTION,
+				   BIT(1) | BIT(0), BIT(0));
+	exynos8890_pmu_update_bits(EXYNOS8890_APOLLO_NONCPU_OPTION,
+				   BIT(1) | BIT(0), BIT(0));
+	exynos8890_pmu_update_bits(EXYNOS8890_MNGS_NONCPU_DURATION0,
+				   GENMASK(11, 4), (3 << 8) | (3 << 4));
+	exynos8890_pmu_update_bits(EXYNOS8890_APOLLO_NONCPU_DURATION0,
+				   GENMASK(11, 4), (3 << 8) | (3 << 4));
+	exynos8890_pmu_update_bits(EXYNOS8890_MNGS_L2_OPTION,
+				   BIT(17) | BIT(16) | BIT(4), BIT(16));
+	exynos8890_pmu_update_bits(EXYNOS8890_APOLLO_L2_OPTION,
+				   BIT(17) | BIT(16) | BIT(4), BIT(16));
+
+	for (i = 0; i < ARRAY_SIZE(exynos8890_cpu_options); i++) {
+		exynos8890_pmu_update_bits(exynos8890_cpu_options[i],
+					   cpu_option_mask, cpu_option_value);
+		exynos8890_pmu_update_bits(exynos8890_cpu_durations[i],
+					   GENMASK(11, 4), (3 << 8) | (3 << 4));
+	}
+
+	exynos8890_pmu_update_bits(EXYNOS8890_UP_SCHEDULER,
+				   BIT(1) | BIT(0), BIT(1) | BIT(0));
+
+	/* Oscillator and regulator stabilization counts at 26 MHz. */
+	pmu_raw_writel(0x658, 0x343c);
+	pmu_raw_writel(0x658, 0x347c);
+	pmu_raw_writel(0xfde, 0x361c);
+	pmu_raw_writel(0xcb1, 0x363c);
+
+	exynos8890_pmu_update_bits(EXYNOS8890_PS_HOLD_CONTROL,
+				   BIT(31) | GENMASK(9, 8),
+				   BIT(31) | GENMASK(9, 8));
+	pmu_raw_writel(BIT(29), EXYNOS8890_PAD_RETENTION_MIF_OPTION);
+}
+
+static void exynos8890_pmu_powerdown_conf(enum sys_powerdown mode)
+{
+	unsigned int i;
+
+	if (mode != SYS_SLEEP)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(exynos8890_sleep_config); i++)
+		pmu_raw_writel(exynos8890_sleep_config[i].value,
+			       exynos8890_sleep_config[i].offset);
+
+	pmu_raw_writel(0x1, EXYNOS8890_PMU_SYNC_CTRL);
+	pmu_raw_writel(0xff0002, EXYNOS8890_CENTRAL_SEQ_OPTION);
+	pmu_raw_writel(0x0, EXYNOS8890_CENTRAL_SEQ_OPTION1);
+	pmu_raw_writel(0x10, EXYNOS8890_CENTRAL_SEQ_MIF_OPTION);
+	pmu_raw_writel(0x13, EXYNOS8890_WAKEUP_MASK_MIF);
+
+	exynos8890_pmu_update_bits(EXYNOS8890_CENTRAL_SEQ_CONFIGURATION,
+				   EXYNOS8890_CENTRAL_SEQ_ENABLE, 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_CENTRAL_SEQ_MIF_CONFIGURATION,
+				   EXYNOS8890_CENTRAL_SEQ_ENABLE, 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_TOP_BUS_MIF_OPTION,
+				   GENMASK(2, 0), 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_FSYS0_OPTION,
+				   GENMASK(31, 29), GENMASK(31, 29));
+	exynos8890_pmu_update_bits(EXYNOS8890_FSYS1_OPTION,
+				   GENMASK(31, 29), GENMASK(31, 29));
+	exynos8890_pmu_update_bits(EXYNOS8890_G3D_OPTION,
+				   GENMASK(31, 30), 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_WAKEUP_MASK, BIT(30), BIT(30));
+	exynos8890_pmu_update_bits(EXYNOS8890_MEMORY_TOP_OPTION, BIT(4), 0);
+}
+
+bool exynos8890_pmu_system_resume(void)
+{
+	bool sequence_completed;
+
+	/*
+	 * Firmware sets bit 16 only after completing the central sequence.  Read
+	 * it before repairing the abort path: callers use the captured value to
+	 * decide whether releasing pad retention is safe.
+	 */
+	sequence_completed =
+		pmu_raw_readl(EXYNOS8890_CENTRAL_SEQ_CONFIGURATION) &
+		EXYNOS8890_CENTRAL_SEQ_ENABLE;
+
+	/* Re-enable the sequencer after both a real wake and an aborted entry. */
+	exynos8890_pmu_update_bits(EXYNOS8890_CENTRAL_SEQ_CONFIGURATION,
+				   EXYNOS8890_CENTRAL_SEQ_ENABLE,
+				   EXYNOS8890_CENTRAL_SEQ_ENABLE);
+	exynos8890_pmu_update_bits(EXYNOS8890_MEMORY_TOP_OPTION, BIT(4), BIT(4));
+	exynos8890_pmu_update_bits(EXYNOS8890_TOP_BUS_MIF_OPTION,
+				   GENMASK(2, 0), 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_FSYS0_OPTION,
+				   GENMASK(31, 29), 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_FSYS1_OPTION,
+				   GENMASK(31, 29), 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_G3D_OPTION,
+				   GENMASK(31, 30), 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_WAKEUP_MASK, BIT(30), 0);
+	exynos8890_pmu_update_bits(EXYNOS8890_CENTRAL_SEQ_MIF_CONFIGURATION,
+				   EXYNOS8890_CENTRAL_SEQ_ENABLE,
+				   EXYNOS8890_CENTRAL_SEQ_ENABLE);
+
+	return sequence_completed;
+}
+
+const struct exynos_pmu_data exynos8890_pmu_data = {
+	.pmu_init = exynos8890_pmu_init,
+	.powerdown_conf = exynos8890_pmu_powerdown_conf,
+};

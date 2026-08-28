@@ -16,6 +16,7 @@
 #ifndef __LINUX_SOC_SAMSUNG_EXYNOS8890_CPUPM_H
 #define __LINUX_SOC_SAMSUNG_EXYNOS8890_CPUPM_H
 
+#include <linux/errno.h>
 #include <linux/types.h>
 
 #ifdef CONFIG_EXYNOS8890_CPUPM

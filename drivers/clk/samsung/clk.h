@@ -128,6 +128,10 @@ struct samsung_fixed_factor_clock {
  * @shift: starting bit location of the mux control bit-field in @reg
  * @width: width of the mux control bit-field in @reg
  * @mux_flags: flags for mux-type clock
+ * @stat_offset: offset of the mux transition-status register
+ * @stat_shift: starting bit of the one-hot transition-status field
+ * @stat_width: width of the transition-status field, or zero if unused
+ * @user_mux: update Exynos user-mux manual-control bit 27 around selection
  */
 struct samsung_mux_clock {
 	unsigned int		id;
@@ -139,6 +143,11 @@ struct samsung_mux_clock {
 	u8			shift;
 	u8			width;
 	u8			mux_flags;
+	unsigned long		stat_offset;
+	u8			stat_shift;
+	u8			stat_width;
+	bool			user_mux;
+	bool			read_only;
 };
 
 #define __MUX(_id, cname, pnames, o, s, w, f, mf)		\
@@ -157,6 +166,12 @@ struct samsung_mux_clock {
 #define MUX(_id, cname, pnames, o, s, w)			\
 	__MUX(_id, cname, pnames, o, s, w, CLK_SET_RATE_NO_REPARENT, 0)
 
+#define MUX_RO(_id, cname, pnames, o, s, w)			\
+	{ .id = (_id), .name = (cname), .parent_names = (pnames),	\
+	  .num_parents = ARRAY_SIZE(pnames),			\
+	  .flags = CLK_SET_RATE_NO_REPARENT | CLK_GET_RATE_NOCACHE,	\
+	  .offset = (o), .shift = (s), .width = (w), .read_only = true }
+
 #define MUX_F(_id, cname, pnames, o, s, w, f, mf)		\
 	__MUX(_id, cname, pnames, o, s, w, (f) | CLK_SET_RATE_NO_REPARENT, mf)
 
@@ -166,6 +181,39 @@ struct samsung_mux_clock {
 
 #define nMUX_F(_id, cname, pnames, o, s, w, f, mf)		\
 	__MUX(_id, cname, pnames, o, s, w, f, mf)
+
+#define __MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, user) \
+	{							\
+		.id		= _id,				\
+		.name		= cname,			\
+		.parent_names	= pnames,			\
+		.num_parents	= ARRAY_SIZE(pnames),		\
+		.flags		= CLK_SET_RATE_NO_REPARENT,	\
+		.offset		= o,				\
+		.shift		= s,				\
+		.width		= w,				\
+		.stat_offset	= so,				\
+		.stat_shift	= ss,				\
+		.stat_width	= sw,				\
+		.user_mux	= user,				\
+	}
+
+#define MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw) \
+	__MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, false)
+
+#define MUX_STAT_RO(_id, cname, pnames, o, s, w, so, ss, sw) \
+	{ .id = (_id), .name = (cname), .parent_names = (pnames),	\
+	  .num_parents = ARRAY_SIZE(pnames),			\
+	  .flags = CLK_SET_RATE_NO_REPARENT | CLK_GET_RATE_NOCACHE,	\
+	  .offset = (o), .shift = (s), .width = (w),		\
+	  .stat_offset = (so), .stat_shift = (ss), .stat_width = (sw), \
+	  .read_only = true }
+
+#define MUX_USER_STAT(_id, cname, pnames, o, s, w, so, ss, sw) \
+	__MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, true)
+
+#define MUX_USER(_id, cname, pnames, o, s, w) \
+	__MUX_STAT(_id, cname, pnames, o, s, w, 0, 0, 0, true)
 
 /**
  * struct samsung_div_clock - information about div clock
@@ -178,6 +226,9 @@ struct samsung_mux_clock {
  * @width: width of the bitfield
  * @div_flags: flags for div-type clock
  * @table: array of divider/value pairs ending with a div set to 0
+ * @stat_offset: offset of the divider transition-status register
+ * @stat_shift: starting bit of the transition-status field
+ * @stat_width: width of the transition-status field, or zero if unused
  */
 struct samsung_div_clock {
 	unsigned int		id;
@@ -189,6 +240,10 @@ struct samsung_div_clock {
 	u8			width;
 	u8			div_flags;
 	struct clk_div_table	*table;
+	unsigned long		stat_offset;
+	u8			stat_shift;
+	u8			stat_width;
+	bool			read_only;
 };
 
 #define __DIV(_id, cname, pname, o, s, w, f, df, t)	\
@@ -213,6 +268,25 @@ struct samsung_div_clock {
 #define DIV_T(_id, cname, pname, o, s, w, t)			\
 	__DIV(_id, cname, pname, o, s, w, 0, 0, t)
 
+#define DIV_STAT(_id, cname, pname, o, s, w, so, ss, sw)	\
+	{							\
+		.id		= _id,				\
+		.name		= cname,			\
+		.parent_name	= pname,			\
+		.offset		= o,				\
+		.shift		= s,				\
+		.width		= w,				\
+		.stat_offset	= so,				\
+		.stat_shift	= ss,				\
+		.stat_width	= sw,				\
+	}
+
+#define DIV_STAT_RO(_id, cname, pname, o, s, w, so, ss, sw)	\
+	{ .id = (_id), .name = (cname), .parent_name = (pname),	\
+	  .flags = CLK_GET_RATE_NOCACHE, .offset = (o), .shift = (s),	\
+	  .width = (w), .stat_offset = (so), .stat_shift = (ss),	\
+	  .stat_width = (sw), .read_only = true }
+
 /**
  * struct samsung_gate_clock - information about gate clock
  * @id: platform specific id of the clock
@@ -222,6 +296,7 @@ struct samsung_div_clock {
  * @offset: offset of the register for configuring the gate
  * @bit_idx: bit index of the gate control bit-field in @reg
  * @gate_flags: flags for gate-type clock
+ * @read_only: register a permanently-on, non-writing clock view
  */
 struct samsung_gate_clock {
 	unsigned int		id;
@@ -231,6 +306,7 @@ struct samsung_gate_clock {
 	unsigned long		offset;
 	u8			bit_idx;
 	u8			gate_flags;
+	bool			read_only;
 };
 
 #define __GATE(_id, cname, pname, o, b, f, gf)			\
@@ -246,6 +322,11 @@ struct samsung_gate_clock {
 
 #define GATE(_id, cname, pname, o, b, f, gf)			\
 	__GATE(_id, cname, pname, o, b, f, gf)
+
+#define GATE_RO(_id, cname, pname, o, b, f, gf)		\
+	{ .id = (_id), .name = (cname), .parent_name = (pname),	\
+	  .flags = (f) | CLK_IS_CRITICAL, .offset = (o),		\
+	  .bit_idx = (b), .gate_flags = (gf), .read_only = true }
 
 #define PNAME(x) static const char * const x[] __initconst
 

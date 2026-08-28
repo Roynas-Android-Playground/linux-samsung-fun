@@ -14,6 +14,7 @@
 // external gpio and wakeup interrupt support.
 
 #include <linux/slab.h>
+#include <linux/soc/samsung/exynos8890-pm.h>
 #include <linux/soc/samsung/exynos-regs-pmu.h>
 
 #include "pinctrl-samsung.h"
@@ -1710,62 +1711,121 @@ static const struct samsung_pin_bank_data exynos8890_pin_banks10[] __initconst =
 	EXYNOS8895_PIN_BANK_EINTG(3, 0x000, "gpf1", 0x00),
 };
 
+/* PMU pad-retention releases used after Exynos8890 system sleep. */
+static const u32 exynos8890_retention_regs[] = {
+	EXYNOS8890_PAD_RETENTION_PCIE_OPTION,
+	EXYNOS8890_PAD_RETENTION_UFS_CARD_OPTION,
+	EXYNOS8890_PAD_RETENTION_MMC2_OPTION,
+	EXYNOS8890_PAD_RETENTION_TOP_OPTION,
+	EXYNOS8890_PAD_RETENTION_UART_OPTION,
+	EXYNOS8890_PAD_RETENTION_MMC0_OPTION,
+	EXYNOS8890_PAD_RETENTION_EBIA_OPTION,
+	EXYNOS8890_PAD_RETENTION_EBIB_OPTION,
+	EXYNOS8890_PAD_RETENTION_SPI_OPTION,
+	EXYNOS8890_PAD_RETENTION_BOOTLDO_0_OPTION,
+	EXYNOS8890_PAD_RETENTION_UFS_OPTION,
+	EXYNOS8890_PAD_RETENTION_USB_OPTION,
+	EXYNOS8890_PAD_RETENTION_BOOTLDO_1_OPTION,
+};
+
+static const struct samsung_retention_data exynos8890_retention_data __initconst = {
+	.regs	 = exynos8890_retention_regs,
+	.nr_regs = ARRAY_SIZE(exynos8890_retention_regs),
+	.value	 = EXYNOS_WAKEUP_FROM_LOWPWR,
+	.refcnt	 = &exynos_shared_retention_refcnt,
+	.release_allowed = exynos8890_pm_system_sleep_completed,
+	.init	 = exynos_retention_init,
+};
+
 static const struct samsung_pin_ctrl exynos8890_pin_ctrl[] __initconst = {
 	{
 		/* pin-controller instance 0 Alive data */
 		.pin_banks	= exynos8890_pin_banks0,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks0),
 		.eint_wkup_init = exynos_eint_wkup_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 1 AUD data */
 		.pin_banks	= exynos8890_pin_banks1,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks1),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 2 CCORE data */
 		.pin_banks	= exynos8890_pin_banks2,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks2),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 3 ESE data */
 		.pin_banks	= exynos8890_pin_banks3,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks3),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 4 FP data */
 		.pin_banks	= exynos8890_pin_banks4,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks4),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 5 FSYS0 data */
 		.pin_banks	= exynos8890_pin_banks5,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks5),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 6 FSYS1 data */
 		.pin_banks	= exynos8890_pin_banks6,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks6),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 7 NFC data */
 		.pin_banks	= exynos8890_pin_banks7,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks7),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 8 PERIC0 data */
 		.pin_banks	= exynos8890_pin_banks8,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks8),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 9 PERIC1 data */
 		.pin_banks	= exynos8890_pin_banks9,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks9),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	}, {
 		/* pin-controller instance 10 TOUCH data */
 		.pin_banks	= exynos8890_pin_banks10,
 		.nr_banks	= ARRAY_SIZE(exynos8890_pin_banks10),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		.suspend	= exynos_pinctrl_suspend,
+		.resume		= exynos_pinctrl_resume,
+		.retention_data = &exynos8890_retention_data,
 	},
 };
 

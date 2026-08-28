@@ -13,6 +13,7 @@
 #include <linux/pagemap.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/soc/samsung/exynos8890-apm.h>
 #include <drm/panfrost_drm.h>
 #include <drm/drm_debugfs.h>
 #include <drm/drm_drv.h>
@@ -977,6 +978,9 @@ static int panfrost_probe(struct platform_device *pdev)
 	pfdev->comp = of_device_get_match_data(&pdev->dev);
 	if (!pfdev->comp)
 		return -ENODEV;
+	if (pfdev->comp->devfreq_calibrated_opps &&
+	    !exynos8890_apm_dvfs_ready())
+		return -EPROBE_DEFER;
 
 	pfdev->coherent = device_get_dma_attr(&pdev->dev) == DEV_DMA_COHERENT;
 
@@ -1084,8 +1088,7 @@ static const struct panfrost_compatible exynos8890_data = {
 	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
 	.supply_names = default_supplies,
 	.num_pm_domains = 1,
-	.devfreq_governor = DEVFREQ_GOV_USERSPACE,
-	.devfreq_require_exact_opp = true,
+	.devfreq_calibrated_opps = true,
 };
 
 static const struct panfrost_compatible default_pm_rt_data = {

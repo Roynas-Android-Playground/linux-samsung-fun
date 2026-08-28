@@ -14,8 +14,10 @@
 #include <linux/regmap.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
+#include <linux/regulator/consumer.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
+#include <linux/regulator/s2mps16.h>
 #include <linux/mfd/samsung/core.h>
 #include <linux/mfd/samsung/s2mpg10.h>
 #include <linux/mfd/samsung/s2mpg11.h>
@@ -50,6 +52,38 @@ struct s2mps11_info {
 	 */
 	DECLARE_BITMAP(suspend_state, S2MPS_REGULATOR_MAX);
 };
+
+int s2mps16_regulator_set_vth_offset(struct regulator *regulator, bool high)
+{
+	struct s2mps11_info *s2mps11;
+	struct regmap *regmap;
+	unsigned int value, vsel_mask, vsel_reg;
+	int ret, write_ret;
+
+	if (!regulator)
+		return -EINVAL;
+	s2mps11 = regulator_get_drvdata(regulator);
+	if (!s2mps11 || s2mps11->dev_type != S2MPS16X)
+		return -EINVAL;
+	ret = regulator_get_hardware_vsel_register(regulator, &vsel_reg,
+						   &vsel_mask);
+	if (ret)
+		return ret;
+	if (vsel_reg != S2MPS16_REG_B1CTRL2 ||
+	    vsel_mask != S2MPS16_BUCK_VSEL_MASK)
+		return -EINVAL;
+	regmap = regulator_get_regmap(regulator);
+	if (IS_ERR(regmap))
+		return PTR_ERR(regmap);
+
+	value = high ? S2MPS16_UP_VTH : S2MPS16_DOWN_VTH;
+	write_ret = regmap_write(regmap, S2MPS16_REG_VTH_OFFSET, value);
+	ret = regmap_read(regmap, S2MPS16_REG_VTH_OFFSET, &vsel_reg);
+	if (!ret && vsel_reg == value)
+		return 0;
+	return write_ret ?: (ret ?: -EIO);
+}
+EXPORT_SYMBOL_GPL(s2mps16_regulator_set_vth_offset);
 
 #define to_s2mpg10_regulator_desc(x) container_of((x), struct s2mpg10_regulator_desc, desc)
 

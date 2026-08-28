@@ -1,0 +1,131 @@
+name: Exynos8890 experimental build
+
+"on":
+  push:
+    branches:
+      - fun-exp
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exynos8890-fun-exp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: herolte arm64 LLVM build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Audit Exynos8890 PWRCAL ownership
+        run: python3 .github/scripts/audit-exynos8890-pwrcal.py
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            bc \
+            bison \
+            build-essential \
+            clang \
+            cpio \
+            dwarves \
+            flex \
+            libelf-dev \
+            libssl-dev \
+            libyaml-dev \
+            lld \
+            llvm \
+            python3 \
+            python3-libfdt \
+            python3-venv \
+            rsync \
+            swig
+
+          python3 -m venv --system-site-packages .venv-dtschema
+          .venv-dtschema/bin/pip install --disable-pip-version-check \
+            'jsonschema>=4.18' \
+            rfc3987 \
+            ruamel.yaml
+          .venv-dtschema/bin/pip install --disable-pip-version-check \
+            --no-deps 'dtschema==2026.6'
+          .venv-dtschema/bin/python -c 'import libfdt; print(libfdt.__file__)'
+          .venv-dtschema/bin/dt-doc-validate --version
+
+      - name: Configure herolte
+        run: make ARCH=arm64 LLVM=1 herolte_defconfig
+
+      - name: Verify the native ownership configuration
+        run: |
+          set -eu
+
+          require_enabled() {
+            if ! grep -qx "CONFIG_$1=y" .config; then
+              echo "Required built-in owner CONFIG_$1 is not enabled" >&2
+              exit 1
+            fi
+          }
+
+          for symbol in \
+            EXYNOS8890_CALIBRATION \
+            EXYNOS8890_APM \
+            PM_DEVFREQ \
+            EXYNOS8890_DMC \
+            ARM_EXYNOS8890_DEVFREQ \
+            ARM_EXYNOS8890_MIF_DEVFREQ \
+            ARM_EXYNOS8890_BUS_DEVFREQ \
+            ARM_EXYNOS8890_CPUFREQ \
+            DEVFREQ_GOV_PERFORMANCE; do
+            require_enabled "${symbol}"
+          done
+
+          grep -qx 'CONFIG_DRM_PANFROST=m' .config || {
+            echo 'Expected CONFIG_DRM_PANFROST=m' >&2
+            exit 1
+          }
+
+      - name: Validate Exynos8890 device-tree schemas
+        run: |
+          set -eu
+          schemas='Documentation/devicetree/bindings/clock/samsung,exynos8890-cmu.yaml:Documentation/devicetree/bindings/clock/samsung,exynos8890-cpu-clock.yaml:Documentation/devicetree/bindings/cpufreq/samsung,exynos8890-cpufreq.yaml:Documentation/devicetree/bindings/devfreq/samsung,exynos8890-bus.yaml:Documentation/devicetree/bindings/devfreq/samsung,exynos8890-mif-devfreq.yaml:Documentation/devicetree/bindings/memory-controllers/samsung,exynos8890-dmc.yaml:Documentation/devicetree/bindings/power/samsung,exynos8890-cpupm.yaml:Documentation/devicetree/bindings/power/samsung,exynos8890-pm.yaml:Documentation/devicetree/bindings/soc/samsung/exynos-pmu.yaml:Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml:Documentation/devicetree/bindings/soc/samsung/samsung,exynos8890-apm.yaml'
+
+          PATH="${GITHUB_WORKSPACE}/.venv-dtschema/bin:${PATH}" \
+            make --jobs="$(nproc)" ARCH=arm64 LLVM=1 \
+              DT_SCHEMA_FILES="${schemas}" dt_binding_check dtbs_check
+
+      - name: Build kernel image and device trees
+        env:
+          KBUILD_BUILD_HOST: github-actions
+          KBUILD_BUILD_USER: linux-samsung-fun
+        run: |
+          set -uo pipefail
+
+          make --jobs="$(nproc)" ARCH=arm64 LLVM=1 W=1 Image.gz dtbs \
+            2>&1 | tee build.log
+          build_status=${PIPESTATUS[0]}
+          warning_count=$(grep -Ec '(^|[[:space:]])warning:' build.log || true)
+
+          {
+            echo "### herolte LLVM build"
+            echo
+            echo "Compiler warnings: ${warning_count}"
+            if (( warning_count > 0 )); then
+              echo
+              echo '<details><summary>First 100 warnings</summary>'
+              echo
+              echo '```text'
+              grep -E '(^|[[:space:]])warning:' build.log | head -n 100 || true
+              echo '```'
+              echo '</details>'
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          exit "${build_status}"

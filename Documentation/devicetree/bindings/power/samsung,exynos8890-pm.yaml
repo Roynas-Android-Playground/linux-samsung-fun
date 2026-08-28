@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/samsung,exynos8890-pm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 system power-management child
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description:
+  Child of the Exynos8890 PMU system controller containing system-power-mode
+  wakeup and idle-IP policy. The child uses its parent's main PMU register map
+  and a phandle for the Mongoose-cluster PMU register block.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-pm
+
+  samsung,pmu-mngs:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the Mongoose-cluster PMU system controller.
+
+  samsung,wakeup-mask:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 9
+    maxItems: 9
+    description:
+      Main PMU wakeup mask for each system-power mode, in vendor mode order.
+
+  samsung,wakeup-mask2:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 9
+    maxItems: 9
+    description:
+      Second PMU wakeup mask for each system-power mode, in vendor mode order.
+
+  samsung,wakeup-mask3:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 9
+    maxItems: 9
+    description:
+      Third PMU wakeup mask for each system-power mode, in vendor mode order.
+
+  samsung,idle-ip-names:
+    $ref: /schemas/types.yaml#/definitions/string-array
+    minItems: 1
+    maxItems: 126
+    description:
+      Names whose array indices map to configurable PMU IDLE_IP bits.
+
+  idle-ip-masks:
+    type: object
+    additionalProperties: false
+    description: Per-power-mode lists of IDLE_IP bits required to be idle.
+    patternProperties:
+      '^[a-z][a-z0-9-]*$':
+        type: object
+        additionalProperties: false
+        properties:
+          samsung,mode-index:
+            $ref: /schemas/types.yaml#/definitions/uint32
+            maximum: 8
+            description: Index in the Exynos8890 system-power-mode table.
+
+          samsung,required-idle-ip:
+            $ref: /schemas/types.yaml#/definitions/uint32-array
+            minItems: 1
+            maxItems: 126
+            items:
+              maximum: 125
+            description: IDLE_IP indices which must report idle for this mode.
+
+        required:
+          - samsung,mode-index
+          - samsung,required-idle-ip
+
+required:
+  - compatible
+  - samsung,pmu-mngs
+  - samsung,wakeup-mask
+  - samsung,wakeup-mask2
+  - samsung,wakeup-mask3
+  - samsung,idle-ip-names
+
+additionalProperties: false
+...

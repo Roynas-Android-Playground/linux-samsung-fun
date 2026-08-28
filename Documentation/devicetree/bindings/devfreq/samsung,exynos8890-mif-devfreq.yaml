@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/devfreq/samsung,exynos8890-mif-devfreq.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 native MIF devfreq policy
+
+maintainers:
+  - Ivaylo Ivanov <ivo.ivanov.ivanov1@gmail.com>
+
+description: |
+  The Exynos8890 MIF devfreq device is a policy consumer of the dedicated DMC
+  owner. Frequencies are expressed in Hz. Voltage values describe the vendor
+  baseline table for compatibility with the common policy parser; the DMC
+  obtains finalized per-OPP voltages from immutable calibration data and owns
+  the regulator transaction.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-mif-devfreq
+
+  samsung,dmc:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Dedicated Exynos8890 DMC transaction owner.
+
+  devfreq_type:
+    const: mif
+
+  devfreq_domain_name:
+    const: dvfs_mif
+
+  opp_list_length:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    const: 12
+
+  opp_list:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 36
+    maxItems: 36
+    description: Twelve index, frequency-Hz and baseline-voltage-uV tuples.
+
+  freq_info:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 6
+    maxItems: 6
+
+  use_get_dev:
+    const: "false"
+
+  polling_ms:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    const: 0
+
+  gov_name:
+    const: performance
+
+  use_reg:
+    const: "false"
+
+  use_reg_dummy:
+    const: "false"
+
+  reg_name:
+    const: vdd_mif
+
+  volt_info:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 4
+    maxItems: 4
+
+  use_tmu:
+    const: "false"
+
+  use_cl_dvfs:
+    const: "false"
+
+  use_sw_clk:
+    const: "false"
+
+required:
+  - compatible
+  - samsung,dmc
+  - devfreq_type
+  - devfreq_domain_name
+  - opp_list_length
+  - opp_list
+  - freq_info
+  - use_get_dev
+  - polling_ms
+  - gov_name
+  - use_reg
+  - use_reg_dummy
+  - reg_name
+  - volt_info
+  - use_tmu
+  - use_cl_dvfs
+  - use_sw_clk
+
+additionalProperties: false
+
+examples:
+  - |
+    devfreq-mif {
+        compatible = "samsung,exynos8890-mif-devfreq";
+        samsung,dmc = <&dmc>;
+        devfreq_type = "mif";
+        devfreq_domain_name = "dvfs_mif";
+        opp_list_length = <12>;
+        opp_list = <0 1794000000 968750
+                    1 1716000000 950000
+                    2 1539000000 900000
+                    3 1352000000 875000
+                    4 1144000000 875000
+                    5 1014000000 875000
+                    6 845000000 875000
+                    7 676000000 875000
+                    8 546000000 875000
+                    9 421000000 875000
+                    10 286000000 875000
+                    11 208000000 875000>;
+        freq_info = <1794000000 421000000 0 1794000000
+                     421000000 1794000000>;
+        use_get_dev = "false";
+        polling_ms = <0>;
+        gov_name = "performance";
+        use_reg = "false";
+        use_reg_dummy = "false";
+        reg_name = "vdd_mif";
+        volt_info = <25000 1250000 0 1000000>;
+        use_tmu = "false";
+        use_cl_dvfs = "false";
+        use_sw_clk = "false";
+    };

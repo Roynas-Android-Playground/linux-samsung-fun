@@ -16,6 +16,7 @@ ARM64 Architecture
     cpu-feature-registers
     cpu-hotplug
     elf_hwcaps
+    exynos8890-dvfs-ownership
     gcs
     hugetlbpage
     kdump

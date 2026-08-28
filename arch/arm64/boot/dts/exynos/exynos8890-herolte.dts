@@ -7,6 +7,7 @@
 
 /dts-v1/;
 #include "exynos8890.dtsi"
+#include <dt-bindings/clock/samsung,exynos8890-cpu.h>
 #include <dt-bindings/clock/samsung,s2mps11.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
@@ -25,6 +26,14 @@
 		spi0 = &spi_0;
 		serial0 = &serial_4; // UART
 		serial1 = &serial_1; // Bluetooth
+		/* decon8890/dsim8890/vpp8890, see the &decon8890_f override below */
+		decon0 = &decon8890_f;
+		dsim0 = &dsim8890_0;
+		mdev0 = &mdev0;
+		vpp0 = &vpp8890_0;
+		vpp1 = &vpp8890_1;
+		vpp2 = &vpp8890_2;
+		vpp3 = &vpp8890_3;
 	};
 
 	chosen {
@@ -34,6 +43,7 @@
 
 		framebuffer@e2a00000 {
 			compatible = "simple-framebuffer";
+			status = "disabled";
 			reg = <0x0 0xe2a00000 (1440 * 2560 * 4)>;
 			display = <&decon_f>;
 
@@ -117,10 +127,7 @@
 			cooling-maps {
 				map0 {
 					trip = <&mngs_passive>;
-					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 			};
 		};
@@ -151,10 +158,7 @@
 			cooling-maps {
 				map0 {
 					trip = <&apollo_passive>;
-					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 			};
 		};
@@ -284,6 +288,19 @@
 		cont_splash_mem: framebuffer@e2a00000 {
 			reg = <0x0 0xe2a00000 (1440 * 2560 * 4)>;
 			no-map;
+			/*
+			 * of_iommu_get_resv_regions() needs this on the
+			 * reserved-memory node itself, not just memory-region
+			 * on the consumer - memory-region alone only tells it
+			 * which reserved-memory nodes to look at. Cells here
+			 * follow &soc's own #address-cells/#size-cells (1/1)
+			 * since that's each vpp node's DMA parent, translated
+			 * 1:1 (no dma-ranges on &soc - see of_translate_one()).
+			 */
+			iommu-addresses = <&vpp8890_0 0xe2a00000 0xe10000>,
+					   <&vpp8890_1 0xe2a00000 0xe10000>,
+					   <&vpp8890_2 0xe2a00000 0xe10000>,
+					   <&vpp8890_3 0xe2a00000 0xe10000>;
 		};
 	};
 
@@ -316,35 +333,6 @@
 		startup-delay-us = <2000>;
 	};
 
-	/*
-	 * Vendor DT toggles this GPIO directly as an LDO enable line for the
-	 * SX9310 grip/proximity sensor instead of describing it through the
-	 * regulator framework; model it as a switched fixed regulator so the
-	 * upstream sx9310 driver's vdd-supply/svdd-supply regulator_bulk_get
-	 * can enable it normally.
-	 */
-	grip_ldo: regulator-fixed-grip {
-		compatible = "regulator-fixed";
-		regulator-name = "grip_ldo_en";
-
-		enable-active-high;
-		gpio = <&gpa1 7 GPIO_ACTIVE_HIGH>;
-	};
-
-	gpu_opp_table: opp-table-gpu {
-		compatible = "operating-points-v2";
-
-		opp-227500000 {
-			opp-hz = /bits/ 64 <227500000>;
-			opp-microvolt = <1000000>;
-		};
-
-		opp-455000000 {
-			opp-hz = /bits/ 64 <455000000>;
-			opp-microvolt = <1000000>;
-		};
-	};
-
 	nfc_clock: nfc-clock {
 		compatible = "samsung,exynos8890-nfc-clock";
 		#clock-cells = <0>;
@@ -369,14 +357,18 @@
 	status = "okay";
 };
 
+/*
+ * Swapped from the DRM "takeover" driver to decon8890 (drivers/video/
+ * fbdev/exynos/decon8890/) for real-hardware bring-up testing - only one
+ * of the two can be enabled at a time, they claim the same DECON/VPP-G1/
+ * SysMMU-disp01 registers.
+ */
 &decon_f {
-	vci-supply = <&max77838_ldo1>;
-	vdd3-supply = <&max77838_ldo3>;
-	status = "okay";
+	status = "disabled";
 };
 
 &dsim0_observer {
-	status = "okay";
+	status = "disabled";
 };
 
 &vpp_g1_observer {
@@ -384,16 +376,101 @@
 };
 
 &sysmmu_disp01_observer {
+	status = "disabled";
+};
+
+/ {
+	/*
+	 * decon8890's dsim8890_0 lcd_info phandle target - real timing
+	 * values from vendor's exynos8890-display-lcd.dtsi s6e3ha3 node.
+	 */
+	s6e3ha3_wqhd8890: s6e3ha3-wqhd {
+		mode = <2>;			/* MIPI command mode */
+		resolution = <1440 2560>;
+		resolution_fhd = <1080 1920>;
+		resolution_hd = <720 1280>;
+		size = <63 113>;		/* mm */
+		timing,refresh = <60>;
+		timing,h-porch = <2 2 2>;	/* hbp hfp hsa */
+		timing,v-porch = <15 3 1>;	/* vbp vfp vsa */
+		timing,dsi-hs-clk = <897>;
+		timing,pms = <1 69 1>;		/* p m s */
+		timing,dsi-escape-clk = <20>;
+		mic_en = <1>;
+		mic_ratio = <0>;
+		mic_ver = <2>;
+		type_of_ddi = <0>;
+		dsc_en = <0>;
+		dsc_cnt = <0>;
+		dsc_slice_num = <0>;
+	};
+};
+
+&mdev0 {
+	status = "okay";
+};
+
+&mipi_phy_dsim8890 {
+	status = "okay";
+};
+
+&pd_disp0 {
+	status = "okay";
+};
+
+&sysmmu_disp0_00 {
+	status = "okay";
+};
+
+&sysmmu_disp0_01 {
+	status = "okay";
+};
+
+&dsim8890_0 {
+	lcd_info = <&s6e3ha3_wqhd8890>;
+	/* lcd reset, lcd power (LDO enable) */
+	gpios = <&gpi2 0 0x1>, <&gpd0 4 0x1>;
+	disp_type_gpio = <&gpi2 2 0x0>;
+	regulator_30V = "vdd_3p0_ddi";
+	regulator_18V = "vdd_1p8_ddi";
+	status = "okay";
+};
+
+&decon8890_f {
+	status = "okay";
+};
+
+/*
+ * All four vpp8890_N nodes get memory-region = <&cont_splash_mem> so the
+ * IOMMU direct-maps the bootloader's still-live boot-splash framebuffer
+ * (see iommu_dma_get_resv_regions()) - without it, whichever VPP window
+ * is actually driving the splash at boot page-faults its SYSMMU the
+ * moment the kernel establishes an empty domain under still-running DMA.
+ * Confirmed via a real panic: "13a10000.sysmmu: 13952000.vpp: [READ] PAGE
+ * FAULT" at an address inside cont_splash_mem's range.
+ */
+&vpp8890_0 {
+	memory-region = <&cont_splash_mem>;
+	status = "okay";
+};
+
+&vpp8890_1 {
+	memory-region = <&cont_splash_mem>;
+	status = "okay";
+};
+
+&vpp8890_2 {
+	memory-region = <&cont_splash_mem>;
+	status = "okay";
+};
+
+&vpp8890_3 {
+	memory-region = <&cont_splash_mem>;
 	status = "okay";
 };
 
 &gpu {
-	/* we can only afford a slightly higher rate till there's dvfs */
-	assigned-clocks = <&cmu_top CLK_FOUT_G3D_PLL>;
-	assigned-clock-rates = <455000000>;
-
 	mali-supply = <&s2mps16_buck6>;
-	operating-points-v2 = <&gpu_opp_table>;
 	#cooling-cells = <2>;
 
 	status = "okay";
@@ -483,7 +560,16 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
-				regulator-name = "max77838_ldo1";
+				/*
+				 * dsim_drv.c's regulator_30V/regulator_18V
+				 * properties are matched by regulator_get(NULL,
+				 * name) against this exact string, not the node
+				 * label. Confirmed against a sibling S7-family
+				 * board's DT using the same max77838 part
+				 * (exynos8890-gracelte_common.dtsi): LDO1 =
+				 * 1.8V = the DDI supply, matching values here.
+				 */
+				regulator-name = "vdd_1p8_ddi";
 			};
 
 			max77838_ldo2: ldo2 {
@@ -496,7 +582,8 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <3000000>;
 				regulator-max-microvolt = <3000000>;
-				regulator-name = "max77838_ldo3";
+				/* LDO3 = 3.0V = the other DDI supply, see ldo1 above. */
+				regulator-name = "vdd_3p0_ddi";
 			};
 
 			max77838_ldo4: ldo4 {
@@ -577,7 +664,7 @@
 				regulator-always-on;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <1000000>;
-				regulator-name = "vdd_buck1";
+				regulator-name = "vdd_mif";
 				regulator-ramp-delay = <12000>;
 			};
 
@@ -601,7 +688,7 @@
 				regulator-always-on;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <1000000>;
-				regulator-name = "vdd_buck4";
+				regulator-name = "vdd_int";
 				regulator-ramp-delay = <12000>;
 			};
 
@@ -609,7 +696,7 @@
 				regulator-always-on;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <1000000>;
-				regulator-name = "vdd_buck5";
+				regulator-name = "vdd_dispcam";
 				regulator-ramp-delay = <12000>;
 			};
 
@@ -1023,6 +1110,8 @@
 		gpio = <&gpb1 1 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
 		startup-delay-us = <200000>;
+		/* no in-kernel consumer yet - force on for userspace probe testing */
+		regulator-always-on;
 	};
 
 	/* ABOV mc96ft16xx touchkey (back/recent-apps) - vendor bit-bangs this pair, no real HSI2C bus here */
@@ -1443,7 +1532,7 @@
 		#size-cells = <0>;
 		num-cs = <1>;
 
-		status = "okay";
+		status = "disabled";
 
 		fingerprint@0 {
 			compatible = "vfsspi,vfs7xxx";
@@ -2276,4 +2365,170 @@
 		samsung,cpctl = <&modem_control>;
 		samsung,sipc = <&modem_sipc>;
 	};
+
+	/*
+	 * The aggregate provider is the only writer for Apollo/Mongoose DVFS
+	 * clocks and the adjacent EMA/SMPL controls. Its member names are the
+	 * immutable ECT identifiers in vendor S5E8890-dfs.c order; every name
+	 * below maps explicitly to one native CCF clock ID.
+	 *
+	 * samsung,mif-devfreq points at the native Hz-based MIF devfreq node.
+	 * Its DMC phandle owns the regulator and the complete PSCDC/DREX/PHY
+	 * transaction; CPUFreq only publishes MIF QoS votes.
+	 */
+	cpu_dvfs_clks: cpu-clock-controller {
+		compatible = "samsung,exynos8890-cpu-clock";
+		#clock-cells = <1>;
+		samsung,apollo-sysreg = <&sysreg_apollo>;
+		samsung,mongoose-sysreg = <&sysreg_mngs>;
+		samsung,apollo-cmu = <&cmu_apollo>;
+		samsung,mongoose-cmu = <&cmu_mngs>;
+
+		clocks = <&cmu_apollo CLK_FOUT_APOLLO_PLL>,
+			 <&cmu_apollo CLK_MOUT_APOLLO_APOLLO_PLL>,
+			 <&cmu_apollo CLK_MOUT_APOLLO_BUS_PLL_APOLLO_USER>,
+			 <&cmu_apollo CLK_MOUT_APOLLO_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_APOLLO>,
+			 <&cmu_top CLK_MOUT_TOP_SCLK_BUS_PLL_APOLLO>,
+			 <&cmu_top CLK_DOUT_TOP_SCLK_BUS_PLL_APOLLO>,
+			 <&cmu_top CLK_GOUT_TOP_SCLK_BUS_PLL_APOLLO>,
+			 <&cmu_mngs CLK_FOUT_MNGS_PLL>,
+			 <&cmu_mngs CLK_MOUT_MNGS_MNGS_PLL>,
+			 <&cmu_mngs CLK_MOUT_MNGS_BUS_PLL_MNGS_USER>,
+			 <&cmu_mngs CLK_MOUT_MNGS_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_MNGS>,
+			 <&cmu_top CLK_MOUT_TOP_SCLK_BUS_PLL_MNGS>,
+			 <&cmu_top CLK_DOUT_TOP_SCLK_BUS_PLL_MNGS>,
+			 <&cmu_top CLK_GOUT_TOP_SCLK_BUS_PLL_MNGS>,
+			 /* Characterized member clocks, in immutable ECT order. */
+			 <&cmu_apollo CLK_FOUT_APOLLO_PLL>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_ACLK_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_PCLK_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_ATCLK_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_PCLK_DBG_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_CNTCLK_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_APOLLO_PLL>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_SCLK_PROMISE_APOLLO>,
+			 <&cmu_apollo CLK_DOUT_APOLLO_APOLLO_RUN_MONITOR>,
+			 <&cmu_mngs CLK_FOUT_MNGS_PLL>,
+			 <&cmu_mngs CLK_DOUT_MNGS_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ACLK_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_PCLK_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_CORE>,
+			 <&cmu_mngs CLK_DOUT_MNGS_PCLK_DBG_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_CNTCLK_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_MNGS_PLL>,
+			 <&cmu_mngs CLK_DOUT_MNGS_SCLK_PROMISE_MNGS>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_SOC>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_CSSYS_TRACECLK>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_ASYNCATB_CAM1>,
+			 <&cmu_mngs CLK_DOUT_MNGS_ATCLK_MNGS_ASYNCATB_AUD>;
+		clock-names = "apollo-pll", "apollo-pll-user", "apollo-bus-user",
+			      "apollo-mux", "apollo-root", "apollo-switch-mux",
+			      "apollo-switch-div", "apollo-switch-gate",
+			      "mongoose-pll", "mongoose-pll-user",
+			      "mongoose-bus-user", "mongoose-mux",
+			      "mongoose-root", "mongoose-switch-mux",
+			      "mongoose-switch-div", "mongoose-switch-gate",
+			      "APOLLO_PLL", "APOLLO_DIV_ACLK_APOLLO",
+			      "APOLLO_DIV_PCLK_APOLLO", "APOLLO_DIV_ATCLK_APOLLO",
+			      "APOLLO_DIV_PCLK_DBG_APOLLO",
+			      "APOLLO_DIV_CNTCLK_APOLLO", "APOLLO_DIV_APOLLO_PLL",
+			      "APOLLO_DIV_SCLK_PROMISE_APOLLO",
+			      "APOLLO_DIV_APOLLO_RUN_MONITOR",
+			      "MNGS_PLL", "MNGS_DIV_MNGS", "MNGS_DIV_ACLK_MNGS",
+			      "MNGS_DIV_PCLK_MNGS", "MNGS_DIV_ATCLK_MNGS_CORE",
+			      "MNGS_DIV_PCLK_DBG_MNGS", "MNGS_DIV_CNTCLK_MNGS",
+			      "MNGS_DIV_MNGS_PLL", "MNGS_DIV_SCLK_PROMISE_MNGS",
+			      "MNGS_DIV_ATCLK_MNGS_SOC",
+			      "MNGS_DIV_ATCLK_MNGS_CSSYS_TRACECLK",
+			      "MNGS_DIV_ATCLK_MNGS_ASYNCATB_CAM1",
+			      "MNGS_DIV_ATCLK_MNGS_ASYNCATB_AUD";
+	};
+
+	cpufreq: cpufreq {
+		compatible = "samsung,exynos8890-cpufreq";
+		samsung,pmu = <&pmu_system_controller>;
+		samsung,apm = <&apm>;
+		apollo-supply = <&s2mps16_buck3>;
+		mongoose-supply = <&s2mps16_buck2>;
+		clocks = <&cpu_dvfs_clks EXYNOS8890_CPUCLK_APOLLO>,
+			 <&cpu_dvfs_clks EXYNOS8890_CPUCLK_MONGOOSE>;
+		clock-names = "apollo", "mongoose";
+		samsung,mif-devfreq = <&devfreq_mif>;
+	};
+
+	/*
+	 * MIF uses the native DMC transaction owner and a fixed-high policy
+	 * until complete PPMU/interconnect/display/GPU bandwidth voting exists.
+	 * INT, CAM and DISP use their native aggregate CCF owners and the same
+	 * conservative performance policy. Thermal cooling and device PM QoS
+	 * may still cap those non-memory domains. CAM and DISP safely share
+	 * buck5 because the regulator core aggregates their voltage requests.
+	 */
+	devfreq_mif: devfreq-mif {
+		compatible = "samsung,exynos8890-mif-devfreq";
+		samsung,dmc = <&dmc>;
+		devfreq_type = "mif";
+		devfreq_domain_name = "dvfs_mif";
+		opp_list_length = <12>;
+		opp_list = <0 1794000000 968750
+			    1 1716000000 950000
+			    2 1539000000 900000
+			    3 1352000000 875000
+			    4 1144000000 875000
+			    5 1014000000 875000
+			    6 845000000 875000
+			    7 676000000 875000
+			    8 546000000 875000
+			    9 421000000 875000
+			    10 286000000 875000
+			    11 208000000 875000>;
+		/* Keep the constrained live MIF rate across system suspend. */
+		freq_info = <1794000000 421000000 0 1794000000
+			     421000000 1794000000>;
+
+		use_get_dev = "false";
+		polling_ms = <0>;
+
+		gov_name = "performance";
+
+		use_reg = "false";
+		use_reg_dummy = "false";
+		reg_name = "vdd_mif";
+		volt_info = <25000 1250000 0 1000000>;
+
+		use_tmu = "false";
+		use_cl_dvfs = "false";
+		use_sw_clk = "false";
+	};
+
+	devfreq_int: devfreq-int {
+		compatible = "samsung,exynos8890-int-devfreq";
+		clocks = <&cmu_top CLK_DVFS_INT>;
+		clock-names = "bus";
+		vdd-supply = <&s2mps16_buck4>;
+		#cooling-cells = <2>;
+	};
+
+	devfreq_disp: devfreq-disp {
+		compatible = "samsung,exynos8890-disp-devfreq";
+		clocks = <&cmu_top CLK_DVFS_DISP>;
+		clock-names = "bus";
+		vdd-supply = <&s2mps16_buck5>;
+		#cooling-cells = <2>;
+	};
+
+	devfreq_cam: devfreq-cam {
+		compatible = "samsung,exynos8890-cam-devfreq";
+		clocks = <&cmu_top CLK_DVFS_CAM>;
+		clock-names = "bus";
+		vdd-supply = <&s2mps16_buck5>;
+		#cooling-cells = <2>;
+	};
+};
+
+&dmc {
+	vdd-supply = <&s2mps16_buck1>;
+	status = "okay";
 };

@@ -29,6 +29,7 @@
 
 #include <linux/cpu.h>
 #include <linux/cpuhotplug.h>
+#include <linux/err.h>
 #include <linux/init.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
@@ -60,7 +61,7 @@ static struct regmap *pmureg;
 
 bool exynos8890_cpupm_ready(void)
 {
-	return pmureg != NULL;
+	return !IS_ERR_OR_NULL(pmureg);
 }
 EXPORT_SYMBOL_GPL(exynos8890_cpupm_ready);
 static unsigned int boot_cluster;
@@ -91,11 +92,15 @@ EXPORT_SYMBOL_GPL(exynos8890_cpu_power_down);
 int exynos8890_cpu_power_state(unsigned int cpu)
 {
 	unsigned int val;
+	int ret;
 
-	if (!pmureg)
+	if (!exynos8890_cpupm_ready())
 		return -ENODEV;
 
-	regmap_read(pmureg, PMU_CPU_STATUS_BASE + pmu_cpu_offset(cpu), &val);
+	ret = regmap_read(pmureg, PMU_CPU_STATUS_BASE + pmu_cpu_offset(cpu),
+			  &val);
+	if (ret)
+		return ret;
 
 	return (val & CPU_LOCAL_PWR_CFG) == CPU_LOCAL_PWR_CFG;
 }
@@ -128,12 +133,19 @@ int exynos8890_cluster_power_state(unsigned int cluster)
 {
 	unsigned int offset = cluster * PMU_CLUSTER_ADDR_OFFSET;
 	unsigned int noncpu_stat, l2_stat;
+	int ret;
 
-	if (!pmureg)
+	if (!exynos8890_cpupm_ready())
 		return -ENODEV;
 
-	regmap_read(pmureg, PMU_NONCPU_STATUS_BASE + offset, &noncpu_stat);
-	regmap_read(pmureg, PMU_L2_STATUS_BASE + offset, &l2_stat);
+	ret = regmap_read(pmureg, PMU_NONCPU_STATUS_BASE + offset,
+			  &noncpu_stat);
+	if (ret)
+		return ret;
+
+	ret = regmap_read(pmureg, PMU_L2_STATUS_BASE + offset, &l2_stat);
+	if (ret)
+		return ret;
 
 	return ((l2_stat & L2_LOCAL_PWR_CFG) == L2_LOCAL_PWR_CFG) &&
 	       ((noncpu_stat & NONCPU_LOCAL_PWR_CFG) == NONCPU_LOCAL_PWR_CFG);
@@ -158,11 +170,12 @@ static int exynos8890_cpupm_starting(unsigned int cpu)
 	return 0;
 }
 
-static int __init exynos8890_cpupm_probe(struct platform_device *pdev)
+static int exynos8890_cpupm_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
+	struct regmap *regmap;
 	unsigned int cluster, val;
-	int cpu;
+	int cpu, ret;
 
 	/*
 	 * We are a child node of the PMU system-controller itself
@@ -172,23 +185,23 @@ static int __init exynos8890_cpupm_probe(struct platform_device *pdev)
 	 * (e.g. npcm7xx KCS, Aspeed LPC/p2a-ctrl, mvebu GPIO).
 	 */
 	if (pdev->dev.parent && pdev->dev.parent->of_node)
-		pmureg = syscon_node_to_regmap(pdev->dev.parent->of_node);
+		regmap = syscon_node_to_regmap(pdev->dev.parent->of_node);
 	else
-		pmureg = ERR_PTR(-ENODEV);
+		regmap = ERR_PTR(-ENODEV);
 
-	if (IS_ERR(pmureg)) {
+	if (IS_ERR(regmap)) {
 		/* DT-only fallback: explicit phandle to the PMU syscon */
-		pmureg = syscon_regmap_lookup_by_phandle(np,
+		regmap = syscon_regmap_lookup_by_phandle(np,
 							 "samsung,syscon-phandle");
-		if (IS_ERR(pmureg))
-			return dev_err_probe(&pdev->dev, PTR_ERR(pmureg),
+		if (IS_ERR(regmap))
+			return dev_err_probe(&pdev->dev, PTR_ERR(regmap),
 					     "failed to get PMU regmap\n");
 	}
 
 	boot_cluster = MPIDR_AFFINITY_LEVEL(cpu_logical_map(0), 1);
 
 	for (cluster = 0; cluster < 2; cluster++) {
-		regmap_read(pmureg, PMU_CPUSEQ_OPTION_BASE +
+		regmap_read(regmap, PMU_CPUSEQ_OPTION_BASE +
 				    cluster * PMU_CLUSTER_ADDR_OFFSET, &val);
 		pr_info("exynos8890-cpupm: cluster%u (%s) CPUSEQ_OPTION=%#x\n",
 			cluster, cluster == boot_cluster ? "boot" : "non-boot",
@@ -196,15 +209,26 @@ static int __init exynos8890_cpupm_probe(struct platform_device *pdev)
 	}
 
 	for_each_possible_cpu(cpu) {
-		regmap_read(pmureg, PMU_CPU_CONFIG_BASE + pmu_cpu_offset(cpu),
+		regmap_read(regmap, PMU_CPU_CONFIG_BASE + pmu_cpu_offset(cpu),
 			    &val);
 		pr_info("exynos8890-cpupm: cpu%u CPU_CONFIG=%#x "
 			"local_pwr_cfg=%#x\n",
 			cpu, val, val & CPU_LOCAL_PWR_CFG);
 	}
 
-	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "soc/exynos8890/cpupm:starting",
-			  exynos8890_cpupm_starting, NULL);
+	/*
+	 * cpuhp_setup_state() invokes the startup callback for already-online
+	 * CPUs, so publish the fully resolved regmap immediately before it.
+	 */
+	pmureg = regmap;
+	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
+				"soc/exynos8890/cpupm:starting",
+				exynos8890_cpupm_starting, NULL);
+	if (ret < 0) {
+		pmureg = NULL;
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to register CPU hotplug state\n");
+	}
 
 	return 0;
 }
@@ -220,6 +244,7 @@ static struct platform_driver exynos8890_cpupm_driver = {
 	.driver = {
 		.name = "exynos8890-cpupm",
 		.of_match_table = exynos8890_cpupm_of_match,
+		.suppress_bind_attrs = true,
 	},
 };
 builtin_platform_driver(exynos8890_cpupm_driver);

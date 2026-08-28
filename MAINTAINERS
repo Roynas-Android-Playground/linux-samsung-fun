@@ -3559,7 +3559,9 @@ C:	irc://irc.libera.chat/linux-exynos
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux.git
 F:	Documentation/arch/arm/samsung/
 F:	Documentation/devicetree/bindings/arm/samsung/
+F:	Documentation/devicetree/bindings/devfreq/samsung,exynos8890-mif-devfreq.yaml
 F:	Documentation/devicetree/bindings/hwinfo/samsung,*
+F:	Documentation/devicetree/bindings/memory-controllers/samsung,exynos8890-dmc.yaml
 F:	Documentation/devicetree/bindings/power/pd-samsung.yaml
 F:	Documentation/devicetree/bindings/soc/samsung/
 F:	arch/arm/boot/dts/samsung/
@@ -24330,6 +24332,7 @@ F:	drivers/regulator/s2*.c
 F:	drivers/regulator/s5m*.c
 F:	drivers/rtc/rtc-s5m.c
 F:	include/dt-bindings/regulator/samsung,s2m*.h
+F:	include/linux/regulator/s2mps*.h
 F:	include/linux/mfd/samsung/
 
 SAMSUNG S3C24XX/S3C64XX SOC SERIES CAMIF DRIVER

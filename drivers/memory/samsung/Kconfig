@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 config SAMSUNG_MC
-	bool "Samsung Exynos Memory Controller support" if COMPILE_TEST
+	bool "Samsung Exynos Memory Controller support"
+	depends on ARCH_EXYNOS || COMPILE_TEST
 	help
 	  Support for the Memory Controller (MC) devices found on
 	  Samsung Exynos SoCs.
@@ -20,6 +21,19 @@ config EXYNOS5422_DMC
 	  of DRAM running with different frequency. The timings are calculated
 	  based on DT memory information.
 	  If unsure, say Y on devices with Samsung Exynos SoCs.
+
+config EXYNOS8890_DMC
+	bool "Exynos8890 native MIF/DMC DVFS owner"
+	depends on ARM64 && ARCH_EXYNOS
+	depends on EXYNOS_ARM64_COMMON_CLK && REGULATOR
+	depends on REGULATOR_S2MPS11=y
+	depends on EXYNOS8890_APM=y
+	depends on EXYNOS8890_CALIBRATION
+	help
+	  Build the native Exynos8890 LPDDR4 frequency-change owner.  The
+	  driver performs the four-channel DREX/PHY timing, shared MIF PLL and
+	  PSCDC transaction as one serialized operation and consumes immutable
+	  calibration data rather than the writable PWRCAL DFS implementation.
 
 config EXYNOS_SROM
 	bool "Exynos SROM controller driver" if COMPILE_TEST

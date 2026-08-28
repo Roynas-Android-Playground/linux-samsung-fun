@@ -90,6 +90,46 @@ config ARM_EXYNOS_BUS_DEVFREQ
 	  and adjusts the operating frequencies and voltages with OPP support.
 	  This does not yet operate with optimal voltages.
 
+config ARM_EXYNOS8890_DEVFREQ
+	bool "ARM Exynos8890 DEVFREQ common driver"
+	depends on ARCH_EXYNOS && OF && REGULATOR
+	depends on EXYNOS8890_CALIBRATION
+	select DEVFREQ_GOV_PERFORMANCE
+	help
+	  This adds the common DEVFREQ infrastructure for Exynos8890 bus
+	  domains. Domain-specific owners are selected separately so the
+	  native MIF driver does not depend on the writable PWRCAL DFS layer.
+	  Frequencies presented by the native MIF policy are expressed in Hz.
+
+config ARM_EXYNOS8890_MIF_DEVFREQ
+	bool "Exynos8890 native MIF DEVFREQ driver"
+	depends on ARM_EXYNOS8890_DEVFREQ && EXYNOS8890_DMC
+	help
+	  Connect the Exynos8890 MIF DEVFREQ policy to the native DMC owner.
+	  All frequencies use Hz and each rate request includes voltage,
+	  intermediate clock, PSCDC, DREX and PHY sequencing atomically.
+	  Select this on boards that describe the dedicated DMC DT node.
+	  The bring-up policy defaults to the fixed-high performance governor.
+
+config ARM_EXYNOS8890_BUS_DEVFREQ
+	tristate "ARM Exynos8890 native bus DEVFREQ Driver"
+	depends on ARCH_EXYNOS && OF && REGULATOR
+	depends on EXYNOS8890_CALIBRATION
+	depends on EXYNOS8890_APM
+	select DEVFREQ_GOV_PERFORMANCE
+	help
+	  This adds native OPP/devfreq support for the Exynos8890 INT, CAM and
+	  DISP domains. The driver uses calibrated Hz/uV OPPs and aggregate CCF
+	  clocks. It deliberately uses a fixed-safe performance policy because
+	  these domains do not expose usable activity counters. Standard thermal
+	  cooling and device PM QoS maximum constraints can still cap the rate.
+
+config ARM_EXYNOS8890_DEVFREQ_DEBUG
+	bool "Debug ARM Exynos8890 DEVFREQ common driver"
+	depends on ARM_EXYNOS8890_DEVFREQ
+	help
+	  Enable extra debug logging in the Exynos8890 DEVFREQ common driver.
+
 config ARM_HISI_UNCORE_DEVFREQ
 	tristate "HiSilicon uncore DEVFREQ Driver"
 	depends on ACPI && ACPI_PPTT && PCC

@@ -12,6 +12,7 @@
 #include <linux/clkdev.h>
 #include <linux/clk-provider.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of_address.h>
 #include <linux/regmap.h>
@@ -185,6 +186,203 @@ void __init samsung_clk_register_fixed_factor(struct samsung_clk_provider *ctx,
 	}
 }
 
+struct samsung_status_mux {
+	struct clk_mux mux;
+	void __iomem *stat_reg;
+	u8 stat_shift;
+	u8 stat_width;
+	bool user_mux;
+};
+
+#define to_samsung_status_mux(_hw) \
+	container_of(to_clk_mux(_hw), struct samsung_status_mux, mux)
+
+static u8 samsung_status_mux_get_parent(struct clk_hw *hw)
+{
+	struct samsung_status_mux *mux = to_samsung_status_mux(hw);
+	u32 status;
+
+	if (!mux->stat_width)
+		return clk_mux_ops.get_parent(hw);
+	status = readl(mux->stat_reg) >> mux->stat_shift;
+	status &= GENMASK(mux->stat_width - 1, 0);
+	if (status && !(status & (status - 1)))
+		return __ffs(status);
+	return clk_mux_ops.get_parent(hw);
+}
+
+static int samsung_status_mux_determine_rate(struct clk_hw *hw,
+					     struct clk_rate_request *req)
+{
+	return clk_mux_ops.determine_rate(hw, req);
+}
+
+static u8 samsung_read_only_mux_get_parent(struct clk_hw *hw)
+{
+	return clk_mux_ops.get_parent(hw);
+}
+
+static unsigned long
+samsung_read_only_mux_recalc_rate(struct clk_hw *hw,
+				  unsigned long parent_rate)
+{
+	struct clk_hw *parent;
+	u8 index = samsung_read_only_mux_get_parent(hw);
+
+	parent = clk_hw_get_parent_by_index(hw, index);
+	return parent ? clk_hw_get_rate(parent) : 0;
+}
+
+static unsigned long
+samsung_read_only_status_mux_recalc_rate(struct clk_hw *hw,
+					 unsigned long parent_rate)
+{
+	struct clk_hw *parent;
+	u8 index = samsung_status_mux_get_parent(hw);
+
+	parent = clk_hw_get_parent_by_index(hw, index);
+	return parent ? clk_hw_get_rate(parent) : 0;
+}
+
+static int samsung_status_mux_set_parent(struct clk_hw *hw, u8 index)
+{
+	struct samsung_status_mux *mux = to_samsung_status_mux(hw);
+	unsigned long flags = 0;
+	u32 expected, mask, val;
+	int ret;
+
+	if (!mux->user_mux) {
+		ret = clk_mux_ops.set_parent(hw, index);
+		if (ret)
+			return ret;
+	} else {
+		/*
+		 * Exynos user muxes require bit 27 cleared before selecting
+		 * the functional source and set only after returning to the
+		 * oscillator. Keep these writes under the provider lock with
+		 * the selector update so CCF owns the complete transaction.
+		 */
+		if (mux->mux.lock)
+			spin_lock_irqsave(mux->mux.lock, flags);
+
+		val = readl(mux->mux.reg);
+		if (index == 1) {
+			val &= ~BIT(27);
+			writel(val, mux->mux.reg);
+		}
+
+		val &= ~(mux->mux.mask << mux->mux.shift);
+		val |= index << mux->mux.shift;
+		writel(val, mux->mux.reg);
+
+		if (index == 0) {
+			val |= BIT(27);
+			writel(val, mux->mux.reg);
+		}
+
+		if (mux->mux.lock)
+			spin_unlock_irqrestore(mux->mux.lock, flags);
+	}
+
+	if (!mux->stat_width)
+		return 0;
+
+	mask = GENMASK(mux->stat_shift + mux->stat_width - 1,
+		       mux->stat_shift);
+	expected = BIT(mux->stat_shift + index);
+	ret = readl_poll_timeout_atomic(mux->stat_reg, val,
+					(val & mask) == expected, 1, 1000);
+	if (ret)
+		pr_err("%s: mux transition timed out\n", clk_hw_get_name(hw));
+
+	return ret;
+}
+
+static const struct clk_ops samsung_status_mux_ops = {
+	.get_parent = samsung_status_mux_get_parent,
+	.determine_rate = samsung_status_mux_determine_rate,
+	.set_parent = samsung_status_mux_set_parent,
+};
+
+static const struct clk_ops samsung_read_only_mux_ops = {
+	.get_parent = samsung_read_only_mux_get_parent,
+	.recalc_rate = samsung_read_only_mux_recalc_rate,
+};
+
+static const struct clk_ops samsung_read_only_status_mux_ops = {
+	.get_parent = samsung_status_mux_get_parent,
+	.recalc_rate = samsung_read_only_status_mux_recalc_rate,
+};
+
+static struct clk_hw * __init
+samsung_clk_register_status_mux(struct samsung_clk_provider *ctx,
+				const struct samsung_mux_clock *list)
+{
+	struct samsung_status_mux *mux;
+	struct clk_init_data init = { };
+	int ret;
+
+	mux = kzalloc_obj(*mux);
+	if (!mux)
+		return ERR_PTR(-ENOMEM);
+
+	init.name = list->name;
+	init.ops = list->read_only ? &samsung_read_only_status_mux_ops :
+		&samsung_status_mux_ops;
+	init.flags = list->flags;
+	init.parent_names = list->parent_names;
+	init.num_parents = list->num_parents;
+
+	mux->mux.reg = ctx->reg_base + list->offset;
+	mux->mux.shift = list->shift;
+	mux->mux.mask = BIT(list->width) - 1;
+	mux->mux.flags = list->mux_flags;
+	mux->mux.lock = &ctx->lock;
+	mux->mux.hw.init = &init;
+	mux->stat_reg = ctx->reg_base + list->stat_offset;
+	mux->stat_shift = list->stat_shift;
+	mux->stat_width = list->stat_width;
+	mux->user_mux = list->user_mux;
+
+	ret = clk_hw_register(ctx->dev, &mux->mux.hw);
+	if (ret) {
+		kfree(mux);
+		return ERR_PTR(ret);
+	}
+
+	return &mux->mux.hw;
+}
+
+static struct clk_hw * __init
+samsung_clk_register_read_only_mux(struct samsung_clk_provider *ctx,
+				    const struct samsung_mux_clock *list)
+{
+	struct clk_init_data init = { };
+	struct clk_mux *mux;
+	int ret;
+
+	mux = kzalloc_obj(*mux);
+	if (!mux)
+		return ERR_PTR(-ENOMEM);
+	init.name = list->name;
+	init.ops = &samsung_read_only_mux_ops;
+	init.flags = list->flags;
+	init.parent_names = list->parent_names;
+	init.num_parents = list->num_parents;
+	mux->reg = ctx->reg_base + list->offset;
+	mux->shift = list->shift;
+	mux->mask = BIT(list->width) - 1;
+	mux->flags = list->mux_flags;
+	mux->lock = &ctx->lock;
+	mux->hw.init = &init;
+	ret = clk_hw_register(ctx->dev, &mux->hw);
+	if (ret) {
+		kfree(mux);
+		return ERR_PTR(ret);
+	}
+	return &mux->hw;
+}
+
 /* register a list of mux clocks */
 void __init samsung_clk_register_mux(struct samsung_clk_provider *ctx,
 				const struct samsung_mux_clock *list,
@@ -194,10 +392,15 @@ void __init samsung_clk_register_mux(struct samsung_clk_provider *ctx,
 	unsigned int idx;
 
 	for (idx = 0; idx < nr_clk; idx++, list++) {
-		clk_hw = clk_hw_register_mux(ctx->dev, list->name,
-			list->parent_names, list->num_parents, list->flags,
-			ctx->reg_base + list->offset,
-			list->shift, list->width, list->mux_flags, &ctx->lock);
+		if (list->stat_width || list->user_mux)
+			clk_hw = samsung_clk_register_status_mux(ctx, list);
+		else if (list->read_only)
+			clk_hw = samsung_clk_register_read_only_mux(ctx, list);
+		else
+			clk_hw = clk_hw_register_mux(ctx->dev, list->name,
+				list->parent_names, list->num_parents, list->flags,
+				ctx->reg_base + list->offset, list->shift,
+				list->width, list->mux_flags, &ctx->lock);
 		if (IS_ERR(clk_hw)) {
 			pr_err("%s: failed to register clock %s\n", __func__,
 				list->name);
@@ -206,6 +409,102 @@ void __init samsung_clk_register_mux(struct samsung_clk_provider *ctx,
 
 		samsung_clk_add_lookup(ctx, clk_hw, list->id);
 	}
+}
+
+struct samsung_status_divider {
+	struct clk_divider divider;
+	void __iomem *stat_reg;
+	u8 stat_shift;
+	u8 stat_width;
+};
+
+#define to_samsung_status_divider(_hw) \
+	container_of(to_clk_divider(_hw), struct samsung_status_divider, divider)
+
+static unsigned long
+samsung_status_divider_recalc_rate(struct clk_hw *hw,
+				   unsigned long parent_rate)
+{
+	return clk_divider_ops.recalc_rate(hw, parent_rate);
+}
+
+static int samsung_status_divider_determine_rate(struct clk_hw *hw,
+						 struct clk_rate_request *req)
+{
+	return clk_divider_ops.determine_rate(hw, req);
+}
+
+static int samsung_status_divider_set_rate(struct clk_hw *hw,
+					   unsigned long rate,
+					   unsigned long parent_rate)
+{
+	struct samsung_status_divider *div =
+		to_samsung_status_divider(hw);
+	u32 mask = GENMASK(div->stat_shift + div->stat_width - 1,
+			   div->stat_shift);
+	u32 val;
+	int ret;
+
+	ret = clk_divider_ops.set_rate(hw, rate, parent_rate);
+	if (ret)
+		return ret;
+
+	ret = readl_poll_timeout_atomic(div->stat_reg, val, !(val & mask),
+					1, 1000);
+	if (ret)
+		pr_err("%s: divider transition timed out\n",
+		       clk_hw_get_name(hw));
+
+	return ret;
+}
+
+static const struct clk_ops samsung_status_divider_ops = {
+	.recalc_rate = samsung_status_divider_recalc_rate,
+	.determine_rate = samsung_status_divider_determine_rate,
+	.set_rate = samsung_status_divider_set_rate,
+};
+
+static const struct clk_ops samsung_read_only_status_divider_ops = {
+	.recalc_rate = samsung_status_divider_recalc_rate,
+};
+
+static struct clk_hw * __init
+samsung_clk_register_status_div(struct samsung_clk_provider *ctx,
+				const struct samsung_div_clock *list)
+{
+	struct samsung_status_divider *div;
+	struct clk_init_data init = { };
+	const char *parent_name = list->parent_name;
+	int ret;
+
+	div = kzalloc_obj(*div, GFP_KERNEL);
+	if (!div)
+		return ERR_PTR(-ENOMEM);
+
+	init.name = list->name;
+	init.ops = list->read_only ? &samsung_read_only_status_divider_ops :
+		&samsung_status_divider_ops;
+	init.flags = list->flags;
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
+
+	div->divider.reg = ctx->reg_base + list->offset;
+	div->divider.shift = list->shift;
+	div->divider.width = list->width;
+	div->divider.flags = list->div_flags;
+	div->divider.lock = &ctx->lock;
+	div->divider.hw.init = &init;
+	div->stat_reg = ctx->reg_base + list->stat_offset;
+	div->stat_shift = list->stat_shift;
+	div->stat_width = list->stat_width;
+
+	ret = clk_hw_register(ctx->dev, &div->divider.hw);
+	if (ret) {
+		kfree(div);
+		return ERR_PTR(ret);
+	}
+
+	return &div->divider.hw;
 }
 
 /* register a list of div clocks */
@@ -217,7 +516,9 @@ void __init samsung_clk_register_div(struct samsung_clk_provider *ctx,
 	unsigned int idx;
 
 	for (idx = 0; idx < nr_clk; idx++, list++) {
-		if (list->table)
+		if (list->stat_width)
+			clk_hw = samsung_clk_register_status_div(ctx, list);
+		else if (list->table)
 			clk_hw = clk_hw_register_divider_table(ctx->dev,
 				list->name, list->parent_name, list->flags,
 				ctx->reg_base + list->offset,
@@ -335,6 +636,45 @@ struct clk_hw *samsung_register_auto_gate(struct device *dev,
 	return hw;
 }
 
+static int samsung_read_only_gate_is_enabled(struct clk_hw *hw)
+{
+	return clk_gate_ops.is_enabled(hw);
+}
+
+static const struct clk_ops samsung_read_only_gate_ops = {
+	.is_enabled = samsung_read_only_gate_is_enabled,
+};
+
+static struct clk_hw * __init
+samsung_clk_register_read_only_gate(struct samsung_clk_provider *ctx,
+				    const struct samsung_gate_clock *list)
+{
+	struct clk_init_data init = { };
+	struct clk_gate *gate;
+	int ret;
+
+	gate = kzalloc_obj(*gate);
+	if (!gate)
+		return ERR_PTR(-ENOMEM);
+	init.name = list->name;
+	init.ops = &samsung_read_only_gate_ops;
+	init.flags = list->flags;
+	init.parent_names = &list->parent_name;
+	init.num_parents = 1;
+	gate->reg = ctx->reg_base + list->offset;
+	gate->bit_idx = list->bit_idx;
+	gate->flags = list->gate_flags;
+	gate->lock = &ctx->lock;
+	gate->hw.init = &init;
+
+	ret = clk_hw_register(ctx->dev, &gate->hw);
+	if (ret) {
+		kfree(gate);
+		return ERR_PTR(ret);
+	}
+	return &gate->hw;
+}
+
 /* register a list of gate clocks */
 void __init samsung_clk_register_gate(struct samsung_clk_provider *ctx,
 				const struct samsung_gate_clock *list,
@@ -345,6 +685,10 @@ void __init samsung_clk_register_gate(struct samsung_clk_provider *ctx,
 	void __iomem *reg_offs;
 
 	for (idx = 0; idx < nr_clk; idx++, list++) {
+		if (list->read_only) {
+			clk_hw = samsung_clk_register_read_only_gate(ctx, list);
+			goto registered;
+		}
 		reg_offs = ctx->reg_base + list->offset;
 
 		if (ctx->auto_clock_gate && ctx->gate_dbg_offset)
@@ -357,6 +701,7 @@ void __init samsung_clk_register_gate(struct samsung_clk_provider *ctx,
 				list->parent_name, list->flags,
 				ctx->reg_base + list->offset, list->bit_idx,
 				list->gate_flags, &ctx->lock);
+registered:
 		if (IS_ERR(clk_hw)) {
 			pr_err("%s: failed to register clock %s: %pe\n", __func__,
 			       list->name, clk_hw);

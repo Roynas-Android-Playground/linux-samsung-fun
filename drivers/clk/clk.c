@@ -2919,6 +2919,54 @@ void clk_hw_reparent(struct clk_hw *hw, struct clk_hw *new_parent)
 }
 
 /**
+ * clk_hw_sync_parent - synchronize a clock's cached parent with hardware
+ * @hw: clock whose provider implements get_parent
+ *
+ * Dedicated hardware transactions can change a read-only CCF mux without
+ * calling clk_set_parent(). This helper lets that provider reconcile CCF
+ * after the transaction while holding the prepare lock and migrating CCF's
+ * prepare/enable accounting to the parent already selected by hardware.
+ */
+int clk_hw_sync_parent(struct clk_hw *hw)
+{
+	struct clk_core *core, *old_parent, *parent;
+	u8 index;
+	int ret = 0;
+
+	if (!hw || !hw->core)
+		return -EINVAL;
+
+	clk_prepare_lock();
+	core = hw->core;
+	if (!core->ops->get_parent || core->num_parents < 2) {
+		ret = -EINVAL;
+		goto out;
+	}
+	index = core->ops->get_parent(hw);
+	if (index >= core->num_parents) {
+		ret = -EIO;
+		goto out;
+	}
+	parent = clk_core_get_parent_by_index(core, index);
+	if (!parent) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (parent != core->parent) {
+		old_parent = __clk_set_parent_before(core, parent);
+		__clk_set_parent_after(core, parent, old_parent);
+		__clk_recalc_accuracies(core);
+		__clk_recalc_rates(core, true, POST_RATE_CHANGE);
+	} else {
+		__clk_recalc_rates(core, true, POST_RATE_CHANGE);
+	}
+out:
+	clk_prepare_unlock();
+	return ret;
+}
+EXPORT_SYMBOL_GPL(clk_hw_sync_parent);
+
+/**
  * clk_has_parent - check if a clock is a possible parent for another
  * @clk: clock source
  * @parent: parent clock source

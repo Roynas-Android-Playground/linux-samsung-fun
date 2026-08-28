@@ -119,6 +119,7 @@ struct panfrost_compatible {
 	/* Optional platform policy for conservative initial devfreq bring-up. */
 	const char *devfreq_governor;
 	bool devfreq_require_exact_opp;
+	bool devfreq_calibrated_opps;
 };
 
 /**

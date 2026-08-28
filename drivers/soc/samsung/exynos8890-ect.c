@@ -1,752 +1,2181 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/*
- * Exynos8890 bootloader ECT and per-die CPU ASV parser.
- *
- * The blob is firmware data, not executable input. All offsets, counts,
- * strings and products are checked before they are consumed. Missing or
- * malformed calibration data is fatal for consumers; there is deliberately
- * no generic-voltage fallback.
- */
-
-#include <linux/arm-smccc.h>
-#include <linux/crc32.h>
-#include <linux/device.h>
-#include <linux/err.h>
-#include <linux/io.h>
-#include <linux/memremap.h>
-#include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/overflow.h>
-#include <linux/platform_device.h>
-#include <linux/slab.h>
-#include <linux/string.h>
-#include <linux/unaligned.h>
-
 #include <linux/soc/samsung/exynos8890-ect.h>
 
-#define ECT_SIGNATURE		"PARA"
-#define ECT_MAX_SIZE		0x19000
-#define ECT_MAX_DESCRIPTORS	64
-#define ECT_MAX_TABLES		16
-#define ECT_MAX_GROUPS		16
-#define ECT_VOLT_STEP_UV	6250
-#define ECT_SSA_COLS		12
-#define EXYNOS8890_ASV_BASE	0x101e9000
-#define EXYNOS8890_ASV_WORDS	5
-#define SMC_CMD_REG		((unsigned long)-101)
-#define SMC_REG_CLASS_SFR_R	(BIT(31) | BIT(30))
+#include <asm/io.h>
+#include <asm/memory.h>
 
-struct ect_cursor {
-	const u8 *base;
-	const u8 *pos;
-	const u8 *end;
-};
+#include <linux/device.h>
+#include <linux/errno.h>
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/io.h>
+#include <linux/module.h>
 
-struct exynos8890_fuse_domain {
-	u8 group;
-	s8 modified_group;
-	u8 ssa10;
-	u8 ssa11;
-	u8 ssa0;
-};
+#define ALIGNMENT_SIZE	 4
 
-struct exynos8890_ect_data {
-	struct exynos8890_ect_cpu_domain little;
-	struct exynos8890_ect_cpu_domain big;
-};
+/* Variable */
 
-static DEFINE_MUTEX(exynos8890_ect_lock);
-static struct exynos8890_ect_data *exynos8890_ect_data;
+static struct ect_info ect_list[];
 
-static int ect_get_u32(struct ect_cursor *cursor, u32 *value)
+static char ect_signature[] = "PARA";
+
+static phys_addr_t ect_address;
+static phys_addr_t ect_size;
+
+static phys_addr_t ect_phys_addr;
+
+/* API for internal */
+
+static void ect_parse_integer(void **address, void *value)
 {
-	if (cursor->end - cursor->pos < sizeof(*value))
-		return -EINVAL;
-
-	*value = get_unaligned_le32(cursor->pos);
-	cursor->pos += sizeof(*value);
-	return 0;
+	*((unsigned int *)value) = __raw_readl(*address);
+	*address += sizeof(uint32_t);
 }
 
-static int ect_get_s32(struct ect_cursor *cursor, s32 *value)
+static void ect_parse_integer64(void **address, void *value)
 {
-	u32 raw;
-	int ret;
+	unsigned int top, half;
 
-	ret = ect_get_u32(cursor, &raw);
-	if (!ret)
-		*value = raw;
-	return ret;
+	half = __raw_readl(*address);
+	*address += sizeof(uint32_t);
+	top = __raw_readl(*address);
+	*address += sizeof(uint32_t);
+
+       *(unsigned long long *)value = ((unsigned long long)top << 32 | half);
 }
 
-static int ect_get_string(struct ect_cursor *cursor, char *value, size_t size)
+static int ect_parse_string(void **address, char **value, unsigned int *length)
 {
-	size_t padded;
-	u32 length;
-	int ret;
+	ect_parse_integer(address, length);
+	(*length)++;
 
-	ret = ect_get_u32(cursor, &length);
-	if (ret)
-		return ret;
-	if (length >= size || check_add_overflow((size_t)length, 1UL, &padded))
-		return -EINVAL;
-	padded = ALIGN(padded, 4);
-	if (padded > cursor->end - cursor->pos || cursor->pos[length] != '\0')
-		return -EINVAL;
+	*value = *address;
 
-	memcpy(value, cursor->pos, length);
-	value[length] = '\0';
-	cursor->pos += padded;
-	return 0;
-}
-
-static int ect_subcursor(const struct ect_cursor *blob, const u8 *base,
-			 u32 offset, struct ect_cursor *cursor)
-{
-	if (offset > blob->end - base)
-		return -EINVAL;
-
-	cursor->base = base;
-	cursor->pos = base + offset;
-	cursor->end = blob->end;
-	return 0;
-}
-
-static const u8 *ect_find_block(const struct ect_cursor *blob, const char *target)
-{
-	struct ect_cursor cursor = *blob;
-	char name[EXYNOS8890_ECT_CLOCK_NAME_LEN];
-	u32 count, offset, total;
-	u32 ignored;
-	int i, ret;
-
-	if (cursor.end - cursor.pos < 16 || memcmp(cursor.pos, ECT_SIGNATURE, 4))
-		return ERR_PTR(-EINVAL);
-	cursor.pos += 8;
-	ret = ect_get_u32(&cursor, &total);
-	if (ret || total < 16 || total > cursor.end - cursor.base)
-		return ERR_PTR(-EINVAL);
-	cursor.end = cursor.base + total;
-	ret = ect_get_u32(&cursor, &count);
-	if (ret || !count || count > ECT_MAX_DESCRIPTORS)
-		return ERR_PTR(-EINVAL);
-
-	for (i = 0; i < count; i++) {
-		ret = ect_get_string(&cursor, name, sizeof(name));
-		ret |= ect_get_u32(&cursor, &offset);
-		if (ret || offset >= total)
-			return ERR_PTR(-EINVAL);
-		if (!strcmp(name, target)) {
-			/* Ensure the pointed-to block has at least its fixed header. */
-			struct ect_cursor check;
-
-			if (ect_subcursor(&cursor, blob->base, offset, &check) ||
-			    ect_get_u32(&check, &ignored))
-				return ERR_PTR(-EINVAL);
-			return blob->base + offset;
-		}
-	}
-
-	return ERR_PTR(-ENOENT);
-}
-
-static int ect_find_named(const struct ect_cursor *blob, const u8 *block,
-			  const char *target, u32 *parser_version,
-			  struct ect_cursor *domain)
-{
-	struct ect_cursor cursor;
-	char name[EXYNOS8890_ECT_CLOCK_NAME_LEN];
-	u32 count, offset, ignored;
-	int i, ret;
-
-	cursor.base = block;
-	cursor.pos = block;
-	cursor.end = blob->end;
-	ret = ect_get_u32(&cursor, parser_version);
-	ret |= ect_get_u32(&cursor, &ignored);
-	ret |= ect_get_u32(&cursor, &count);
-	if (ret || !count || count > ECT_MAX_DESCRIPTORS)
-		return -EINVAL;
-
-	for (i = 0; i < count; i++) {
-		ret = ect_get_string(&cursor, name, sizeof(name));
-		ret |= ect_get_u32(&cursor, &offset);
-		if (ret)
-			return -EINVAL;
-		if (!strcmp(name, target))
-			return ect_subcursor(blob, block, offset, domain);
-	}
-
-	return -ENOENT;
-}
-
-static int ect_parse_dvfs(const struct ect_cursor *blob, const char *name,
-			  struct exynos8890_ect_cpu_domain *domain)
-{
-	const u8 *block = ect_find_block(blob, "DVFS");
-	struct ect_cursor cursor;
-	u32 parser_version;
-	size_t cells;
-	int i, j, ret;
-
-	if (IS_ERR(block))
-		return PTR_ERR(block);
-	ret = ect_find_named(blob, block, name, &parser_version, &cursor);
-	if (ret)
-		return ret;
-	if (parser_version < 1 || parser_version > 3)
-		return -EOPNOTSUPP;
-
-	strscpy(domain->name, name, sizeof(domain->name));
-	ret = ect_get_u32(&cursor, &domain->max_frequency);
-	ret |= ect_get_u32(&cursor, &domain->min_frequency);
-	if (parser_version >= 2) {
-		ret |= ect_get_s32(&cursor, &domain->boot_level);
-		ret |= ect_get_s32(&cursor, &domain->resume_level);
-	} else {
-		domain->boot_level = -1;
-		domain->resume_level = -1;
-	}
-	ret |= ect_get_u32(&cursor, &domain->num_clocks);
-	ret |= ect_get_u32(&cursor, &domain->num_levels);
-	if (ret || !domain->num_clocks ||
-	    domain->num_clocks > EXYNOS8890_ECT_MAX_CLOCKS ||
-	    !domain->num_levels || domain->num_levels > EXYNOS8890_ECT_MAX_LEVELS)
-		return -EINVAL;
-
-	for (i = 0; i < domain->num_clocks; i++) {
-		ret = ect_get_string(&cursor, domain->clock_names[i],
-				     sizeof(domain->clock_names[i]));
-		if (ret)
-			return ret;
-	}
-
-	for (i = 0; i < domain->num_levels; i++) {
-		u32 enabled;
-
-		ret = ect_get_u32(&cursor, &domain->levels[i].rate_khz);
-		ret |= ect_get_u32(&cursor, &enabled);
-		if (ret)
-			return ret;
-		domain->levels[i].enabled = enabled;
-	}
-
-	if (check_mul_overflow((size_t)domain->num_levels,
-			       (size_t)domain->num_clocks, &cells) ||
-	    cells > (cursor.end - cursor.pos) / sizeof(u32))
-		return -EINVAL;
-
-	for (i = 0; i < domain->num_levels; i++)
-		for (j = 0; j < domain->num_clocks; j++) {
-			ret = ect_get_u32(&cursor,
-					  &domain->levels[i].clock_values[j]);
-			if (ret)
-				return ret;
-		}
+	if (*length % ALIGNMENT_SIZE != 0)
+		*address += *length + ALIGNMENT_SIZE - (*length % ALIGNMENT_SIZE);
+	else
+		*address += *length;
 
 	return 0;
 }
 
-static int ect_parse_gen_ssa(const struct ect_cursor *blob, const char *name,
-			     u32 table_version, u32 *subgroup,
-			     u32 *ssa0_base, u32 *ssa0_step, u32 ssa1[8])
-{
-	const u8 *block = ect_find_block(blob, "GEN");
-	struct ect_cursor cursor;
-	u32 parser_version, rows, cols, row, value;
-	int i, j, ret;
-
-	if (IS_ERR(block))
-		return PTR_ERR(block);
-	ret = ect_find_named(blob, block, name, &parser_version, &cursor);
-	if (ret)
-		return ret;
-	if (parser_version < 1 || parser_version > 3)
-		return -EOPNOTSUPP;
-	ret = ect_get_u32(&cursor, &cols);
-	if (ret)
-		return ret;
-	ret = ect_get_u32(&cursor, &rows);
-	if (ret)
-		return ret;
-	if (cols < ECT_SSA_COLS || !rows)
-		return -EINVAL;
-	row = min(table_version, rows - 1);
-
-	for (i = 0; i <= row; i++)
-		for (j = 0; j < cols; j++) {
-			ret = ect_get_u32(&cursor, &value);
-			if (ret)
-				return ret;
-			if (i != row)
-				continue;
-			if (j == 1)
-				*subgroup = value;
-			else if (j == 2)
-				*ssa0_base = value;
-			else if (j == 3)
-				*ssa0_step = value;
-			else if (j >= 4 && j < 12)
-				ssa1[j - 4] = value;
-		}
-
-	return 0;
-}
-
-static int ect_parse_margin(const struct ect_cursor *blob, const char *name,
-			    u32 level, u32 group, u32 *margin_uv)
-{
-	const u8 *block = ect_find_block(blob, "MARGIN");
-	struct ect_cursor cursor;
-	u32 parser_version, groups, levels, value;
-	size_t index, cells;
-	int ret;
-
-	if (PTR_ERR_OR_ZERO(block) == -ENOENT) {
-		*margin_uv = 0;
-		return 0;
-	}
-	if (IS_ERR(block))
-		return PTR_ERR(block);
-	ret = ect_find_named(blob, block, name, &parser_version, &cursor);
-	if (ret == -ENOENT) {
-		*margin_uv = 0;
-		return 0;
-	}
-	if (ret)
-		return ret;
-	if (parser_version < 1 || parser_version > 2)
-		return -EOPNOTSUPP;
-	ret = ect_get_u32(&cursor, &groups);
-	ret |= ect_get_u32(&cursor, &levels);
-	if (ret || group >= groups || level >= levels ||
-	    check_mul_overflow((size_t)groups, (size_t)levels, &cells))
-		return -EINVAL;
-	index = level * groups + group;
-
-	if (parser_version >= 2) {
-		if (cells > cursor.end - cursor.pos)
-			return -EINVAL;
-		*margin_uv = cursor.pos[index] * ECT_VOLT_STEP_UV;
-		return 0;
-	}
-	if (cells > (cursor.end - cursor.pos) / sizeof(u32))
-		return -EINVAL;
-	cursor.pos += index * sizeof(u32);
-	ret = ect_get_u32(&cursor, &value);
-	if (!ret)
-		*margin_uv = value;
-	return ret;
-}
-
-static int ect_adjust_voltage(u32 base, u32 margin, u32 ssa1,
-			      u32 ssa0_base, u32 ssa0, u32 ssa0_step,
-			      u32 *voltage)
-{
-	u32 floor;
-
-	if (check_add_overflow(base, margin, voltage) ||
-	    check_add_overflow(*voltage, ssa1, voltage) ||
-	    check_mul_overflow(ssa0, ssa0_step, &floor) ||
-	    check_add_overflow(ssa0_base, floor, &floor))
-		return -EOVERFLOW;
-	*voltage = max(*voltage, floor);
-	return 0;
-}
-
-static int ect_store_voltage(struct exynos8890_ect_cpu_domain *domain,
-			     u32 frequency, u32 voltage, u32 enabled)
-{
-	int i;
-
-	for (i = 0; i < domain->num_levels; i++) {
-		if (domain->levels[i].rate_khz != frequency)
-			continue;
-		domain->levels[i].voltage_uv = voltage;
-		domain->levels[i].enabled &= enabled;
-		return 0;
-	}
-
-	return -ENOENT;
-}
-
-static int ect_apply_asv(const struct ect_cursor *blob, const char *name,
-			 struct exynos8890_ect_cpu_domain *domain,
-			 const struct exynos8890_fuse_domain *fuse,
-			 u32 table_version, const char *ssa_name)
-{
-	const u8 *block = ect_find_block(blob, "ASV");
-	struct ect_cursor cursor;
-	struct ect_cursor scan;
-	u32 parser_version, groups, levels, tables;
-	u32 max_table_version = 0, effective_table_version;
-	u32 frequencies[EXYNOS8890_ECT_MAX_LEVELS];
-	u32 ssa1[8], subgroup = 0, ssa0_base = 0, ssa0_step = 0;
-	s32 group = fuse->group + fuse->modified_group;
-	bool found = false;
-	int i, j, ret;
-
-	if (IS_ERR(block))
-		return PTR_ERR(block);
-	ret = ect_find_named(blob, block, name, &parser_version, &cursor);
-	if (ret)
-		return ret;
-	if (parser_version < 1 || parser_version > 3)
-		return -EOPNOTSUPP;
-	ret = ect_get_u32(&cursor, &groups);
-	ret |= ect_get_u32(&cursor, &levels);
-	ret |= ect_get_u32(&cursor, &tables);
-	if (ret || !groups || groups > ECT_MAX_GROUPS || group < 0 || group >= groups ||
-	    !levels || levels > EXYNOS8890_ECT_MAX_LEVELS ||
-	    !tables || tables > ECT_MAX_TABLES)
-		return -EINVAL;
-	for (i = 0; i < levels; i++) {
-		u32 raw_frequency;
-
-		ret = ect_get_u32(&cursor, &raw_frequency);
-		if (ret || check_mul_overflow(raw_frequency, 1000U,
-					      &frequencies[i]))
-			return ret ?: -EOVERFLOW;
-	}
-
-	scan = cursor;
-	for (i = 0; i < tables; i++) {
-		u32 version;
-		size_t cells, skip;
-
-		ret = ect_get_u32(&scan, &version);
-		if (ret)
-			return ret;
-		max_table_version = max(max_table_version, version);
-		if (parser_version >= 2) {
-			if (check_mul_overflow((size_t)levels, sizeof(u32), &skip) ||
-			    check_add_overflow(skip, 2 * sizeof(u32), &skip) ||
-			    skip > scan.end - scan.pos)
-				return -EINVAL;
-			scan.pos += skip;
-		}
-		if (check_mul_overflow((size_t)levels, (size_t)groups, &cells) ||
-		    (parser_version < 3 &&
-		     check_mul_overflow(cells, sizeof(u32), &cells)) ||
-		    cells > scan.end - scan.pos)
-			return -EINVAL;
-		scan.pos += cells;
-	}
-	effective_table_version = min(table_version, max_table_version);
-
-	memset(ssa1, 0, sizeof(ssa1));
-	ret = ect_parse_gen_ssa(blob, ssa_name, effective_table_version, &subgroup,
-				&ssa0_base, &ssa0_step, ssa1);
-	if (ret)
-		return ret;
-
-	for (i = 0; i < tables; i++) {
-		u32 version;
-		s32 boot, resume;
-		u32 enabled[EXYNOS8890_ECT_MAX_LEVELS];
-		size_t cells;
-
-		ret = ect_get_u32(&cursor, &version);
-		if (ret)
-			return ret;
-		for (j = 0; j < levels; j++)
-			enabled[j] = 1;
-		if (parser_version >= 2) {
-			ret = ect_get_s32(&cursor, &boot);
-			ret |= ect_get_s32(&cursor, &resume);
-			for (j = 0; !ret && j < levels; j++)
-				ret = ect_get_u32(&cursor, &enabled[j]);
-			if (ret)
-				return ret;
-		}
-		if (check_mul_overflow((size_t)levels, (size_t)groups, &cells))
-			return -EINVAL;
-		if (parser_version >= 3) {
-			if (cells > cursor.end - cursor.pos)
-				return -EINVAL;
-			if (version == effective_table_version) {
-				for (j = 0; j < levels; j++) {
-					u32 margin, ssa, voltage;
-
-					voltage = cursor.pos[j * groups + group] * ECT_VOLT_STEP_UV;
-					ret = ect_parse_margin(blob, name, j, group, &margin);
-					if (ret)
-						return ret;
-					ssa = j < subgroup ? ssa1[fuse->ssa10] :
-							ssa1[fuse->ssa11 + 4];
-					ret = ect_adjust_voltage(voltage, margin, ssa,
-							 ssa0_base, fuse->ssa0,
-							 ssa0_step, &voltage);
-					if (ret)
-						return ret;
-					ret = ect_store_voltage(domain, frequencies[j],
-							voltage, enabled[j]);
-					if (ret && ret != -ENOENT)
-						return ret;
-				}
-				found = true;
-			}
-			cursor.pos += cells;
-		} else {
-			if (cells > (cursor.end - cursor.pos) / sizeof(u32))
-				return -EINVAL;
-			if (version == effective_table_version) {
-				for (j = 0; j < levels; j++) {
-					u32 margin, ssa, voltage;
-					size_t index = j * groups + group;
-
-					voltage = get_unaligned_le32(cursor.pos +
-							       index * sizeof(u32));
-					ret = ect_parse_margin(blob, name, j, group, &margin);
-					if (ret)
-						return ret;
-					ssa = j < subgroup ? ssa1[fuse->ssa10] :
-							ssa1[fuse->ssa11 + 4];
-					ret = ect_adjust_voltage(voltage, margin, ssa,
-							 ssa0_base, fuse->ssa0,
-							 ssa0_step, &voltage);
-					if (ret)
-						return ret;
-					ret = ect_store_voltage(domain, frequencies[j],
-							voltage, enabled[j]);
-					if (ret && ret != -ENOENT)
-						return ret;
-				}
-				found = true;
-			}
-			cursor.pos += cells * sizeof(u32);
-		}
-	}
-
-	if (!found)
-		return -ENOENT;
-	for (i = 0; i < domain->num_levels; i++)
-		if (domain->levels[i].enabled && !domain->levels[i].voltage_uv)
-			return -EINVAL;
-	return 0;
-}
-
-static int exynos8890_read_asv_words(u32 words[EXYNOS8890_ASV_WORDS])
-{
-	struct arm_smccc_res res;
-	int i;
-
-	for (i = 0; i < EXYNOS8890_ASV_WORDS; i++) {
-		u32 address = EXYNOS8890_ASV_BASE + i * sizeof(u32);
-
-		arm_smccc_smc(SMC_CMD_REG,
-			      SMC_REG_CLASS_SFR_R | (address >> 2), 0, 0, 0, 0, 0, 0,
-			      &res);
-		if (res.a0)
-			return -EIO;
-		words[i] = res.a2;
-	}
-	return 0;
-}
-
-static s8 exynos8890_signed_nibble(u32 value)
-{
-	return sign_extend32(value & 0xf, 3);
-}
-
-static void exynos8890_decode_fuse_half(u16 value,
-				       struct exynos8890_fuse_domain *fuse)
-{
-	fuse->group = value & 0xf;
-	fuse->modified_group = exynos8890_signed_nibble(value >> 4);
-	fuse->ssa10 = (value >> 8) & 0x3;
-	fuse->ssa11 = (value >> 10) & 0x3;
-	fuse->ssa0 = (value >> 12) & 0xf;
-}
-
-static int exynos8890_validate_cpu_domain(
-		struct exynos8890_ect_cpu_domain *domain, u32 min_rate,
-		u32 max_rate, u32 max_voltage)
-{
-	u32 previous_rate = U32_MAX;
-	u32 previous_voltage = U32_MAX;
-	u32 enabled_max = 0, enabled_min = 0;
-	unsigned int enabled = 0;
-	int i, j;
-
-	for (i = 0; i < domain->num_levels; i++) {
-		struct exynos8890_ect_cpu_level *level = &domain->levels[i];
-
-		if (level->rate_khz >= previous_rate || level->rate_khz < min_rate ||
-		    level->rate_khz > max_rate ||
-		    level->clock_values[0] != level->rate_khz)
-			return -EINVAL;
-		for (j = 1; j < domain->num_clocks; j++)
-			if (level->clock_values[j] > 63)
-				return -ERANGE;
-		previous_rate = level->rate_khz;
-		if (!level->enabled)
-			continue;
-		if (level->voltage_uv < 500000 || level->voltage_uv > max_voltage ||
-		    level->voltage_uv > previous_voltage)
-			return -ERANGE;
-		previous_voltage = level->voltage_uv;
-		if (!enabled_max)
-			enabled_max = level->rate_khz;
-		enabled_min = level->rate_khz;
-		enabled++;
-	}
-
-	if (!enabled)
-		return -ENODATA;
-	if ((domain->boot_level < -1 || domain->boot_level >= domain->num_levels) ||
-	    (domain->resume_level < -1 || domain->resume_level >= domain->num_levels))
-		return -EINVAL;
-	if ((domain->boot_level >= 0 &&
-	     !domain->levels[domain->boot_level].enabled) ||
-	    (domain->resume_level >= 0 &&
-	     !domain->levels[domain->resume_level].enabled))
-		return -EINVAL;
-	domain->max_frequency = enabled_max;
-	domain->min_frequency = enabled_min;
-	return 0;
-}
-
-static int exynos8890_ect_probe(struct platform_device *pdev)
-{
-	struct device_node *memory_node;
-	struct exynos8890_fuse_domain little_fuse, big_fuse;
-	struct exynos8890_ect_data *data;
-	struct ect_cursor blob;
-	struct resource resource;
-	void *mapping;
-	u32 words[EXYNOS8890_ASV_WORDS];
-	u32 total_size, table_version;
-	int ret;
-
-	memory_node = of_parse_phandle(pdev->dev.of_node, "memory-region", 0);
-	if (!memory_node)
-		return dev_err_probe(&pdev->dev, -EINVAL, "missing ECT memory region\n");
-	ret = of_address_to_resource(memory_node, 0, &resource);
-	of_node_put(memory_node);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret, "invalid ECT memory region\n");
-	if (resource_size(&resource) != ECT_MAX_SIZE)
-		return dev_err_probe(&pdev->dev, -EINVAL, "invalid ECT region size\n");
-
-	mapping = devm_memremap(&pdev->dev, resource.start, resource_size(&resource),
-				MEMREMAP_WB);
-	if (IS_ERR(mapping))
-		return dev_err_probe(&pdev->dev, PTR_ERR(mapping), "failed to map ECT\n");
-	if (!mapping)
-		return -ENOMEM;
-	if (memcmp(mapping, ECT_SIGNATURE, 4))
-		return dev_err_probe(&pdev->dev, -ENODATA, "ECT signature is absent\n");
-	total_size = get_unaligned_le32(mapping + 8);
-	if (total_size < 16 || total_size > resource_size(&resource))
-		return dev_err_probe(&pdev->dev, -EINVAL, "invalid ECT total size\n");
-
-	blob.base = mapping;
-	blob.pos = mapping;
-	blob.end = mapping + total_size;
-	ret = exynos8890_read_asv_words(words);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret, "failed to read ASV fuses\n");
-	if (!(words[3] & BIT(7)))
-		return dev_err_probe(&pdev->dev, -ENODATA,
-				     "device has no fused ASV group\n");
-	table_version = words[3] & GENMASK(6, 0);
-	exynos8890_decode_fuse_half(words[0] & 0xffff, &big_fuse);
-	exynos8890_decode_fuse_half(words[0] >> 16, &little_fuse);
-
-	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
-	ret = ect_parse_dvfs(&blob, "dvfs_little", &data->little);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "failed to parse little CPU DVFS data\n");
-	ret = ect_parse_dvfs(&blob, "dvfs_big", &data->big);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "failed to parse big CPU DVFS data\n");
-	ret = ect_apply_asv(&blob, "dvfs_little", &data->little, &little_fuse,
-			    table_version, "SSA_LITTLE");
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "failed to qualify little CPU ASV data\n");
-	ret = ect_apply_asv(&blob, "dvfs_big", &data->big, &big_fuse,
-			    table_version, "SSA_BIG");
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "failed to qualify big CPU ASV data\n");
-	ret = exynos8890_validate_cpu_domain(&data->little, 130000, 1976000,
-					     1475000);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "unsafe little CPU ECT voltage ordering\n");
-	ret = exynos8890_validate_cpu_domain(&data->big, 208000, 3016000,
-					    1575000);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "unsafe big CPU ECT voltage ordering\n");
-
-	mutex_lock(&exynos8890_ect_lock);
-	if (exynos8890_ect_data) {
-		mutex_unlock(&exynos8890_ect_lock);
-		return -EBUSY;
-	}
-	exynos8890_ect_data = data;
-	mutex_unlock(&exynos8890_ect_lock);
-	platform_set_drvdata(pdev, data);
-
-	dev_info(&pdev->dev,
-		 "qualified ECT table %u for Apollo and Mongoose (size %#x, crc32 %#x)\n",
-		 table_version, total_size, crc32_le(~0, mapping, total_size));
-	return 0;
-}
-
-static void exynos8890_ect_remove(struct platform_device *pdev)
-{
-	mutex_lock(&exynos8890_ect_lock);
-	if (exynos8890_ect_data == platform_get_drvdata(pdev))
-		exynos8890_ect_data = NULL;
-	mutex_unlock(&exynos8890_ect_lock);
-}
-
-int exynos8890_ect_get_cpu_domain(const char *name,
-				  struct exynos8890_ect_cpu_domain *domain)
+static int ect_parse_dvfs_domain(int parser_version, void *address, struct ect_dvfs_domain *domain)
 {
 	int ret = 0;
+	int i;
+	char *clock_name;
+	int length;
 
-	if (!name || !domain)
-		return -EINVAL;
-	mutex_lock(&exynos8890_ect_lock);
-	if (!exynos8890_ect_data)
-		ret = -EPROBE_DEFER;
-	else if (!strcmp(name, "dvfs_little"))
-		*domain = exynos8890_ect_data->little;
-	else if (!strcmp(name, "dvfs_big"))
-		*domain = exynos8890_ect_data->big;
-	else
-		ret = -ENOENT;
-	mutex_unlock(&exynos8890_ect_lock);
+	ect_parse_integer(&address, &domain->max_frequency);
+	ect_parse_integer(&address, &domain->min_frequency);
+
+	if (parser_version >= 2) {
+		ect_parse_integer(&address, &domain->boot_level_idx);
+		ect_parse_integer(&address, &domain->resume_level_idx);
+	} else {
+		domain->boot_level_idx = -1;
+		domain->resume_level_idx = -1;
+	}
+
+	ect_parse_integer(&address, &domain->num_of_clock);
+	ect_parse_integer(&address, &domain->num_of_level);
+
+	domain->list_clock = kzalloc(sizeof(char *) * domain->num_of_clock, GFP_KERNEL);
+	if (domain->list_clock == NULL) {
+		ret = -ENOMEM;
+		goto err_list_clock_allocation;
+	}
+
+	for (i = 0; i < domain->num_of_clock; ++i) {
+		if (ect_parse_string(&address, &clock_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		domain->list_clock[i] = clock_name;
+	}
+
+	domain->list_level = address;
+	address += sizeof(struct ect_dvfs_level) * domain->num_of_level;
+
+	domain->list_dvfs_value = address;
+
+	return 0;
+
+err_parse_string:
+	kfree(domain->list_clock);
+err_list_clock_allocation:
 	return ret;
 }
-EXPORT_SYMBOL_GPL(exynos8890_ect_get_cpu_domain);
 
-static const struct of_device_id exynos8890_ect_of_match[] = {
-	{ .compatible = "samsung,exynos8890-ect" },
-	{ }
-};
-MODULE_DEVICE_TABLE(of, exynos8890_ect_of_match);
+static int ect_parse_dvfs_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	char *domain_name;
+	unsigned int length, offset;
+	struct ect_dvfs_header *ect_dvfs_header;
+	struct ect_dvfs_domain *ect_dvfs_domain;
+	void *address_dvfs_header = address;
 
-static struct platform_driver exynos8890_ect_driver = {
-	.probe = exynos8890_ect_probe,
-	.remove = exynos8890_ect_remove,
-	.driver = {
-		.name = "exynos8890-ect",
-		.of_match_table = exynos8890_ect_of_match,
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_dvfs_header = kzalloc(sizeof(struct ect_dvfs_header), GFP_KERNEL);
+	if (ect_dvfs_header == NULL)
+		return -ENOMEM;
+
+	ect_parse_integer(&address, &ect_dvfs_header->parser_version);
+	ect_parse_integer(&address, &ect_dvfs_header->version);
+	ect_parse_integer(&address, &ect_dvfs_header->num_of_domain);
+
+	ect_dvfs_header->domain_list = kzalloc(sizeof(struct ect_dvfs_domain) * ect_dvfs_header->num_of_domain,
+						GFP_KERNEL);
+	if (ect_dvfs_header->domain_list == NULL) {
+		ret = -EINVAL;
+		goto err_domain_list_allocation;
+	}
+
+	for (i = 0; i < ect_dvfs_header->num_of_domain; ++i) {
+		if (ect_parse_string(&address, &domain_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		ect_dvfs_domain = &ect_dvfs_header->domain_list[i];
+		ect_dvfs_domain->domain_name = domain_name;
+		ect_dvfs_domain->domain_offset = offset;
+	}
+
+	for (i = 0; i < ect_dvfs_header->num_of_domain; ++i) {
+		ect_dvfs_domain = &ect_dvfs_header->domain_list[i];
+
+		if (ect_parse_dvfs_domain(ect_dvfs_header->parser_version,
+						address_dvfs_header + ect_dvfs_domain->domain_offset,
+						ect_dvfs_domain)) {
+			ret = -EINVAL;
+			goto err_parse_domain;
+		}
+	}
+
+	info->block_handle = ect_dvfs_header;
+
+	return 0;
+
+err_parse_domain:
+err_parse_string:
+	kfree(ect_dvfs_header->domain_list);
+err_domain_list_allocation:
+	kfree(ect_dvfs_header);
+	return ret;
+}
+
+static int ect_parse_pll(int parser_version, void *address, struct ect_pll *ect_pll)
+{
+	ect_parse_integer(&address, &ect_pll->type_pll);
+	ect_parse_integer(&address, &ect_pll->num_of_frequency);
+
+	ect_pll->frequency_list = address;
+
+	return 0;
+}
+
+static int ect_parse_pll_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	char *pll_name;
+	unsigned int length, offset;
+	struct ect_pll_header *ect_pll_header;
+	struct ect_pll *ect_pll;
+	void *address_pll_header = address;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_pll_header = kzalloc(sizeof(struct ect_pll_header), GFP_KERNEL);
+	if (ect_pll_header == NULL)
+		return -ENOMEM;
+
+	ect_parse_integer(&address, &ect_pll_header->parser_version);
+	ect_parse_integer(&address, &ect_pll_header->version);
+	ect_parse_integer(&address, &ect_pll_header->num_of_pll);
+
+	ect_pll_header->pll_list = kzalloc(sizeof(struct ect_pll) * ect_pll_header->num_of_pll,
+							GFP_KERNEL);
+	if (ect_pll_header->pll_list == NULL) {
+		ret = -ENOMEM;
+		goto err_pll_list_allocation;
+	}
+
+	for (i = 0; i < ect_pll_header->num_of_pll; ++i) {
+
+		if (ect_parse_string(&address, &pll_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		ect_pll = &ect_pll_header->pll_list[i];
+		ect_pll->pll_name = pll_name;
+		ect_pll->pll_offset = offset;
+	}
+
+	for (i = 0; i < ect_pll_header->num_of_pll; ++i) {
+		ect_pll = &ect_pll_header->pll_list[i];
+
+		if (ect_parse_pll(ect_pll_header->parser_version,
+					address_pll_header + ect_pll->pll_offset, ect_pll)) {
+			ret = -EINVAL;
+			goto err_parse_pll;
+		}
+	}
+
+	info->block_handle = ect_pll_header;
+
+	return 0;
+
+err_parse_pll:
+err_parse_string:
+	kfree(ect_pll_header->pll_list);
+err_pll_list_allocation:
+	kfree(ect_pll_header);
+	return ret;
+}
+
+static int ect_parse_voltage_table(int parser_version, void **address, struct ect_voltage_domain *domain, struct ect_voltage_table *table)
+{
+	int num_of_data = domain->num_of_group * domain->num_of_level;
+
+	ect_parse_integer(address, &table->table_version);
+
+	if (parser_version >= 2) {
+		ect_parse_integer(address, &table->boot_level_idx);
+		ect_parse_integer(address, &table->resume_level_idx);
+
+		table->level_en = *address;
+		*address += sizeof(int32_t) * domain->num_of_level;
+	} else {
+		table->boot_level_idx = -1;
+		table->resume_level_idx = -1;
+
+		table->level_en = NULL;
+	}
+
+	if (parser_version >= 3) {
+		table->voltages = NULL;
+
+		table->voltages_step = *address;
+		*address += sizeof(unsigned char) * num_of_data;
+		table->volt_step = PMIC_VOLTAGE_STEP;
+
+	} else {
+		table->voltages = *address;
+		*address += sizeof(int32_t) * num_of_data;
+
+		table->voltages_step = NULL;
+		table->volt_step = 0;
+	}
+
+	return 0;
+}
+
+static int ect_parse_voltage_domain(int parser_version, void *address, struct ect_voltage_domain *domain)
+{
+	int ret = 0;
+	int i;
+
+	ect_parse_integer(&address, &domain->num_of_group);
+	ect_parse_integer(&address, &domain->num_of_level);
+	ect_parse_integer(&address, &domain->num_of_table);
+
+	domain->level_list = address;
+	address += sizeof(int32_t) * domain->num_of_level;
+
+	domain->table_list = kzalloc(sizeof(struct ect_voltage_table) * domain->num_of_table, GFP_KERNEL);
+	if (domain->table_list == NULL) {
+		ret = -ENOMEM;
+		goto err_table_list_allocation;
+	}
+
+	for (i = 0; i < domain->num_of_table; ++i) {
+		if (ect_parse_voltage_table(parser_version,
+						&address,
+						domain,
+						&domain->table_list[i])) {
+			ret = -EINVAL;
+			goto err_parse_voltage_table;
+		}
+	}
+
+	return 0;
+
+err_parse_voltage_table:
+	kfree(domain->table_list);
+err_table_list_allocation:
+	return ret;
+}
+
+static int ect_parse_voltage_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	char *domain_name;
+	unsigned int length, offset;
+	struct ect_voltage_header *ect_voltage_header;
+	struct ect_voltage_domain *ect_voltage_domain;
+	void *address_voltage_header = address;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_voltage_header = kzalloc(sizeof(struct ect_voltage_header), GFP_KERNEL);
+	if (ect_voltage_header == NULL)
+		return -EINVAL;
+
+	ect_parse_integer(&address, &ect_voltage_header->parser_version);
+	ect_parse_integer(&address, &ect_voltage_header->version);
+	ect_parse_integer(&address, &ect_voltage_header->num_of_domain);
+
+	ect_voltage_header->domain_list = kzalloc(sizeof(struct ect_voltage_domain) * ect_voltage_header->num_of_domain,
+							GFP_KERNEL);
+	if (ect_voltage_header->domain_list == NULL) {
+		ret = -ENOMEM;
+		goto err_domain_list_allocation;
+	}
+
+	for (i = 0; i < ect_voltage_header->num_of_domain; ++i) {
+		if (ect_parse_string(&address, &domain_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		ect_voltage_domain = &ect_voltage_header->domain_list[i];
+		ect_voltage_domain->domain_name = domain_name;
+		ect_voltage_domain->domain_offset = offset;
+	}
+
+	for (i = 0; i < ect_voltage_header->num_of_domain; ++i) {
+		ect_voltage_domain = &ect_voltage_header->domain_list[i];
+
+		if (ect_parse_voltage_domain(ect_voltage_header->parser_version,
+						address_voltage_header + ect_voltage_domain->domain_offset,
+						ect_voltage_domain)) {
+			ret = -EINVAL;
+			goto err_parse_voltage_domain;
+		}
+	}
+
+	info->block_handle = ect_voltage_header;
+
+	return 0;
+
+err_parse_voltage_domain:
+err_parse_string:
+	kfree(ect_voltage_header->domain_list);
+err_domain_list_allocation:
+	kfree(ect_voltage_header);
+	return ret;
+}
+
+static int ect_parse_rcc_table(int parser_version, void **address, struct ect_rcc_domain *domain, struct ect_rcc_table *table)
+{
+	int num_of_data = domain->num_of_group * domain->num_of_level;
+
+	ect_parse_integer(address, &table->table_version);
+
+	if (parser_version >= 2) {
+		table->rcc_compact = *address;
+		*address += sizeof(unsigned char) * num_of_data;
+	} else {
+		table->rcc = *address;
+		*address += sizeof(int32_t) * num_of_data;
+	}
+
+	return 0;
+}
+
+static int ect_parse_rcc_domain(int parser_version, void *address, struct ect_rcc_domain *domain)
+{
+	int ret = 0;
+	int i;
+
+	ect_parse_integer(&address, &domain->num_of_group);
+	ect_parse_integer(&address, &domain->num_of_level);
+	ect_parse_integer(&address, &domain->num_of_table);
+
+	domain->level_list = address;
+	address += sizeof(int32_t) * domain->num_of_level;
+
+	domain->table_list = kzalloc(sizeof(struct ect_rcc_table) * domain->num_of_table, GFP_KERNEL);
+	if (domain->table_list == NULL) {
+		ret = -ENOMEM;
+		goto err_table_list_allocation;
+	}
+
+	for (i = 0; i < domain->num_of_table; ++i) {
+		if (ect_parse_rcc_table(parser_version,
+						&address,
+						domain, &domain->table_list[i])) {
+			ret = -EINVAL;
+			goto err_parse_rcc_table;
+		}
+	}
+
+	return 0;
+
+err_parse_rcc_table:
+	kfree(domain->table_list);
+err_table_list_allocation:
+	return ret;
+}
+
+static int ect_parse_rcc_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	char *domain_name;
+	unsigned int length, offset;
+	struct ect_rcc_header *ect_rcc_header;
+	struct ect_rcc_domain *ect_rcc_domain;
+	void *address_rcc_header = address;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_rcc_header = kzalloc(sizeof(struct ect_rcc_header), GFP_KERNEL);
+
+	if (ect_rcc_header == NULL)
+		return -EINVAL;
+
+	ect_parse_integer(&address, &ect_rcc_header->parser_version);
+	ect_parse_integer(&address, &ect_rcc_header->version);
+	ect_parse_integer(&address, &ect_rcc_header->num_of_domain);
+
+	ect_rcc_header->domain_list = kzalloc(sizeof(struct ect_rcc_domain) * ect_rcc_header->num_of_domain,
+							GFP_KERNEL);
+
+	if (ect_rcc_header->domain_list == NULL) {
+		ret = -ENOMEM;
+		goto err_domain_list_allocation;
+	}
+
+	for (i = 0; i < ect_rcc_header->num_of_domain; ++i) {
+		if (ect_parse_string(&address, &domain_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		ect_rcc_domain = &ect_rcc_header->domain_list[i];
+		ect_rcc_domain->domain_name = domain_name;
+		ect_rcc_domain->domain_offset = offset;
+	}
+
+	for (i = 0; i < ect_rcc_header->num_of_domain; ++i) {
+		ect_rcc_domain = &ect_rcc_header->domain_list[i];
+
+		if (ect_parse_rcc_domain(ect_rcc_header->parser_version,
+						address_rcc_header + ect_rcc_domain->domain_offset,
+						ect_rcc_domain)) {
+			ret = -EINVAL;
+			goto err_parse_rcc_domain;
+		}
+	}
+
+	info->block_handle = ect_rcc_header;
+
+	return 0;
+
+err_parse_rcc_domain:
+err_parse_string:
+	kfree(ect_rcc_header->domain_list);
+err_domain_list_allocation:
+	kfree(ect_rcc_header);
+	return ret;
+}
+
+static int ect_parse_mif_thermal_header(void *address, struct ect_info *info)
+{
+	struct ect_mif_thermal_header *ect_mif_thermal_header;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_mif_thermal_header = kzalloc(sizeof(struct ect_mif_thermal_header), GFP_KERNEL);
+	if (ect_mif_thermal_header == NULL)
+		return -EINVAL;
+
+	ect_parse_integer(&address, &ect_mif_thermal_header->parser_version);
+	ect_parse_integer(&address, &ect_mif_thermal_header->version);
+	ect_parse_integer(&address, &ect_mif_thermal_header->num_of_level);
+
+	ect_mif_thermal_header->level = address;
+
+	info->block_handle = ect_mif_thermal_header;
+
+	return 0;
+}
+
+static int ect_parse_ap_thermal_function(int parser_version, void *address, struct ect_ap_thermal_function *function)
+{
+	int i;
+	struct ect_ap_thermal_range *range;
+
+	ect_parse_integer(&address, &function->num_of_range);
+
+	function->range_list = kzalloc(sizeof(struct ect_ap_thermal_range) * function->num_of_range, GFP_KERNEL);
+
+	for (i = 0; i < function->num_of_range; ++i) {
+		range = &function->range_list[i];
+
+		ect_parse_integer(&address, &range->lower_bound_temperature);
+		ect_parse_integer(&address, &range->upper_bound_temperature);
+		ect_parse_integer(&address, &range->max_frequency);
+		ect_parse_integer(&address, &range->sw_trip);
+		ect_parse_integer(&address, &range->flag);
+	}
+
+	return 0;
+}
+
+static int ect_parse_ap_thermal_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	char *function_name;
+	unsigned int length, offset;
+	struct ect_ap_thermal_header *ect_ap_thermal_header;
+	struct ect_ap_thermal_function *ect_ap_thermal_function;
+	void *address_thermal_header = address;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_ap_thermal_header = kzalloc(sizeof(struct ect_ap_thermal_header), GFP_KERNEL);
+	if (ect_ap_thermal_header == NULL)
+		return -EINVAL;
+
+	ect_parse_integer(&address, &ect_ap_thermal_header->parser_version);
+	ect_parse_integer(&address, &ect_ap_thermal_header->version);
+	ect_parse_integer(&address, &ect_ap_thermal_header->num_of_function);
+
+	ect_ap_thermal_header->function_list = kzalloc(sizeof(struct ect_ap_thermal_function) * ect_ap_thermal_header->num_of_function,
+								GFP_KERNEL);
+	if (ect_ap_thermal_header->function_list == NULL) {
+		ret = -ENOMEM;
+		goto err_function_list_allocation;
+	}
+
+	for (i = 0; i < ect_ap_thermal_header->num_of_function; ++i) {
+		if (ect_parse_string(&address, &function_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		ect_ap_thermal_function = &ect_ap_thermal_header->function_list[i];
+		ect_ap_thermal_function->function_name = function_name;
+		ect_ap_thermal_function->function_offset = offset;
+	}
+
+	for (i = 0; i < ect_ap_thermal_header->num_of_function; ++i) {
+		ect_ap_thermal_function = &ect_ap_thermal_header->function_list[i];
+
+		if (ect_parse_ap_thermal_function(ect_ap_thermal_header->parser_version,
+							address_thermal_header + ect_ap_thermal_function->function_offset,
+							ect_ap_thermal_function)) {
+			ret = -EINVAL;
+			goto err_parse_ap_thermal_function;
+		}
+	}
+
+	info->block_handle = ect_ap_thermal_header;
+
+	return 0;
+
+err_parse_ap_thermal_function:
+err_parse_string:
+	kfree(ect_ap_thermal_header->function_list);
+err_function_list_allocation:
+	kfree(ect_ap_thermal_header);
+	return ret;
+}
+
+static int ect_parse_margin_domain(int parser_version, void *address, struct ect_margin_domain *domain)
+{
+	ect_parse_integer(&address, &domain->num_of_group);
+	ect_parse_integer(&address, &domain->num_of_level);
+
+	if (parser_version >= 2) {
+		domain->offset = NULL;
+		domain->offset_compact = address;
+		domain->volt_step = PMIC_VOLTAGE_STEP;
+	} else {
+		domain->offset = address;
+		domain->offset_compact = NULL;
+	}
+
+	return 0;
+}
+
+static int ect_parse_margin_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	char *domain_name;
+	unsigned int length, offset;
+	struct ect_margin_header *ect_margin_header;
+	struct ect_margin_domain *ect_margin_domain;
+	void *address_margin_header = address;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_margin_header = kzalloc(sizeof(struct ect_margin_header), GFP_KERNEL);
+	if (ect_margin_header == NULL)
+		return -EINVAL;
+
+	ect_parse_integer(&address, &ect_margin_header->parser_version);
+	ect_parse_integer(&address, &ect_margin_header->version);
+	ect_parse_integer(&address, &ect_margin_header->num_of_domain);
+
+	ect_margin_header->domain_list = kzalloc(sizeof(struct ect_margin_domain) * ect_margin_header->num_of_domain,
+								GFP_KERNEL);
+	if (ect_margin_header->domain_list == NULL) {
+		ret = -ENOMEM;
+		goto err_domain_list_allocation;
+	}
+
+	for (i = 0; i < ect_margin_header->num_of_domain; ++i) {
+		if (ect_parse_string(&address, &domain_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		ect_margin_domain = &ect_margin_header->domain_list[i];
+		ect_margin_domain->domain_name = domain_name;
+		ect_margin_domain->domain_offset = offset;
+	}
+
+	for (i = 0; i < ect_margin_header->num_of_domain; ++i) {
+		ect_margin_domain = &ect_margin_header->domain_list[i];
+
+		if (ect_parse_margin_domain(ect_margin_header->parser_version,
+						address_margin_header + ect_margin_domain->domain_offset,
+						ect_margin_domain)) {
+			ret = -EINVAL;
+			goto err_parse_margin_domain;
+		}
+	}
+
+	info->block_handle = ect_margin_header;
+
+	return 0;
+
+err_parse_margin_domain:
+err_parse_string:
+	kfree(ect_margin_header->domain_list);
+err_domain_list_allocation:
+	kfree(ect_margin_header);
+	return ret;
+}
+
+static int ect_parse_timing_param_size(int parser_version, void *address, struct ect_timing_param_size *size)
+{
+	ect_parse_integer(&address, &size->num_of_timing_param);
+	ect_parse_integer(&address, &size->num_of_level);
+
+	size->timing_parameter = address;
+
+	return 0;
+}
+
+static int ect_parse_timing_param_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	struct ect_timing_param_header *ect_timing_param_header;
+	struct ect_timing_param_size *ect_timing_param_size;
+	void *address_param_header = address;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_timing_param_header = kzalloc(sizeof(struct ect_timing_param_header), GFP_KERNEL);
+	if (ect_timing_param_header == NULL)
+		return -ENOMEM;
+
+	ect_parse_integer(&address, &ect_timing_param_header->parser_version);
+	ect_parse_integer(&address, &ect_timing_param_header->version);
+	ect_parse_integer(&address, &ect_timing_param_header->num_of_size);
+
+	ect_timing_param_header->size_list = kzalloc(sizeof(struct ect_timing_param_size) * ect_timing_param_header->num_of_size,
+								GFP_KERNEL);
+	if (ect_timing_param_header->size_list == NULL) {
+		ret = -ENOMEM;
+		goto err_size_list_allocation;
+	}
+
+	for (i = 0; i < ect_timing_param_header->num_of_size; ++i) {
+		ect_timing_param_size = &ect_timing_param_header->size_list[i];
+
+		if (ect_timing_param_header->parser_version >= 3) {
+			ect_parse_integer64(&address, &ect_timing_param_size->parameter_key);
+			ect_timing_param_size->memory_size = (unsigned int)ect_timing_param_size->parameter_key;
+		} else {
+			ect_parse_integer(&address, &ect_timing_param_size->memory_size);
+			ect_timing_param_size->parameter_key = ect_timing_param_size->memory_size;
+		}
+
+		ect_parse_integer(&address, &ect_timing_param_size->offset);
+	}
+
+	for (i = 0; i < ect_timing_param_header->num_of_size; ++i) {
+		ect_timing_param_size = &ect_timing_param_header->size_list[i];
+
+		if (ect_parse_timing_param_size(ect_timing_param_header->parser_version,
+							address_param_header + ect_timing_param_size->offset,
+							ect_timing_param_size)) {
+			ret = -EINVAL;
+			goto err_parse_timing_param_size;
+		}
+	}
+
+	info->block_handle = ect_timing_param_header;
+
+	return 0;
+
+err_parse_timing_param_size:
+	kfree(ect_timing_param_header->size_list);
+err_size_list_allocation:
+	kfree(ect_timing_param_header);
+	return ret;
+}
+
+static int ect_parse_minlock_domain(int parser_version, void *address, struct ect_minlock_domain *domain)
+{
+	ect_parse_integer(&address, &domain->num_of_level);
+
+	domain->level = address;
+
+	return 0;
+}
+
+static int ect_parse_minlock_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	char *domain_name;
+	unsigned int length, offset;
+	struct ect_minlock_header *ect_minlock_header;
+	struct ect_minlock_domain *ect_minlock_domain;
+	void *address_minlock_header = address;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_minlock_header = kzalloc(sizeof(struct ect_minlock_header), GFP_KERNEL);
+	if (ect_minlock_header == NULL)
+		return -ENOMEM;
+
+	ect_parse_integer(&address, &ect_minlock_header->parser_version);
+	ect_parse_integer(&address, &ect_minlock_header->version);
+	ect_parse_integer(&address, &ect_minlock_header->num_of_domain);
+
+	ect_minlock_header->domain_list = kzalloc(sizeof(struct ect_minlock_domain) * ect_minlock_header->num_of_domain,
+							GFP_KERNEL);
+	if (ect_minlock_header->domain_list == NULL) {
+		ret = -ENOMEM;
+		goto err_domain_list_allocation;
+	}
+
+	for (i = 0; i < ect_minlock_header->num_of_domain; ++i) {
+		if (ect_parse_string(&address, &domain_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		ect_minlock_domain = &ect_minlock_header->domain_list[i];
+		ect_minlock_domain->domain_name = domain_name;
+		ect_minlock_domain->domain_offset = offset;
+	}
+
+	for (i = 0; i < ect_minlock_header->num_of_domain; ++i) {
+		ect_minlock_domain = &ect_minlock_header->domain_list[i];
+
+		if (ect_parse_minlock_domain(ect_minlock_header->parser_version,
+					address_minlock_header + ect_minlock_domain->domain_offset,
+					ect_minlock_domain)) {
+			ret = -EINVAL;
+			goto err_parse_minlock_domain;
+		}
+	}
+
+	info->block_handle = ect_minlock_header;
+
+	return 0;
+
+err_parse_minlock_domain:
+err_parse_string:
+	kfree(ect_minlock_header->domain_list);
+err_domain_list_allocation:
+	kfree(ect_minlock_header);
+	return ret;
+}
+
+static int ect_parse_gen_param_table(int parser_version, void *address, struct ect_gen_param_table *size)
+{
+	ect_parse_integer(&address, &size->num_of_col);
+	ect_parse_integer(&address, &size->num_of_row);
+
+	size->parameter = address;
+
+	return 0;
+}
+
+static int ect_parse_gen_param_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	char *table_name;
+	unsigned int length, offset;
+	struct ect_gen_param_header *ect_gen_param_header;
+	struct ect_gen_param_table *ect_gen_param_table;
+	void *address_param_header = address;
+
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_gen_param_header = kzalloc(sizeof(struct ect_gen_param_header), GFP_KERNEL);
+	if (ect_gen_param_header == NULL)
+		return -ENOMEM;
+
+	ect_parse_integer(&address, &ect_gen_param_header->parser_version);
+	ect_parse_integer(&address, &ect_gen_param_header->version);
+	ect_parse_integer(&address, &ect_gen_param_header->num_of_table);
+
+	ect_gen_param_header->table_list = kzalloc(sizeof(struct ect_gen_param_table) * ect_gen_param_header->num_of_table,
+								GFP_KERNEL);
+	if (ect_gen_param_header->table_list == NULL) {
+		ret = -ENOMEM;
+		goto err_table_list_allocation;
+	}
+
+	for (i = 0; i < ect_gen_param_header->num_of_table; ++i) {
+		if (ect_parse_string(&address, &table_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		ect_gen_param_table = &ect_gen_param_header->table_list[i];
+		ect_gen_param_table->table_name = table_name;
+		ect_gen_param_table->offset = offset;
+	}
+
+	for (i = 0; i < ect_gen_param_header->num_of_table; ++i) {
+		ect_gen_param_table = &ect_gen_param_header->table_list[i];
+
+		if (ect_parse_gen_param_table(ect_gen_param_header->parser_version,
+							address_param_header + ect_gen_param_table->offset,
+							ect_gen_param_table)) {
+			ret = -EINVAL;
+			goto err_parse_gen_param_table;
+		}
+	}
+
+	info->block_handle = ect_gen_param_header;
+
+	return 0;
+
+err_parse_gen_param_table:
+err_parse_string:
+	kfree(ect_gen_param_header->table_list);
+err_table_list_allocation:
+	kfree(ect_gen_param_header);
+	return ret;
+}
+
+static int ect_parse_bin(int parser_version, void *address, struct ect_bin *binary)
+{
+	ect_parse_integer(&address, &binary->binary_size);
+
+	binary->ptr = address;
+
+	return 0;
+}
+
+static int ect_parse_bin_header(void *address, struct ect_info *info)
+{
+	int ret = 0;
+	int i;
+	struct ect_bin_header *ect_bin_header;
+	struct ect_bin *ect_binary_bin;
+	void *address_param_header = address;
+	char *binary_name;
+	int offset, length;
+
+	if (address == NULL)
+		return -1;
+
+	ect_bin_header = kzalloc(sizeof(struct ect_bin_header), GFP_KERNEL);
+	if (ect_bin_header == NULL)
+		return -2;
+
+	ect_parse_integer(&address, &ect_bin_header->parser_version);
+	ect_parse_integer(&address, &ect_bin_header->version);
+	ect_parse_integer(&address, &ect_bin_header->num_of_binary);
+
+	ect_bin_header->binary_list = kzalloc(sizeof(struct ect_bin) * ect_bin_header->num_of_binary, GFP_KERNEL);
+	if (ect_bin_header->binary_list == NULL) {
+		ret = -ENOMEM;
+		goto err_binary_list_allocation;
+	}
+
+	for (i = 0; i < ect_bin_header->num_of_binary; ++i) {
+		ect_binary_bin = &ect_bin_header->binary_list[i];
+
+		if (ect_parse_string(&address, &binary_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+		ect_binary_bin->binary_name = binary_name;
+		ect_binary_bin->offset = offset;
+	}
+
+	for (i = 0; i < ect_bin_header->num_of_binary; ++i) {
+		ect_binary_bin = &ect_bin_header->binary_list[i];
+
+		if (ect_parse_bin(ect_bin_header->parser_version,
+					address_param_header + ect_binary_bin->offset,
+					ect_binary_bin)) {
+			ret = -EINVAL;
+			goto err_parse_bin;
+		}
+	}
+
+	info->block_handle = ect_bin_header;
+
+	return 0;
+
+err_parse_bin:
+err_parse_string:
+	kfree(ect_bin_header->binary_list);
+err_binary_list_allocation:
+	kfree(ect_bin_header);
+	return ret;
+}
+
+static void ect_present_test_data(char *version)
+{
+	pr_info("========================================\n");
+	pr_info("=\n");
+	pr_info("= [ECT][VERSION] : %c%c%c%c\n", version[0], version[1], version[2], version[3]);
+	pr_info("=\n");
+	pr_info("========================================\n");
+}
+
+#if defined(CONFIG_EXYNOS8890_ECT_DUMP)
+
+static int ect_dump_header(struct seq_file *s, void *data);
+static int ect_dump_dvfs(struct seq_file *s, void *data);
+static int ect_dump_pll(struct seq_file *s, void *data);
+static int ect_dump_voltage(struct seq_file *s, void *data);
+static int ect_dump_rcc(struct seq_file *s, void *data);
+static int ect_dump_mif_thermal(struct seq_file *s, void *data);
+static int ect_dump_ap_thermal(struct seq_file *s, void *data);
+static int ect_dump_margin(struct seq_file *s, void *data);
+static int ect_dump_timing_parameter(struct seq_file *s, void *data);
+static int ect_dump_minlock(struct seq_file *s, void *data);
+static int ect_dump_gen_parameter(struct seq_file *s, void *data);
+static int ect_dump_binary(struct seq_file *s, void *data);
+
+static int dump_open(struct inode *inode, struct file *file);
+
+#else
+
+#define ect_dump_header			NULL
+#define ect_dump_ap_thermal		NULL
+#define ect_dump_voltage		NULL
+#define ect_dump_dvfs			NULL
+#define ect_dump_margin			NULL
+#define ect_dump_mif_thermal		NULL
+#define ect_dump_pll			NULL
+#define ect_dump_rcc			NULL
+#define ect_dump_timing_parameter	NULL
+#define ect_dump_minlock		NULL
+#define ect_dump_gen_parameter		NULL
+#define ect_dump_binary			NULL
+
+#define dump_open			NULL
+
+#endif
+
+static struct ect_info ect_header_info = {
+	.block_name = BLOCK_HEADER,
+	.dump = ect_dump_header,
+	.dump_ops = {
+		.open = dump_open,
+		.read = seq_read,
+		.llseek = seq_lseek,
+		.release = single_release,
 	},
+	.dump_node_name = SYSFS_NODE_HEADER,
+	.block_handle = NULL,
+	.block_precedence = -1,
 };
-module_platform_driver(exynos8890_ect_driver);
 
-MODULE_DESCRIPTION("Samsung Exynos8890 ECT and CPU ASV parser");
-MODULE_LICENSE("GPL");
+static struct ect_info ect_list[] = {
+	{
+		.block_name = BLOCK_AP_THERMAL,
+		.block_name_length = sizeof(BLOCK_AP_THERMAL) - 1,
+		.parser = ect_parse_ap_thermal_header,
+		.dump = ect_dump_ap_thermal,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_AP_THERMAL,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_ASV,
+		.block_name_length = sizeof(BLOCK_ASV) - 1,
+		.parser = ect_parse_voltage_header,
+		.dump = ect_dump_voltage,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_ASV,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_DVFS,
+		.block_name_length = sizeof(BLOCK_DVFS) - 1,
+		.parser = ect_parse_dvfs_header,
+		.dump = ect_dump_dvfs,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_DVFS,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_MARGIN,
+		.block_name_length = sizeof(BLOCK_MARGIN) - 1,
+		.parser = ect_parse_margin_header,
+		.dump = ect_dump_margin,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_MARGIN,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_MIF_THERMAL,
+		.block_name_length = sizeof(BLOCK_MIF_THERMAL) - 1,
+		.parser = ect_parse_mif_thermal_header,
+		.dump = ect_dump_mif_thermal,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_MIF_THERMAL,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_PLL,
+		.block_name_length = sizeof(BLOCK_PLL) - 1,
+		.parser = ect_parse_pll_header,
+		.dump = ect_dump_pll,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_PLL,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_RCC,
+		.block_name_length = sizeof(BLOCK_RCC) - 1,
+		.parser = ect_parse_rcc_header,
+		.dump = ect_dump_rcc,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_RCC,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_TIMING_PARAM,
+		.block_name_length = sizeof(BLOCK_TIMING_PARAM) - 1,
+		.parser = ect_parse_timing_param_header,
+		.dump = ect_dump_timing_parameter,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_TIMING_PARAM,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_MINLOCK,
+		.block_name_length = sizeof(BLOCK_MINLOCK) - 1,
+		.parser = ect_parse_minlock_header,
+		.dump = ect_dump_minlock,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_MINLOCK,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_GEN_PARAM,
+		.block_name_length = sizeof(BLOCK_GEN_PARAM) - 1,
+		.parser = ect_parse_gen_param_header,
+		.dump = ect_dump_gen_parameter,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_GEN_PARAM,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}, {
+		.block_name = BLOCK_BIN,
+		.block_name_length = sizeof(BLOCK_BIN) - 1,
+		.parser = ect_parse_bin_header,
+		.dump = ect_dump_binary,
+		.dump_ops = {
+			.open = dump_open,
+			.read = seq_read,
+			.llseek = seq_lseek,
+			.release = single_release
+		},
+		.dump_node_name = SYSFS_NODE_BIN,
+		.block_handle = NULL,
+		.block_precedence = -1,
+	}
+};
+
+#if defined(CONFIG_EXYNOS8890_ECT_DUMP)
+
+static struct ect_info* ect_get_info(char *block_name)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ect_list); ++i) {
+		if (exynos8890_ect_strcmp(block_name, ect_list[i].block_name) == 0)
+			return &ect_list[i];
+	}
+
+	return NULL;
+}
+
+static int ect_dump_header(struct seq_file *s, void *data)
+{
+	struct ect_info *info = &ect_header_info;
+	struct ect_header *header = info->block_handle;
+
+	if (header == NULL) {
+		seq_printf(s, "[ECT] : there is no ECT Information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : ECT Information\n");
+	seq_printf(s, "\t[VA] : %p\n", (void *)ect_address);
+	seq_printf(s, "\t[SIGN] : %c%c%c%c\n",
+			header->sign[0],
+			header->sign[1],
+			header->sign[2],
+			header->sign[3]);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			header->version[0],
+			header->version[1],
+			header->version[2],
+			header->version[3]);
+	seq_printf(s, "\t[TOTAL SIZE] : %d\n", header->total_size);
+	seq_printf(s, "\t[NUM OF HEADER] : %d\n", header->num_of_header);
+
+	return 0;
+}
+
+static int ect_dump_dvfs(struct seq_file *s, void *data)
+{
+	int i, j, k;
+	struct ect_info *info = ect_get_info(BLOCK_DVFS);
+	struct ect_dvfs_header *ect_dvfs_header = info->block_handle;
+	struct ect_dvfs_domain *domain;
+
+	if (ect_dvfs_header == NULL) {
+		seq_printf(s, "[ECT] : there is no dvfs information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : DVFS Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_dvfs_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_dvfs_header->version[0],
+			ect_dvfs_header->version[1],
+			ect_dvfs_header->version[2],
+			ect_dvfs_header->version[3]);
+	seq_printf(s, "\t[NUM OF DOMAIN] : %d\n", ect_dvfs_header->num_of_domain);
+
+	for (i = 0; i < ect_dvfs_header->num_of_domain; ++i) {
+		domain = &ect_dvfs_header->domain_list[i];
+
+		seq_printf(s, "\t\t[DOMAIN NAME] : %s\n", domain->domain_name);
+		seq_printf(s, "\t\t[MAX FREQ] : %u\n", domain->max_frequency);
+		seq_printf(s, "\t\t[MIN FREQ] : %u\n", domain->min_frequency);
+		seq_printf(s, "\t\t[NUM OF CLOCK] : %d\n", domain->num_of_clock);
+
+		for (j = 0; j < domain->num_of_clock; ++j) {
+			seq_printf(s, "\t\t\t[CLOCK NAME] : %s\n", domain->list_clock[j]);
+		}
+
+		seq_printf(s, "\t\t[NUM OF LEVEL] : %d\n", domain->num_of_level);
+
+		for (j = 0; j < domain->num_of_level; ++j) {
+			seq_printf(s, "\t\t\t[LEVEL] : %u(%c)\n",
+					domain->list_level[j].level,
+					domain->list_level[j].level_en ? 'O' : 'X');
+		}
+
+		seq_printf(s, "\t\t\t\t[TABLE]\n");
+		for (j = 0; j < domain->num_of_level; ++j) {
+			seq_printf(s, "\t\t\t\t");
+			for (k = 0; k < domain->num_of_clock; ++k) {
+				seq_printf(s, "%u ", domain->list_dvfs_value[j * domain->num_of_clock + k]);
+			}
+			seq_printf(s, "\n");
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_pll(struct seq_file *s, void *data)
+{
+	int i, j;
+	struct ect_info *info = ect_get_info(BLOCK_PLL);
+	struct ect_pll_header *ect_pll_header = info->block_handle;
+	struct ect_pll *pll;
+	struct ect_pll_frequency *frequency;
+
+	if (ect_pll_header == NULL) {
+		seq_printf(s, "[ECT] : there is no pll information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : PLL Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_pll_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_pll_header->version[0],
+			ect_pll_header->version[1],
+			ect_pll_header->version[2],
+			ect_pll_header->version[3]);
+	seq_printf(s, "\t[NUM OF PLL] : %d\n", ect_pll_header->num_of_pll);
+
+	for (i = 0; i < ect_pll_header->num_of_pll; ++i) {
+		pll = &ect_pll_header->pll_list[i];
+
+		seq_printf(s, "\t\t[PLL NAME] : %s\n", pll->pll_name);
+		seq_printf(s, "\t\t[PLL TYPE] : %d\n", pll->type_pll);
+		seq_printf(s, "\t\t[NUM OF FREQUENCY] : %d\n", pll->num_of_frequency);
+
+		for (j = 0; j < pll->num_of_frequency; ++j) {
+			frequency = &pll->frequency_list[j];
+
+			seq_printf(s, "\t\t\t[FREQUENCY] : %u\n", frequency->frequency);
+			seq_printf(s, "\t\t\t[P] : %d\n", frequency->p);
+			seq_printf(s, "\t\t\t[M] : %d\n", frequency->m);
+			seq_printf(s, "\t\t\t[S] : %d\n", frequency->s);
+			seq_printf(s, "\t\t\t[K] : %d\n", frequency->k);
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_voltage(struct seq_file *s, void *data)
+{
+	int i, j, k, l;
+	struct ect_info *info = ect_get_info(BLOCK_ASV);
+	struct ect_voltage_header *ect_voltage_header = info->block_handle;
+	struct ect_voltage_domain *domain;
+
+	if (ect_voltage_header == NULL) {
+		seq_printf(s, "[ECT] : there is no asv information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : ASV Voltage Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_voltage_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_voltage_header->version[0],
+			ect_voltage_header->version[1],
+			ect_voltage_header->version[2],
+			ect_voltage_header->version[3]);
+	seq_printf(s, "\t[NUM OF DOMAIN] : %d\n", ect_voltage_header->num_of_domain);
+
+	for (i = 0; i < ect_voltage_header->num_of_domain; ++i) {
+		domain = &ect_voltage_header->domain_list[i];
+
+		seq_printf(s, "\t\t[DOMAIN NAME] : %s\n", domain->domain_name);
+		seq_printf(s, "\t\t[NUM OF ASV GROUP] : %d\n", domain->num_of_group);
+		seq_printf(s, "\t\t[NUM OF LEVEL] : %d\n", domain->num_of_level);
+
+		for (j = 0; j < domain->num_of_level; ++j) {
+			seq_printf(s, "\t\t\t[FREQUENCY] : %u\n", domain->level_list[j]);
+		}
+
+		seq_printf(s, "\t\t[NUM OF TABLE] : %d\n", domain->num_of_table);
+
+		for (j = 0; j < domain->num_of_table; ++j) {
+			seq_printf(s, "\t\t\t[TABLE VERSION] : %d\n", domain->table_list[j].table_version);
+
+			seq_printf(s, "\t\t\t\t[TABLE]\n");
+			for (k = 0; k < domain->num_of_level; ++k) {
+				seq_printf(s, "\t\t\t\t");
+				for (l = 0; l < domain->num_of_group; ++l) {
+					if (domain->table_list[j].voltages != NULL)
+						seq_printf(s, "%u ", domain->table_list[j].voltages[k * domain->num_of_group + l]);
+					else if (domain->table_list[j].voltages_step != NULL)
+						seq_printf(s, "%u ", domain->table_list[j].voltages_step[k * domain->num_of_group + l]
+									* domain->table_list[j].volt_step);
+				}
+				seq_printf(s, "\n");
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_rcc(struct seq_file *s, void *data)
+{
+	int i, j, k, l;
+	struct ect_info *info = ect_get_info(BLOCK_RCC);
+	struct ect_rcc_header *ect_rcc_header = info->block_handle;
+	struct ect_rcc_domain *domain;
+
+	if (ect_rcc_header == NULL) {
+		seq_printf(s, "[ECT] : there is no rcc information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : RCC Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_rcc_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_rcc_header->version[0],
+			ect_rcc_header->version[1],
+			ect_rcc_header->version[2],
+			ect_rcc_header->version[3]);
+	seq_printf(s, "\t[NUM OF DOMAIN] : %d\n", ect_rcc_header->num_of_domain);
+
+	for (i = 0; i < ect_rcc_header->num_of_domain; ++i) {
+		domain = &ect_rcc_header->domain_list[i];
+
+		seq_printf(s, "\t\t[DOMAIN NAME] : %s\n", domain->domain_name);
+		seq_printf(s, "\t\t[NUM OF ASV GROUP] : %d\n", domain->num_of_group);
+		seq_printf(s, "\t\t[NUM OF LEVEL] : %d\n", domain->num_of_level);
+
+		for (j = 0; j < domain->num_of_level; ++j) {
+			seq_printf(s, "\t\t\t[FREQUENCY] : %u\n", domain->level_list[j]);
+		}
+
+		seq_printf(s, "\t\t[NUM OF TABLE] : %d\n", domain->num_of_table);
+
+		for (j = 0; j < domain->num_of_table; ++j) {
+			seq_printf(s, "\t\t\t[TABLE VERSION] : %d\n", domain->table_list[j].table_version);
+
+			seq_printf(s, "\t\t\t\t[TABLE]\n");
+			for (k = 0; k < domain->num_of_level; ++k) {
+				seq_printf(s, "\t\t\t\t");
+				for (l = 0; l < domain->num_of_group; ++l) {
+					if (domain->table_list[j].rcc != NULL)
+						seq_printf(s, "%u ", domain->table_list[j].rcc[k * domain->num_of_group + l]);
+					else if (domain->table_list[j].rcc_compact != NULL)
+						seq_printf(s, "%u ", domain->table_list[j].rcc_compact[k * domain->num_of_group + l]);
+				}
+				seq_printf(s, "\n");
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_mif_thermal(struct seq_file *s, void *data)
+{
+	int i;
+	struct ect_info *info = ect_get_info(BLOCK_MIF_THERMAL);
+	struct ect_mif_thermal_header *ect_mif_thermal_header = info->block_handle;
+	struct ect_mif_thermal_level *level;
+
+	if (ect_mif_thermal_header == NULL) {
+		seq_printf(s, "[ECT] : there is no mif thermal information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : MIF Thermal Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_mif_thermal_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_mif_thermal_header->version[0],
+			ect_mif_thermal_header->version[1],
+			ect_mif_thermal_header->version[2],
+			ect_mif_thermal_header->version[3]);
+	seq_printf(s, "\t[NUM OF LEVEL] : %d\n", ect_mif_thermal_header->num_of_level);
+
+	for (i = 0; i < ect_mif_thermal_header->num_of_level; ++i) {
+		level = &ect_mif_thermal_header->level[i];
+
+		seq_printf(s, "\t\t[MR4 LEVEL] : %d\n", level->mr4_level);
+		seq_printf(s, "\t\t[MAX FREQUENCY] : %u\n", level->max_frequency);
+		seq_printf(s, "\t\t[MIN FREQUENCY] : %u\n", level->min_frequency);
+		seq_printf(s, "\t\t[REFRESH RATE] : %u\n", level->refresh_rate_value);
+		seq_printf(s, "\t\t[POLLING PERIOD] : %u\n", level->polling_period);
+		seq_printf(s, "\t\t[SW TRIP] : %u\n", level->sw_trip);
+	}
+
+	return 0;
+}
+
+static int ect_dump_ap_thermal(struct seq_file *s, void *data)
+{
+	int i, j;
+	struct ect_info *info = ect_get_info(BLOCK_AP_THERMAL);
+	struct ect_ap_thermal_header *ect_ap_thermal_header = info->block_handle;
+	struct ect_ap_thermal_function *function;
+	struct ect_ap_thermal_range *range;
+
+	if (ect_ap_thermal_header == NULL) {
+		seq_printf(s, "[ECT] : there is no ap thermal information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : AP Thermal Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_ap_thermal_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_ap_thermal_header->version[0],
+			ect_ap_thermal_header->version[1],
+			ect_ap_thermal_header->version[2],
+			ect_ap_thermal_header->version[3]);
+	seq_printf(s, "\t[NUM OF FUNCTION] : %d\n", ect_ap_thermal_header->num_of_function);
+
+	for (i = 0; i < ect_ap_thermal_header->num_of_function; ++i) {
+		function = &ect_ap_thermal_header->function_list[i];
+
+		seq_printf(s, "\t\t[FUNCTION NAME] : %s\n", function->function_name);
+		seq_printf(s, "\t\t[NUM OF RANGE] : %d\n", function->num_of_range);
+
+		for (j = 0; j < function->num_of_range; ++j) {
+			range = &function->range_list[j];
+
+			seq_printf(s, "\t\t\t[LOWER BOUND TEMPERATURE] : %u\n", range->lower_bound_temperature);
+			seq_printf(s, "\t\t\t[UPPER BOUND TEMPERATURE] : %u\n", range->upper_bound_temperature);
+			seq_printf(s, "\t\t\t[MAX FREQUENCY] : %u\n", range->max_frequency);
+			seq_printf(s, "\t\t\t[SW TRIP] : %u\n", range->sw_trip);
+			seq_printf(s, "\t\t\t[FLAG] : %u\n", range->flag);
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_margin(struct seq_file *s, void *data)
+{
+	int i, j, k;
+	struct ect_info *info = ect_get_info(BLOCK_MARGIN);
+	struct ect_margin_header *ect_margin_header = info->block_handle;
+	struct ect_margin_domain *domain;
+
+	if (ect_margin_header == NULL) {
+		seq_printf(s, "[ECT] : there is no margin information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : Margin Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_margin_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_margin_header->version[0],
+			ect_margin_header->version[1],
+			ect_margin_header->version[2],
+			ect_margin_header->version[3]);
+	seq_printf(s, "\t[NUM OF DOMAIN] : %d\n", ect_margin_header->num_of_domain);
+
+	for (i = 0; i < ect_margin_header->num_of_domain; ++i) {
+		domain = &ect_margin_header->domain_list[i];
+
+		seq_printf(s, "\t\t[DOMAIN NAME] : %s\n", domain->domain_name);
+		seq_printf(s, "\t\t[NUM OF GROUP] : %d\n", domain->num_of_group);
+		seq_printf(s, "\t\t[NUM OF LEVEL] : %d\n", domain->num_of_level);
+
+		seq_printf(s, "\t\t\t[TABLE]\n");
+		for (j = 0; j < domain->num_of_level; ++j) {
+			seq_printf(s, "\t\t\t");
+			for (k = 0; k < domain->num_of_group; ++k) {
+				if (domain->offset != NULL)
+					seq_printf(s, "%u ", domain->offset[j * domain->num_of_group + k]);
+				else if (domain->offset_compact != NULL)
+					seq_printf(s, "%u ", domain->offset_compact[j * domain->num_of_group + k]
+								* domain->volt_step);
+			}
+			seq_printf(s, "\n");
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_timing_parameter(struct seq_file *s, void *data)
+{
+	int i, j, k;
+	struct ect_info *info = ect_get_info(BLOCK_TIMING_PARAM);
+	struct ect_timing_param_header *ect_timing_param_header = info->block_handle;
+	struct ect_timing_param_size *size;
+
+	if (ect_timing_param_header == NULL) {
+		seq_printf(s, "[ECT] : there is no timing parameter information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : Timing-Parameter Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_timing_param_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_timing_param_header->version[0],
+			ect_timing_param_header->version[1],
+			ect_timing_param_header->version[2],
+			ect_timing_param_header->version[3]);
+	seq_printf(s, "\t[NUM OF SIZE] : %d\n", ect_timing_param_header->num_of_size);
+
+	for (i = 0; i < ect_timing_param_header->num_of_size; ++i) {
+		size = &ect_timing_param_header->size_list[i];
+
+		seq_printf(s, "\t\t[PARAMETER KEY] : %p\n", (void *)size->parameter_key);
+		seq_printf(s, "\t\t[NUM OF TIMING PARAMETER] : %d\n", size->num_of_timing_param);
+		seq_printf(s, "\t\t[NUM OF LEVEL] : %d\n", size->num_of_level);
+
+		seq_printf(s, "\t\t\t[TABLE]\n");
+		for (j = 0; j < size->num_of_level; ++j) {
+			seq_printf(s, "\t\t\t");
+			for (k = 0; k < size->num_of_timing_param; ++k) {
+				seq_printf(s, "%x", size->timing_parameter[j * size->num_of_timing_param + k]);
+			}
+			seq_printf(s, "\n");
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_minlock(struct seq_file *s, void *data)
+{
+	int i, j;
+	struct ect_info *info = ect_get_info(BLOCK_MINLOCK);
+	struct ect_minlock_header *ect_minlock_header = info->block_handle;
+	struct ect_minlock_domain *domain;
+
+	if (ect_minlock_header == NULL) {
+		seq_printf(s, "[ECT] : there is no minlock information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : Minlock Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_minlock_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_minlock_header->version[0],
+			ect_minlock_header->version[1],
+			ect_minlock_header->version[2],
+			ect_minlock_header->version[3]);
+	seq_printf(s, "\t[NUM OF DOMAIN] : %d\n", ect_minlock_header->num_of_domain);
+
+	for (i = 0; i < ect_minlock_header->num_of_domain; ++i) {
+		domain = &ect_minlock_header->domain_list[i];
+
+		seq_printf(s, "\t\t[DOMAIN NAME] : %s\n", domain->domain_name);
+
+		for (j = 0; j < domain->num_of_level; ++j) {
+			seq_printf(s, "\t\t\t[Frequency] : (MAIN)%u, (SUB)%u\n",
+					domain->level[j].main_frequencies,
+					domain->level[j].sub_frequencies);
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_gen_parameter(struct seq_file *s, void *data)
+{
+	int i, j, k;
+	struct ect_info *info = ect_get_info(BLOCK_GEN_PARAM);
+	struct ect_gen_param_header *ect_gen_param_header = info->block_handle;
+	struct ect_gen_param_table *table;
+
+	if (ect_gen_param_header == NULL) {
+		seq_printf(s, "[ECT] : there is no general parameter information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : General-Parameter Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_gen_param_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_gen_param_header->version[0],
+			ect_gen_param_header->version[1],
+			ect_gen_param_header->version[2],
+			ect_gen_param_header->version[3]);
+	seq_printf(s, "\t[NUM OF TABLE] : %d\n", ect_gen_param_header->num_of_table);
+
+	for (i = 0; i < ect_gen_param_header->num_of_table; ++i) {
+		table = &ect_gen_param_header->table_list[i];
+
+		seq_printf(s, "\t\t[TABLE NAME] : %s\n", table->table_name);
+		seq_printf(s, "\t\t[NUM OF COLUMN] : %d\n", table->num_of_col);
+		seq_printf(s, "\t\t[NUM OF ROW] : %d\n", table->num_of_row);
+
+		seq_printf(s, "\t\t\t[TABLE]\n");
+		for (j = 0; j < table->num_of_row; ++j) {
+			seq_printf(s, "\t\t\t");
+			for (k = 0; k < table->num_of_col; ++k) {
+				seq_printf(s, "%u ", table->parameter[j * table->num_of_col + k]);
+			}
+			seq_printf(s, "\n");
+		}
+	}
+
+	return 0;
+}
+
+static int ect_dump_binary(struct seq_file *s, void *data)
+{
+	int i, j, crc;
+	struct ect_info *info = ect_get_info(BLOCK_BIN);
+	struct ect_bin_header *ect_binary_header = info->block_handle;
+	struct ect_bin *bin;
+	char *data_ptr;
+
+	if (ect_binary_header == NULL) {
+		seq_printf(s, "[ECT] : there is no binary information\n");
+		return 0;
+	}
+
+	seq_printf(s, "[ECT] : Binary Information\n");
+	seq_printf(s, "\t[PARSER VERSION] : %d\n", ect_binary_header->parser_version);
+	seq_printf(s, "\t[VERSION] : %c%c%c%c\n",
+			ect_binary_header->version[0],
+			ect_binary_header->version[1],
+			ect_binary_header->version[2],
+			ect_binary_header->version[3]);
+	seq_printf(s, "\t[NUM OF BINARY] : %d\n", ect_binary_header->num_of_binary);
+
+	for (i = 0; i < ect_binary_header->num_of_binary; ++i) {
+		bin = &ect_binary_header->binary_list[i];
+
+		seq_printf(s, "\t\t[BINARY NAME] : %s\n", bin->binary_name);
+
+		crc = 0;
+		data_ptr = bin->ptr;
+		for (j = 0; j < bin->binary_size; ++j) {
+			crc ^= data_ptr[j] << (j & 31);
+		}
+		seq_printf(s, "\t\t\t[BINARY CRC] : %x\n", crc);
+	}
+
+	return 0;
+}
+
+static int dump_open(struct inode *inode, struct file *file)
+{
+	const struct file_operations *ops = file->f_op;
+	struct ect_info *info = container_of(ops, struct ect_info, dump_ops);
+
+	return single_open(file, info->dump, inode->i_private);
+}
+
+static int ect_dump_all(struct seq_file *s, void *data)
+{
+	int i, j, ret;
+
+	ret = ect_header_info.dump(s, data);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < ARRAY_SIZE(ect_list); ++i) {
+		for (j = 0; j < ARRAY_SIZE(ect_list); ++j) {
+			if (ect_list[j].block_precedence != i)
+				continue;
+
+			ret = ect_list[j].dump(s, data);
+			if (ret)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int dump_all_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ect_dump_all, inode->i_private);
+}
+
+static struct file_operations ops_all_dump = {
+	.open = dump_all_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static int ect_dump_init(void)
+{
+	int i;
+	struct dentry *root, *d;
+
+	root = debugfs_create_dir("ect", NULL);
+	if (!root) {
+		pr_err("%s: couln't create debugfs\n", __FILE__);
+		return -ENOMEM;
+	}
+
+	d = debugfs_create_file("all_dump", S_IRUGO, root, NULL,
+				&ops_all_dump);
+	if (!d)
+		return -ENOMEM;
+
+	d = debugfs_create_file(ect_header_info.dump_node_name, S_IRUGO, root, NULL,
+				&ect_header_info.dump_ops);
+	if (!d)
+		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(ect_list); ++i) {
+		if (ect_list[i].block_handle == NULL)
+			continue;
+
+		d = debugfs_create_file(ect_list[i].dump_node_name, S_IRUGO, root, NULL,
+					&ect_list[i].dump_ops);
+		if (!d)
+			return -ENOMEM;
+	}
+
+	return 0;
+}
+late_initcall_sync(ect_dump_init);
+#endif
+
+/* API for external */
+
+// memremap()s directly instead of vm_area_add_early() - we run after vmalloc_init(), unlike vendor
+void exynos8890_ect_init(phys_addr_t address, phys_addr_t size)
+{
+	ect_phys_addr = address;
+	ect_size = size;
+}
+
+void *exynos8890_ect_get_block(char *block_name)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ect_list); ++i) {
+		if (exynos8890_ect_strcmp(block_name, ect_list[i].block_name) == 0)
+			return ect_list[i].block_handle;
+	}
+
+	return NULL;
+}
+
+struct ect_dvfs_domain *exynos8890_ect_dvfs_get_domain(void *block, char *domain_name)
+{
+	int i;
+	struct ect_dvfs_header *header;
+	struct ect_dvfs_domain *domain;
+
+	if (block == NULL ||
+		domain_name == NULL)
+		return NULL;
+
+	header = (struct ect_dvfs_header *)block;
+
+	for (i = 0; i < header->num_of_domain; ++i) {
+		domain = &header->domain_list[i];
+
+		if (exynos8890_ect_strcmp(domain_name, domain->domain_name) == 0)
+			return domain;
+	}
+
+	return NULL;
+}
+
+struct ect_pll *exynos8890_ect_pll_get_pll(void *block, char *pll_name)
+{
+	int i;
+	struct ect_pll_header *header;
+	struct ect_pll *pll;
+
+	if (block == NULL ||
+		pll_name == NULL)
+		return NULL;
+
+	header = (struct ect_pll_header *)block;
+
+	for (i = 0; i < header->num_of_pll; ++i) {
+		pll = &header->pll_list[i];
+
+		if (exynos8890_ect_strcmp(pll_name, pll->pll_name) == 0)
+			return pll;
+	}
+
+	return NULL;
+}
+
+struct ect_voltage_domain *exynos8890_ect_asv_get_domain(void *block, char *domain_name)
+{
+	int i;
+	struct ect_voltage_header *header;
+	struct ect_voltage_domain *domain;
+
+	if (block == NULL ||
+		domain_name == NULL)
+		return NULL;
+
+	header = (struct ect_voltage_header *)block;
+
+	for (i = 0; i < header->num_of_domain; ++i) {
+		domain = &header->domain_list[i];
+
+		if (exynos8890_ect_strcmp(domain_name, domain->domain_name) == 0)
+			return domain;
+	}
+
+	return NULL;
+}
+
+struct ect_rcc_domain *exynos8890_ect_rcc_get_domain(void *block, char *domain_name)
+{
+	int i;
+	struct ect_rcc_header *header;
+	struct ect_rcc_domain *domain;
+
+	if (block == NULL ||
+		domain_name == NULL)
+		return NULL;
+
+	header = (struct ect_rcc_header *)block;
+
+	for (i = 0; i < header->num_of_domain; ++i) {
+		domain = &header->domain_list[i];
+
+		if (exynos8890_ect_strcmp(domain_name, domain->domain_name) == 0)
+			return domain;
+	}
+
+	return NULL;
+}
+
+struct ect_mif_thermal_level *exynos8890_ect_mif_thermal_get_level(void *block, int mr4_level)
+{
+	int i;
+	struct ect_mif_thermal_header *header;
+	struct ect_mif_thermal_level *level;
+
+	if (block == NULL)
+		return NULL;
+
+	header = (struct ect_mif_thermal_header *)block;
+
+	for (i = 0; i < header->num_of_level; ++i) {
+		level = &header->level[i];
+
+		if (level->mr4_level == mr4_level)
+			return level;
+	}
+
+	return NULL;
+}
+
+struct ect_ap_thermal_function *exynos8890_ect_ap_thermal_get_function(void *block, char *function_name)
+{
+	int i;
+	struct ect_ap_thermal_header *header;
+	struct ect_ap_thermal_function *function;
+
+	if (block == NULL ||
+		function_name == NULL)
+		return NULL;
+
+	header = (struct ect_ap_thermal_header *)block;
+
+	for (i = 0; i < header->num_of_function; ++i) {
+		function = &header->function_list[i];
+
+		if (exynos8890_ect_strcmp(function_name, function->function_name) == 0)
+			return function;
+	}
+
+	return NULL;
+}
+
+struct ect_margin_domain *exynos8890_ect_margin_get_domain(void *block, char *domain_name)
+{
+	int i;
+	struct ect_margin_header *header;
+	struct ect_margin_domain *domain;
+
+	if (block == NULL ||
+		domain_name == NULL)
+		return NULL;
+
+	header = (struct ect_margin_header *)block;
+
+	for (i = 0; i < header->num_of_domain; ++i) {
+		domain = &header->domain_list[i];
+
+		if (exynos8890_ect_strcmp(domain_name, domain->domain_name) == 0)
+			return domain;
+	}
+
+	return NULL;
+}
+
+struct ect_timing_param_size *exynos8890_ect_timing_param_get_size(void *block, int dram_size)
+{
+	int i;
+	struct ect_timing_param_header *header;
+	struct ect_timing_param_size *size;
+
+	if (block == NULL)
+		return NULL;
+
+	header = (struct ect_timing_param_header *)block;
+
+	for (i = 0; i < header->num_of_size; ++i) {
+		size = &header->size_list[i];
+
+		if (size->memory_size == dram_size)
+			return size;
+	}
+
+	return NULL;
+}
+
+struct ect_timing_param_size *exynos8890_ect_timing_param_get_key(void *block, unsigned long long key)
+{
+	int i;
+	struct ect_timing_param_header *header;
+	struct ect_timing_param_size *size;
+
+	if (block == NULL)
+		return NULL;
+
+	header = (struct ect_timing_param_header *)block;
+
+	for (i = 0; i < header->num_of_size; ++i) {
+		size = &header->size_list[i];
+
+		if (key == size->parameter_key)
+			return size;
+	}
+
+	return NULL;
+}
+
+struct ect_minlock_domain *exynos8890_ect_minlock_get_domain(void *block, char *domain_name)
+{
+	int i;
+	struct ect_minlock_header *header;
+	struct ect_minlock_domain *domain;
+
+	if (block == NULL ||
+		domain_name == NULL)
+		return NULL;
+
+	header = (struct ect_minlock_header *)block;
+
+	for (i = 0; i < header->num_of_domain; ++i) {
+		domain = &header->domain_list[i];
+
+		if (exynos8890_ect_strcmp(domain_name, domain->domain_name) == 0)
+			return domain;
+	}
+
+	return NULL;
+}
+
+struct ect_gen_param_table *exynos8890_ect_gen_param_get_table(void *block, char *table_name)
+{
+	int i;
+	struct ect_gen_param_header *header;
+	struct ect_gen_param_table *table;
+
+	if (block == NULL)
+		return NULL;
+
+	header = (struct ect_gen_param_header *)block;
+
+	for (i = 0; i < header->num_of_table; ++i) {
+		table = &header->table_list[i];
+
+		if (exynos8890_ect_strcmp(table->table_name, table_name) == 0)
+			return table;
+		}
+
+	 return NULL;
+}
+
+struct ect_bin *exynos8890_ect_binary_get_bin(void *block, char *binary_name)
+{
+	int i;
+	struct ect_bin_header *header;
+	struct ect_bin *bin;
+
+	if (block == NULL)
+		return NULL;
+
+	header = (struct ect_bin_header *)block;
+
+	for (i = 0; i < header->num_of_binary; ++i) {
+		bin = &header->binary_list[i];
+
+		if (exynos8890_ect_strcmp(bin->binary_name, binary_name) == 0)
+			return bin;
+	}
+
+	return NULL;
+}
+
+int exynos8890_ect_parse_binary_header(void)
+{
+	int ret = 0;
+	int i, j;
+	char *block_name;
+	void *address;
+	unsigned int length, offset;
+	struct ect_header *ect_header;
+
+	exynos8890_ect_init_map_io();
+
+	address = (void *)ect_address;
+	if (address == NULL)
+		return -EINVAL;
+
+	ect_header = kzalloc(sizeof(struct ect_header), GFP_KERNEL);
+
+	ect_parse_integer(&address, ect_header->sign);
+	ect_parse_integer(&address, ect_header->version);
+	ect_parse_integer(&address, &ect_header->total_size);
+	ect_parse_integer(&address, &ect_header->num_of_header);
+
+	if (memcmp(ect_header->sign, ect_signature, sizeof(ect_signature) - 1)) {
+		ret = -EINVAL;
+		goto err_memcmp;
+	}
+
+	ect_present_test_data(ect_header->version);
+
+	for (i = 0; i < ect_header->num_of_header; ++i) {
+		if (ect_parse_string(&address, &block_name, &length)) {
+			ret = -EINVAL;
+			goto err_parse_string;
+		}
+
+		ect_parse_integer(&address, &offset);
+
+		for (j = 0; j < ARRAY_SIZE(ect_list); ++j) {
+			if (strncmp(block_name, ect_list[j].block_name, ect_list[j].block_name_length) != 0)
+				continue;
+
+			if (ect_list[j].parser((void *)ect_address + offset, ect_list + j)) {
+				pr_err("[ECT] : parse error %s\n", block_name);
+				ret = -EINVAL;
+				goto err_parser;
+			}
+
+			ect_list[j].block_precedence = i;
+		}
+	}
+
+	ect_header_info.block_handle = ect_header;
+
+	return ret;
+
+err_parser:
+err_parse_string:
+err_memcmp:
+	kfree(ect_header);
+
+	return ret;
+}
+
+int exynos8890_ect_strcmp(char *src1, char *src2)
+{
+	for ( ; *src1 == *src2; src1++, src2++)
+		if (*src1 == '\0')
+			return 0;
+
+	return ((*(unsigned char *)src1 < *(unsigned char *)src2) ? -1 : +1);
+}
+
+int exynos8890_ect_strncmp(char *src1, char *src2, int length)
+{
+	int i;
+
+	if (length <= 0)
+		return -1;
+
+	for (i = 0; i < length; i++, src1++, src2++)
+		if (*src1 != *src2)
+			return ((*(unsigned char *)src1 < *(unsigned char *)src2) ? -1 : +1);
+
+	return 0;
+}
+
+void exynos8890_ect_init_map_io(void)
+{
+	void *base;
+
+	base = memremap(ect_phys_addr, ect_size, MEMREMAP_WB);
+	if (!base) {
+		pr_err("[ECT] : failed to mapping va and pa\n");
+		return;
+	}
+
+	ect_address = (phys_addr_t)(uintptr_t)base;
+}

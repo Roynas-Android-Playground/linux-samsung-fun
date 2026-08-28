@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/devfreq/samsung,exynos8890-bus.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 calibrated bus devfreq
+
+maintainers:
+  - Chanwoo Choi <cw00.choi@samsung.com>
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Native devfreq consumers for the Exynos8890 INT, CAM and DISP aggregate
+  clocks. Characterized OPP rates and voltages are loaded from the SoC ECT
+  calibration data, so they are intentionally not duplicated in DT.
+
+properties:
+  compatible:
+    enum:
+      - samsung,exynos8890-int-devfreq
+      - samsung,exynos8890-cam-devfreq
+      - samsung,exynos8890-disp-devfreq
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: bus
+
+  vdd-supply:
+    description: Regulator for this aggregate clock domain
+
+  '#cooling-cells':
+    const: 2
+
+required:
+  - compatible
+  - clocks
+  - clock-names
+  - vdd-supply
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/samsung,exynos8890-cmu.h>
+
+    devfreq-int {
+        compatible = "samsung,exynos8890-int-devfreq";
+        clocks = <&cmu_top CLK_DVFS_INT>;
+        clock-names = "bus";
+        vdd-supply = <&buck4>;
+        #cooling-cells = <2>;
+    };
+...

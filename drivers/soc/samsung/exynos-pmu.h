@@ -70,6 +70,9 @@ extern const struct exynos_pmu_data exynos4412_pmu_data;
 extern const struct exynos_pmu_data exynos5250_pmu_data;
 extern const struct exynos_pmu_data exynos5420_pmu_data;
 #endif
+#ifdef CONFIG_EXYNOS8890_PM
+extern const struct exynos_pmu_data exynos8890_pmu_data;
+#endif
 extern const struct exynos_pmu_data gs101_pmu_data;
 
 extern void pmu_raw_writel(u32 val, u32 offset);

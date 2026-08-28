@@ -30,8 +30,26 @@ config EXYNOS8890_ECT
 	help
 	  Parse the bootloader-provided Exynos8890 Embedded Configuration Table
 	  and combine its characterized CPU voltage data with secure per-die ASV
-	  fuse values. Validate table versions, groups, SSA adjustments and CPU
-	  voltage ordering. Malformed or incomplete firmware data is rejected.
+	  fuse values. Validate the consumed table versions, groups, SSA
+	  adjustments and CPU voltage ordering. The parser treats the reserved
+	  memory blob itself as trusted bootloader input; it is not a boundary for
+	  untrusted firmware data.
+	
+config EXYNOS8890_ECT_DUMP
+	bool "Enable Exynos Characteristic Table File Dump sysfs"
+	default n
+	depends on EXYNOS8890_ECT
+
+config EXYNOS8890_CALIBRATION
+	bool "Exynos8890 read-only DVFS calibration data"
+	depends on ARM64 && ARCH_EXYNOS && OF
+	select EXYNOS8890_ECT
+	help
+	  Copy the bootloader ECT rate tables and secure per-die ASV fuse
+	  selection into an immutable, unit-safe interface for native CCF, OPP,
+	  CPU frequency and memory-controller drivers.  This provider never
+	  writes CMU, PMU, DMC or DDR PHY registers and does not construct a
+	  second clock topology.
 
 config EXYNOS8890_CPUIDLE
 	bool "Exynos8890 opt-in local-core C2 diagnostics"
@@ -57,6 +75,19 @@ config EXYNOS8890_CPUPM
 	  disabled on every CPU hotplug-in. Consumers: future C2/CPD idle
 	  coordination and the cpufreq block_cpd()/release_cpd() exclusion.
 
+config EXYNOS8890_PM
+	bool "Exynos8890 PM coordination and mem-suspend"
+	depends on ARM64 && ARCH_EXYNOS && OF && SUSPEND && ARM_PSCI_FW
+	depends on EXYNOS_PMU
+	select MFD_SYSCON
+	help
+	  Native PMU and PSCI system-sleep coordination for Exynos8890.  The
+	  driver programs only PMU wakeup/sequencer policy and leaves all CMU
+	  context ownership to the Samsung common clock framework.  Mem-suspend
+	  remains blocked until native clock/domain owners can perform the vendor
+	  TOP user-mux, Q-channel and cluster PWR_CTRL3 choreography.  It does not
+	  use the vendor PWRCAL suspend path.
+
 config EXYNOS8890_CPCTL
 	tristate "Exynos8890 SS310AP control plane"
 	depends on ARM64 && ARCH_EXYNOS && OF && MAILBOX
@@ -65,6 +96,16 @@ config EXYNOS8890_CPCTL
 	help
 	  Build the contract-preserving SS310AP control plane for Exynos8890.
 	  This is mutually exclusive with the legacy Samsung modem_v1 stack.
+
+config EXYNOS8890_APM
+	bool "Exynos8890 APM DVFS ownership provider"
+	depends on ARM64 && ARCH_EXYNOS && OF
+	select MFD_SYSCON
+	help
+	  Hold the Exynos8890 APM Cortex-M3 in PMU power-down so it can never
+	  contest DVFS decisions, and hand exclusive ownership of CPU/bus
+	  clock and voltage control to Linux before any native DVFS consumer
+	  can probe. This does not load or speak to the vendor APM firmware.
 
 config EXYNOS_USI
 	tristate "Exynos USI (Universal Serial Interface) driver"

@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_EXYNOS_MDEV
+	tristate "Exynos media device driver"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	select MEDIA_CONTROLLER
+	select VIDEO_DEV
+	help
+	  Registers the shared v4l2_device/media_device that Exynos VPP and
+	  DECON subdevs attach their media-controller links to
+	  (decon8890 looks this driver up by name at probe with no
+	  deferred-probe fallback, so it must be built in/loaded first).

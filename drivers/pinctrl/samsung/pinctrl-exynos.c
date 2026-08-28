@@ -1069,6 +1069,9 @@ static void exynos_retention_disable(struct samsung_pinctrl_drv_data *drvdata)
 	if (ctrl->refcnt && !atomic_dec_and_test(ctrl->refcnt))
 		return;
 
+	if (ctrl->release_allowed && !ctrl->release_allowed())
+		return;
+
 	for (i = 0; i < ctrl->nr_regs; i++)
 		regmap_write(pmu_regs, ctrl->regs[i], ctrl->value);
 }
@@ -1094,6 +1097,7 @@ exynos_retention_init(struct samsung_pinctrl_drv_data *drvdata,
 	ctrl->nr_regs = data->nr_regs;
 	ctrl->value = data->value;
 	ctrl->refcnt = data->refcnt;
+	ctrl->release_allowed = data->release_allowed;
 	ctrl->enable = exynos_retention_enable;
 	ctrl->disable = exynos_retention_disable;
 

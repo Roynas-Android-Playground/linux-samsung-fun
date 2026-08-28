@@ -231,6 +231,7 @@ struct samsung_pin_bank {
  * @nr_regs: number of registers in @regs array.
  * @value: value to store to registers to turn off retention.
  * @refcnt: atomic counter if retention control affects more than one bank.
+ * @release_allowed: optional callback gating the retention-release writes.
  * @priv: retention control code private data
  * @enable: platform specific callback to enter retention mode.
  * @disable: platform specific callback to exit retention mode.
@@ -240,6 +241,7 @@ struct samsung_retention_ctrl {
 	int		nr_regs;
 	u32		value;
 	atomic_t	*refcnt;
+	bool		(*release_allowed)(void);
 	void		*priv;
 	void		(*enable)(struct samsung_pinctrl_drv_data *);
 	void		(*disable)(struct samsung_pinctrl_drv_data *);
@@ -251,6 +253,7 @@ struct samsung_retention_ctrl {
  * @nr_regs: number of registers in @regs array.
  * @value: value to store to registers to turn off retention.
  * @refcnt: atomic counter if retention control affects more than one bank.
+ * @release_allowed: optional callback gating the retention-release writes.
  * @init: platform specific callback to initialize retention control.
  **/
 struct samsung_retention_data {
@@ -258,6 +261,7 @@ struct samsung_retention_data {
 	int		nr_regs;
 	u32		value;
 	atomic_t	*refcnt;
+	bool		(*release_allowed)(void);
 	struct samsung_retention_ctrl *(*init)(struct samsung_pinctrl_drv_data *,
 					const struct samsung_retention_data *);
 };

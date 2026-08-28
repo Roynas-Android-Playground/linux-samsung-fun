@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/samsung/samsung,exynos8890-apm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 APM DVFS ownership controller
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description:
+  The Exynos8890 APM Cortex-M3 can run firmware that controls DVFS through a
+  mailbox. When Linux owns native clock and regulator transitions, this node
+  binds the provider that keeps the APM powered down and proves exclusive
+  ownership through the PMU system controller.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-apm
+
+  samsung,pmu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the Exynos8890 PMU system controller.
+
+required:
+  - compatible
+  - samsung,pmu
+
+additionalProperties: false
+
+examples:
+  - |
+    apm {
+        compatible = "samsung,exynos8890-apm";
+        samsung,pmu = <&pmu_system_controller>;
+    };
+...

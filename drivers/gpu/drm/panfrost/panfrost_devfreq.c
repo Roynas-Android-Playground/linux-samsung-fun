@@ -7,6 +7,7 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
+#include <linux/soc/samsung/exynos8890-calibration.h>
 
 #include <drm/drm_print.h>
 
@@ -43,6 +44,10 @@ static int panfrost_devfreq_target(struct device *dev, unsigned long *freq,
 	err = dev_pm_opp_set_rate(dev, *freq);
 	if (!err)
 		pfdev->pfdevfreq.current_frequency = *freq;
+	else if (pfdev->comp->devfreq_calibrated_opps)
+		dev_err_ratelimited(dev,
+				    "aggregate clock transition to %lu Hz failed: %d\n",
+				    *freq, err);
 
 	return err;
 }
@@ -62,6 +67,9 @@ static int panfrost_devfreq_get_dev_status(struct device *dev,
 	unsigned long irqflags;
 
 	status->current_frequency = clk_get_rate(pfdev->clock);
+	if (!status->current_frequency &&
+	    pfdev->comp->devfreq_calibrated_opps)
+		return -EIO;
 
 	spin_lock_irqsave(&pfdevfreq->lock, irqflags);
 
@@ -116,6 +124,45 @@ static int panfrost_read_speedbin(struct device *dev)
 	return devm_pm_opp_set_supported_hw(dev, &val, 1);
 }
 
+static void panfrost_remove_dynamic_opps(void *data)
+{
+	dev_pm_opp_remove_all_dynamic(data);
+}
+
+static int panfrost_add_exynos8890_opps(struct device *dev)
+{
+	const struct exynos8890_calib_domain *calib;
+	struct dev_pm_opp_data opp = { .level = OPP_LEVEL_UNSET };
+	unsigned int i;
+	int count = 0;
+	int ret;
+
+	calib = exynos8890_calib_get_domain(EXYNOS8890_CALIB_G3D);
+	if (IS_ERR(calib))
+		return PTR_ERR(calib);
+
+	for (i = 0; i < calib->num_opps; i++) {
+		if (!calib->opps[i].enabled)
+			continue;
+		if (calib->opps[i].rate_hz < calib->min_rate_hz ||
+		    calib->opps[i].rate_hz > calib->max_rate_hz)
+			continue;
+
+		opp.freq = calib->opps[i].rate_hz;
+		opp.u_volt = calib->opps[i].voltage_uv;
+		ret = dev_pm_opp_add_dynamic(dev, &opp);
+		if (ret) {
+			dev_pm_opp_remove_all_dynamic(dev);
+			return ret;
+		}
+		count++;
+	}
+	if (!count)
+		return -ENODATA;
+
+	return devm_add_action_or_reset(dev, panfrost_remove_dynamic_opps, dev);
+}
+
 int panfrost_devfreq_init(struct panfrost_device *pfdev)
 {
 	int ret;
@@ -150,7 +197,10 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 		}
 	}
 
-	ret = devm_pm_opp_of_add_table(dev);
+	if (pfdev->comp->devfreq_calibrated_opps)
+		ret = panfrost_add_exynos8890_opps(dev);
+	else
+		ret = devm_pm_opp_of_add_table(dev);
 	if (ret) {
 		/* Optional, continue without devfreq */
 		if (ret == -ENODEV)
