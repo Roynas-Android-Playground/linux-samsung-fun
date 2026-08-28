@@ -1309,7 +1309,9 @@ int dw_pcie_resume_noirq(struct dw_pcie *pci)
 		}
 	}
 
-	dw_pcie_setup_rc(&pci->pp);
+	ret = dw_pcie_setup_rc(&pci->pp);
+	if (ret)
+		goto err_deinit;
 
 	ret = dw_pcie_start_link(pci);
 	if (ret)
