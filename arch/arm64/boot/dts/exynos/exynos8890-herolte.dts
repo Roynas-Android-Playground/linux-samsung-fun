@@ -1185,7 +1185,7 @@
 	};
 };
 
-&soc {
+&aud_bus {
 	lpass: audio-subsystem@11400000 {
 		compatible = "samsung,exynos8890-lpass";
 		reg = <0x11400000 0x100>,
@@ -1194,8 +1194,6 @@
 
 		clocks = <&cmu_aud CLK_GOUT_AUD_PCLK_SFR0>;
 		clock-names = "sfr0_ctrl";
-		power-domains = <&pd_aud>;
-
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
@@ -1219,8 +1217,6 @@
 			compatible = "samsung,exynos7-i2s";
 			reg = <0x11440000 0x100>;
 			interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
-			power-domains = <&pd_aud>;
-
 			dmas = <&adma 0>, <&adma 2>;
 			dma-names = "tx", "rx";
 

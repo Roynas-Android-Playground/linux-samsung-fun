@@ -403,21 +403,30 @@
 			#size-cells = <1>;
 		};
 
-		pinctrl_aud: pinctrl@114b0000 {
-			compatible = "samsung,exynos8890-pinctrl";
-			reg = <0x114b0000 0x1000>;
-			clocks = <&cmu_aud CLK_GOUT_AUD_PCLK_GPIO_AUD>;
-			clock-names = "pclk";
-			interrupts = <GIC_SPI 61 IRQ_TYPE_LEVEL_HIGH>;
-		};
+		aud_bus: bus {
+			compatible = "simple-pm-bus";
+			power-domains = <&pd_aud>;
 
-		cmu_aud: clock-controller@114c0000 {
-			compatible = "samsung,exynos8890-cmu-aud";
-			reg = <0x114c0000 0x8000>;
-			#clock-cells = <1>;
-			clocks = <&oscclk>,
-				 <&cmu_top CLK_FOUT_AUD_PLL>;
-			clock-names = "oscclk", "pll";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			pinctrl_aud: pinctrl@114b0000 {
+				compatible = "samsung,exynos8890-pinctrl";
+				reg = <0x114b0000 0x1000>;
+				clocks = <&cmu_aud CLK_GOUT_AUD_PCLK_GPIO_AUD>;
+				clock-names = "pclk";
+				interrupts = <GIC_SPI 61 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			cmu_aud: clock-controller@114c0000 {
+				compatible = "samsung,exynos8890-cmu-aud";
+				reg = <0x114c0000 0x8000>;
+				#clock-cells = <1>;
+				clocks = <&oscclk>,
+					 <&cmu_top CLK_FOUT_AUD_PLL>;
+				clock-names = "oscclk", "pll";
+			};
 		};
 
 		cmu_mngs: clock-controller@11800000 {
