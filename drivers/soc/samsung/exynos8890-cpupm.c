@@ -158,14 +158,25 @@ static int __init exynos8890_cpupm_probe(struct platform_device *pdev)
 	unsigned int cluster, val;
 	int cpu;
 
-	pmureg = syscon_regmap_lookup_by_phandle(np, "samsung,syscon-phandle");
+	/*
+	 * We are a child node of the PMU system-controller itself
+	 * (populated by exynos-pmu via devm_of_platform_populate()), so
+	 * get the regmap the parent driver registered for its own node.
+	 * This mirrors how other children of a syscon node do it
+	 * (e.g. npcm7xx KCS, Aspeed LPC/p2a-ctrl, mvebu GPIO).
+	 */
+	if (pdev->dev.parent && pdev->dev.parent->of_node)
+		pmureg = syscon_node_to_regmap(pdev->dev.parent->of_node);
+	else
+		pmureg = ERR_PTR(-ENODEV);
+
 	if (IS_ERR(pmureg)) {
-		/* fall back to the PMU node itself being the syscon */
-		pmureg = syscon_node_to_regmap(np);
-		if (IS_ERR(pmureg)) {
-			dev_err(&pdev->dev, "failed to get PMU regmap\n");
-			return PTR_ERR(pmureg);
-		}
+		/* DT-only fallback: explicit phandle to the PMU syscon */
+		pmureg = syscon_regmap_lookup_by_phandle(np,
+							 "samsung,syscon-phandle");
+		if (IS_ERR(pmureg))
+			return dev_err_probe(&pdev->dev, PTR_ERR(pmureg),
+					     "failed to get PMU regmap\n");
 	}
 
 	boot_cluster = MPIDR_AFFINITY_LEVEL(cpu_logical_map(0), 1);
