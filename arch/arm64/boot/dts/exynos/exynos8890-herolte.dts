@@ -1103,17 +1103,6 @@
 		startup-delay-us = <200000>;
 	};
 
-	/* BCM4753 GNSS - vendor's gps node is just this one power-enable GPIO, no I2C/SPI */
-	gps_reg_on: regulator-gps-reg-on {
-		compatible = "regulator-fixed";
-		regulator-name = "gps-reg-on";
-
-		gpio = <&gpb1 1 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-		startup-delay-us = <200000>;
-		/* no in-kernel consumer yet - force on for userspace probe testing */
-		regulator-always-on;
-	};
 
 	/* ABOV mc96ft16xx touchkey (back/recent-apps) - vendor bit-bangs this pair, no real HSI2C bus here */
 	i2c-gpio-touchkey {
