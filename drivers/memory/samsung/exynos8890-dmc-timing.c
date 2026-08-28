@@ -121,10 +121,6 @@
 #define CG_CTRL_MAN_DDRPHY2		(CMU_MIF2_BASE + 0x1A08)
 #define CG_CTRL_MAN_DDRPHY3		(CMU_MIF3_BASE + 0x1A08)
 
-#define PMU_DREX_CALIBRATION1	(PMU_ALIVE_BASE + 0x09a4)
-#define PMU_DREX_CALIBRATION2	(PMU_ALIVE_BASE + 0x09a8)
-#define PMU_DREX_CALIBRATION3	(PMU_ALIVE_BASE + 0x09ac)
-
 enum mif_timing_set_idx {
 	MIF_TIMING_SET_0,
 	MIF_TIMING_SET_1
@@ -1116,7 +1112,7 @@ int exynos8890_dmc_program_timing(unsigned long target_mif_freq,
 
 	target_mif_level_idx = convert_to_level(target_mif_freq);
 
-	if (target_mif_freq == 936 * MHZ) {
+	if (target_mif_freq == 936 * MHZ || target_mif_freq == 528 * MHZ) {
 		target_mif_level_switch_idx = convert_to_level_switch(target_mif_freq);
 		target_mif_level_switch_idx += num_mif_freq_to_level;
 	} else {
@@ -1421,13 +1417,12 @@ int exynos8890_dmc_program_timing(unsigned long target_mif_freq,
  * @return
  *
  *****************************************************************************/
-static int exynos8890_dmc_timing_table_init(void)
+static int exynos8890_dmc_timing_table_init(u64 calibration_key)
 {
 	const struct exynos8890_calib_mif_timing *timing;
 	int i;
 
-	query_key = ((u64)exynos8890_dmc_read(PMU_DREX_CALIBRATION2) << 32) |
-		exynos8890_dmc_read(PMU_DREX_CALIBRATION3);
+	query_key = calibration_key;
 	if (!query_key)
 		return -ENODATA;
 
@@ -1528,8 +1523,9 @@ static int exynos8890_dmc_level_init(void)
 	domain = exynos8890_calib_get_domain(EXYNOS8890_CALIB_MIF);
 	if (IS_ERR(domain))
 		return PTR_ERR(domain);
-	/* The vendor table appends one dedicated 936 MHz switch-timing row. */
-	if (num_mif_timing_levels < domain->num_opps + 1)
+	/* The vendor table appends dedicated 936 and 528 MHz switch rows. */
+	if (num_mif_timing_levels <
+	    domain->num_opps + ARRAY_SIZE(mif_freq_to_level_switch))
 		return -EINVAL;
 
 	mif_freq_to_level = kcalloc(domain->num_opps,
@@ -1598,24 +1594,23 @@ static void __maybe_unused exynos8890_dmc_print_info(void)
  * @return
  *
  *****************************************************************************/
-int exynos8890_dmc_timing_init(struct exynos8890_dmc *dmc)
+int exynos8890_dmc_timing_init(struct exynos8890_dmc *dmc,
+			       u64 calibration_key, phys_addr_t training_pa)
 {
-	phys_addr_t calibration_pa;
 	int ret;
 
 	if (!dmc)
 		return -EINVAL;
 
-	calibration_pa = exynos8890_dmc_read(PMU_DREX_CALIBRATION1);
-	if (calibration_pa)
-		config_base = memremap(calibration_pa, SZ_2K, MEMREMAP_WB);
+	if (training_pa)
+		config_base = memremap(training_pa, SZ_2K, MEMREMAP_WB);
 
 	if (config_base)
 		drampara_config = config_base;
 	else
 		pr_warn("Exynos8890 DMC training offsets are unavailable\n");
 
-	ret = exynos8890_dmc_timing_table_init();
+	ret = exynos8890_dmc_timing_table_init(calibration_key);
 	if (ret)
 		goto err_unmap;
 	ret = exynos8890_dmc_level_init();

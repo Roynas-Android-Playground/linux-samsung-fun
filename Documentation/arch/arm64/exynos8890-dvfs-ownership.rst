@@ -66,12 +66,14 @@ Ownership matrix
      - Characterized TOP mux/divider columns
      - One aggregate domain clock per domain
      - Unrelated peripheral gates remain normal CCF clocks
-   * - MIF PLL and transition-only MIF/CCORE fields
-     - Four-channel MIF selectors/dividers, BUS-PLL selector and CCORE path
-       used by PSCDC
+   * - MIF PLL, BUS3 PLL policy and transition-only MIF/CCORE fields
+     - Four-channel MIF selectors/dividers, the characterized BUS3 PLL rate,
+       BUS-PLL selector and CCORE path used by PSCDC
      - Exynos8890 DMC/devfreq driver
-     - CCF may expose stable parents; the six CCORE output gates sharing TOP
-       selector words are read-only/critical and enabled only by the DMC owner
+     - CCF remains the single physical BUS3 PLL provider; DMC holds its rate
+       lease and is the sole policy requester.  The six CCORE output gates
+       sharing TOP selector words are read-only/critical and enabled only by
+       the DMC owner
    * - TOP/CCORE PSCDC controller
      - ``PSCDC_CTRL*`` and SMC/SCI FIFO command registers
      - Exynos8890 DMC/devfreq driver

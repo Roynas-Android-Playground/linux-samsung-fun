@@ -20,15 +20,14 @@ properties:
     const: samsung,exynos8890-dmc
 
   reg:
-    minItems: 20
-    maxItems: 20
+    minItems: 19
+    maxItems: 19
 
   reg-names:
     items:
       - const: dmc-misc-ccore
       - const: cmu-top
       - const: cmu-ccore
-      - const: pmu-alive
       - const: cmu-mif0
       - const: cmu-mif1
       - const: cmu-mif2
@@ -47,13 +46,14 @@ properties:
       - const: dmc-misc3
 
   clocks:
-    minItems: 3
-    maxItems: 3
+    minItems: 4
+    maxItems: 4
 
   clock-names:
     items:
       - const: bus0-pll
       - const: bus3-pll
+      - const: bus3-gate
       - const: switch-gate
 
   vdd-supply:
@@ -66,6 +66,10 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: APM ownership provider which holds firmware DVFS off.
 
+  samsung,pmu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: PMU syscon used to read the DREX calibration key.
+
 required:
   - compatible
   - reg
@@ -74,6 +78,7 @@ required:
   - clock-names
   - vdd-supply
   - samsung,apm
+  - samsung,pmu
 
 additionalProperties: false
 
@@ -82,8 +87,8 @@ examples:
     memory-controller@10520000 {
         compatible = "samsung,exynos8890-dmc";
         reg = <0x10520000 0x10000>, <0x10570000 0x8000>,
-              <0x105b0000 0x8000>, <0x105c0000 0x10000>,
-              <0x10850000 0x8000>, <0x10950000 0x8000>,
+              <0x105b0000 0x8000>, <0x10850000 0x8000>,
+              <0x10950000 0x8000>,
               <0x10a50000 0x8000>, <0x10b50000 0x8000>,
               <0x10800000 0x10000>, <0x10900000 0x10000>,
               <0x10a00000 0x10000>, <0x10b00000 0x10000>,
@@ -92,12 +97,15 @@ examples:
               <0x10890000 0x1000>, <0x10990000 0x1000>,
               <0x10a90000 0x1000>, <0x10b90000 0x1000>;
         reg-names = "dmc-misc-ccore", "cmu-top", "cmu-ccore",
-                    "pmu-alive", "cmu-mif0", "cmu-mif1", "cmu-mif2",
+                    "cmu-mif0", "cmu-mif1", "cmu-mif2",
                     "cmu-mif3", "smc0", "smc1", "smc2", "smc3",
                     "phy0", "phy1", "phy2", "phy3", "dmc-misc0",
                     "dmc-misc1", "dmc-misc2", "dmc-misc3";
-        clocks = <&cmu_top 215>, <&cmu_top 218>, <&cmu_top 402>;
-        clock-names = "bus0-pll", "bus3-pll", "switch-gate";
+        clocks = <&cmu_top 215>, <&cmu_top 5>, <&cmu_top 218>,
+                 <&cmu_top 402>;
+        clock-names = "bus0-pll", "bus3-pll", "bus3-gate",
+                      "switch-gate";
+        samsung,pmu = <&pmu>;
         samsung,apm = <&apm>;
         vdd-supply = <&buck1>;
     };

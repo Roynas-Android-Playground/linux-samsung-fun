@@ -18,6 +18,7 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/math64.h>
+#include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -27,6 +28,7 @@
 #include <linux/pm.h>
 #include <linux/regulator/consumer.h>
 #include <linux/regulator/s2mps16.h>
+#include <linux/regmap.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/suspend.h>
@@ -116,6 +118,7 @@
 #define CCORE_800_USER_STATUS		0x0500
 #define CCORE_800_USER_ENABLE		BIT(21)
 
+#define PMU_DREX_CALIBRATION1		0x09a4
 #define PMU_DREX_CALIBRATION2		0x09a8
 #define PMU_DREX_CALIBRATION3		0x09ac
 
@@ -126,7 +129,6 @@ enum exynos8890_dmc_region_id {
 	DMC_REGION_MISC_CCORE,
 	DMC_REGION_TOP,
 	DMC_REGION_CCORE,
-	DMC_REGION_PMU,
 	DMC_REGION_MIF0,
 	DMC_REGION_MIF1,
 	DMC_REGION_MIF2,
@@ -160,7 +162,6 @@ static const struct exynos8890_dmc_region exynos8890_dmc_region_template[] = {
 	[DMC_REGION_MISC_CCORE] = DMC_REGION("dmc-misc-ccore", DMC_MISC_CCORE_BASE, SZ_64K),
 	[DMC_REGION_TOP] = DMC_REGION("cmu-top", CMU_TOP_BASE, SZ_32K),
 	[DMC_REGION_CCORE] = DMC_REGION("cmu-ccore", CMU_CCORE_BASE, SZ_32K),
-	[DMC_REGION_PMU] = DMC_REGION("pmu-alive", PMU_ALIVE_BASE, SZ_64K),
 	[DMC_REGION_MIF0] = DMC_REGION("cmu-mif0", CMU_MIF0_BASE, SZ_32K),
 	[DMC_REGION_MIF1] = DMC_REGION("cmu-mif1", CMU_MIF1_BASE, SZ_32K),
 	[DMC_REGION_MIF2] = DMC_REGION("cmu-mif2", CMU_MIF2_BASE, SZ_32K),
@@ -181,6 +182,7 @@ static const struct exynos8890_dmc_region exynos8890_dmc_region_template[] = {
 
 enum exynos8890_dmc_field_kind {
 	DMC_FIELD_PLL,
+	DMC_FIELD_BUS3_PLL,
 	DMC_FIELD_MUX,
 	DMC_FIELD_DIV,
 };
@@ -200,6 +202,9 @@ struct exynos8890_dmc_field {
 
 #define DMC_PLL_FIELD(_name) \
 	{ .name = (_name), .kind = DMC_FIELD_PLL, \
+	  .type = EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ }
+#define DMC_BUS3_PLL_FIELD(_name) \
+	{ .name = (_name), .kind = DMC_FIELD_BUS3_PLL, \
 	  .type = EXYNOS8890_CALIB_MEMBER_PLL_RATE_HZ }
 #define DMC_MUX_FIELD(_name, _region, _offset, _status, _width, _stat_width) \
 	{ .name = (_name), .kind = DMC_FIELD_MUX, \
@@ -223,12 +228,15 @@ static const struct exynos8890_dmc_field exynos8890_dmc_fields[] = {
 	DMC_MUX_FIELD("MIF1_MUX_SCLK_HPM_MIF", DMC_REGION_MIF1, 0x0214, 0x0614, 2, 4),
 	DMC_MUX_FIELD("MIF2_MUX_SCLK_HPM_MIF", DMC_REGION_MIF2, 0x0214, 0x0614, 2, 4),
 	DMC_MUX_FIELD("MIF3_MUX_SCLK_HPM_MIF", DMC_REGION_MIF3, 0x0214, 0x0614, 2, 4),
-	DMC_MUX_FIELD("TOP_MUX_ACLK_CCORE_800", DMC_REGION_TOP, 0x0240, 0x0540, 3, 8),
 	DMC_MUX_FIELD("TOP_MUX_ACLK_CCORE_528", DMC_REGION_TOP, 0x024c, 0x054c, 3, 8),
 	DMC_MUX_FIELD("TOP_MUX_ACLK_CCORE_264", DMC_REGION_TOP, 0x0244, 0x0544, 2, 4),
 	DMC_MUX_FIELD("TOP_MUX_ACLK_CCORE_132", DMC_REGION_TOP, 0x0250, 0x0550, 2, 4),
 	DMC_MUX_FIELD("TOP_MUX_PCLK_CCORE_66", DMC_REGION_TOP, 0x0254, 0x0554, 2, 4),
 	DMC_MUX_FIELD("TOP_MUX_ACLK_CCORE_G3D_800", DMC_REGION_TOP, 0x0248, 0x0548, 3, 8),
+	DMC_MUX_FIELD("MIF0_MUX_PCLK_SMC", DMC_REGION_MIF0, 0x0218, 0x0618, 2, 4),
+	DMC_MUX_FIELD("MIF1_MUX_PCLK_SMC", DMC_REGION_MIF1, 0x0218, 0x0618, 2, 4),
+	DMC_MUX_FIELD("MIF2_MUX_PCLK_SMC", DMC_REGION_MIF2, 0x0218, 0x0618, 2, 4),
+	DMC_MUX_FIELD("MIF3_MUX_PCLK_SMC", DMC_REGION_MIF3, 0x0218, 0x0618, 2, 4),
 	DMC_DIV_FIELD("MIF0_DIV_PCLK_MIF", DMC_REGION_MIF0, 0x0400, 3),
 	DMC_DIV_FIELD("MIF1_DIV_PCLK_MIF", DMC_REGION_MIF1, 0x0400, 3),
 	DMC_DIV_FIELD("MIF2_DIV_PCLK_MIF", DMC_REGION_MIF2, 0x0400, 3),
@@ -237,12 +245,16 @@ static const struct exynos8890_dmc_field exynos8890_dmc_fields[] = {
 	DMC_DIV_FIELD("MIF1_DIV_SCLK_HPM_MIF", DMC_REGION_MIF1, 0x0408, 2),
 	DMC_DIV_FIELD("MIF2_DIV_SCLK_HPM_MIF", DMC_REGION_MIF2, 0x0408, 2),
 	DMC_DIV_FIELD("MIF3_DIV_SCLK_HPM_MIF", DMC_REGION_MIF3, 0x0408, 2),
-	DMC_DIV_FIELD("TOP_DIV_ACLK_CCORE_800", DMC_REGION_TOP, 0x03a0, 4),
 	DMC_DIV_FIELD("TOP_DIV_ACLK_CCORE_528", DMC_REGION_TOP, 0x03ac, 4),
 	DMC_DIV_FIELD("TOP_DIV_ACLK_CCORE_264", DMC_REGION_TOP, 0x03a4, 4),
 	DMC_DIV_FIELD("TOP_DIV_ACLK_CCORE_132", DMC_REGION_TOP, 0x03b0, 4),
 	DMC_DIV_FIELD("TOP_DIV_PCLK_CCORE_66", DMC_REGION_TOP, 0x03b4, 4),
 	DMC_DIV_FIELD("TOP_DIV_ACLK_CCORE_G3D_800", DMC_REGION_TOP, 0x03a8, 4),
+	DMC_DIV_FIELD("MIF0_DIV_PCLK_SMC", DMC_REGION_MIF0, 0x0404, 3),
+	DMC_DIV_FIELD("MIF1_DIV_PCLK_SMC", DMC_REGION_MIF1, 0x0404, 3),
+	DMC_DIV_FIELD("MIF2_DIV_PCLK_SMC", DMC_REGION_MIF2, 0x0404, 3),
+	DMC_DIV_FIELD("MIF3_DIV_PCLK_SMC", DMC_REGION_MIF3, 0x0404, 3),
+	DMC_BUS3_PLL_FIELD("BUS3_PLL"),
 };
 
 static const u16 exynos8890_dmc_top_ccore_mux_offsets[] = {
@@ -265,20 +277,40 @@ static const struct exynos8890_mif_pll_rate exynos8890_mif_pll_rates[] = {
 	{ 572000000UL, 132, 3, 2 }, { 416000000UL, 192, 3, 3 },
 };
 
+static const unsigned long exynos8890_bus3_pll_rates[] = {
+	1872000000UL, 1352000000UL, 1092000000UL,
+	841750000UL, 572000000UL, 416000000UL,
+};
+
+static bool exynos8890_dmc_bus3_rate_supported(unsigned long rate_hz)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(exynos8890_bus3_pll_rates); i++)
+		if (exynos8890_bus3_pll_rates[i] == rate_hz)
+			return true;
+	return false;
+}
+
 struct exynos8890_dmc {
 	struct device *dev;
 	struct exynos8890_dmc_region regions[DMC_REGION_COUNT];
 	const struct exynos8890_calib_domain *domain;
 	const struct exynos8890_calib_pscdc_table *pscdc;
+	u64 calibration_key;
+	phys_addr_t training_pa;
 	u32 *opp_voltage_uv;
 	const struct exynos8890_dmc_field **member_fields;
 	unsigned int pll_member;
+	unsigned int bus3_member;
 
 	struct clk *bus0_pll;
 	struct clk *bus3_pll;
+	struct clk *bus3_gate;
 	struct clk *switch_gate;
 	struct clk *pll_monitor;
 	struct regulator *vdd_mif;
+	struct regmap *pmu;
 	struct device *apm_dev;
 	struct clk_hw pll_hw;
 
@@ -306,7 +338,8 @@ static int exynos8890_dmc_set_ddrphy_auto(bool enable);
 static int exynos8890_dmc_read_timing_set(struct exynos8890_dmc *dmc,
 					  unsigned int *timing_set);
 static bool exynos8890_dmc_bus_source_valid(struct exynos8890_dmc *dmc,
-					     bool bus3);
+					     bool bus3,
+					     unsigned long expected_rate);
 static int exynos8890_dmc_refresh_ccf_rates(struct exynos8890_dmc *dmc);
 
 static void __iomem *exynos8890_dmc_reg(struct exynos8890_dmc *dmc,
@@ -482,6 +515,31 @@ static int exynos8890_dmc_pll_set_rate(struct exynos8890_dmc *dmc,
 	return exynos8890_dmc_pll_wait_lock(dmc);
 }
 
+static int exynos8890_dmc_bus3_set_rate(struct exynos8890_dmc *dmc,
+					unsigned long rate_hz)
+{
+	int reacquire_ret;
+	int ret;
+
+	if (!exynos8890_dmc_bus3_rate_supported(rate_hz))
+		return -EINVAL;
+
+	if (dmc->bus3_retained) {
+		clk_rate_exclusive_put(dmc->bus3_pll);
+		dmc->bus3_retained = false;
+	}
+	ret = clk_set_rate_exclusive(dmc->bus3_pll, rate_hz);
+	if (ret) {
+		reacquire_ret = clk_rate_exclusive_get(dmc->bus3_pll);
+		if (!reacquire_ret)
+			dmc->bus3_retained = true;
+		return ret;
+	}
+	dmc->bus3_retained = true;
+
+	return clk_get_rate(dmc->bus3_pll) == rate_hz ? 0 : -EIO;
+}
+
 static u32 exynos8890_dmc_read_field(struct exynos8890_dmc *dmc,
 				     const struct exynos8890_dmc_field *field)
 {
@@ -489,6 +547,8 @@ static u32 exynos8890_dmc_read_field(struct exynos8890_dmc *dmc,
 
 	if (field->kind == DMC_FIELD_PLL)
 		return exynos8890_dmc_pll_rate(dmc);
+	if (field->kind == DMC_FIELD_BUS3_PLL)
+		return clk_get_rate(dmc->bus3_pll);
 
 	value = readl_relaxed(exynos8890_dmc_reg(dmc, field->region,
 						  field->offset));
@@ -516,6 +576,8 @@ static bool exynos8890_dmc_field_matches(
 		}
 		return true;
 	}
+	if (field->kind == DMC_FIELD_BUS3_PLL)
+		return clk_get_rate(dmc->bus3_pll) == target;
 
 	value = readl_relaxed(exynos8890_dmc_reg(dmc, field->region,
 						  field->offset));
@@ -603,7 +665,6 @@ static bool exynos8890_dmc_root_matches(struct exynos8890_dmc *dmc,
 }
 
 static bool exynos8890_dmc_live_path_matches(struct exynos8890_dmc *dmc,
-					      u32 top_bus_selector,
 					      u32 mif_pll_selector,
 					      u32 mif_aclk_selector)
 {
@@ -618,13 +679,11 @@ static bool exynos8890_dmc_live_path_matches(struct exynos8890_dmc *dmc,
 		      TOP_CCORE_OUTPUT_ENABLE))
 			return false;
 
-	value = readl_relaxed(top + TOP_SWITCH_MUX_CTRL);
-	if (FIELD_GET(TOP_SWITCH_MUX_SELECTOR, value) != top_bus_selector ||
-	    !(value & TOP_SWITCH_MUX_GATE))
-		return false;
-	value = readl_relaxed(top + TOP_SWITCH_MUX_STATUS);
-	if ((value & TOP_SWITCH_MUX_STATUS_BITS) != BIT(12 + top_bus_selector))
-		return false;
+	/*
+	 * The BUS0/BUS3 switch branch is dormant while DRAM runs from the MIF
+	 * PLL. Vendor code selects it only as a transition begins, so its retained
+	 * selector is not part of boot-path validity.
+	 */
 	if (FIELD_GET(TOP_MIF_MUX_SELECTOR,
 		      readl_relaxed(top + TOP_MIF_PLL_MUX_CTRL)) !=
 	    mif_pll_selector ||
@@ -687,12 +746,10 @@ static bool exynos8890_dmc_stable_root_matches(struct exynos8890_dmc *dmc,
 		&dmc->pscdc->entries[level];
 	bool pll_backed = exynos8890_dmc_level_value(dmc, level,
 						       dmc->pll_member);
+	unsigned long bus3_rate = exynos8890_dmc_level_value(dmc, level,
+							    dmc->bus3_member);
 
-	if (!pll_backed && !exynos8890_dmc_bus_source_valid(dmc, true))
-		return false;
-	if (pll_backed && dmc->domain->opps[level].rate_hz >
-		EXYNOS8890_MIF_BUS3_THRESHOLD_HZ &&
-	    !exynos8890_dmc_bus_source_valid(dmc, true))
+	if (!exynos8890_dmc_bus_source_valid(dmc, true, bus3_rate))
 		return false;
 	return exynos8890_dmc_sci_matches(dmc, entry->mux_value,
 		entry->divider_ratio_minus_one, 1) &&
@@ -711,6 +768,8 @@ static int exynos8890_dmc_write_field(struct exynos8890_dmc *dmc,
 
 	if (field->kind == DMC_FIELD_PLL)
 		return exynos8890_dmc_pll_set_rate(dmc, target);
+	if (field->kind == DMC_FIELD_BUS3_PLL)
+		return exynos8890_dmc_bus3_set_rate(dmc, target);
 	if (target > GENMASK(field->width - 1, 0))
 		return -EINVAL;
 
@@ -1064,7 +1123,8 @@ static int exynos8890_dmc_retain_bus0(struct exynos8890_dmc *dmc)
 	if (ret)
 		goto err_exclusive;
 	dmc->bus0_retained = true;
-	if (!exynos8890_dmc_bus_source_valid(dmc, false) ||
+	if (!exynos8890_dmc_bus_source_valid(dmc, false,
+					      EXYNOS8890_BUS0_PLL_HZ) ||
 	    clk_get_rate(dmc->bus0_pll) != EXYNOS8890_BUS0_PLL_HZ) {
 		ret = -ERANGE;
 		/* A prepared MIF source is never gated on an uncertain unwind. */
@@ -1079,6 +1139,7 @@ err_exclusive:
 
 static int exynos8890_dmc_retain_bus3(struct exynos8890_dmc *dmc)
 {
+	unsigned long rate_hz;
 	int ret;
 
 	if (dmc->bus3_retained)
@@ -1086,12 +1147,13 @@ static int exynos8890_dmc_retain_bus3(struct exynos8890_dmc *dmc)
 	ret = clk_rate_exclusive_get(dmc->bus3_pll);
 	if (ret)
 		return ret;
-	ret = clk_prepare_enable(dmc->bus3_pll);
+	ret = clk_prepare_enable(dmc->bus3_gate);
 	if (ret)
 		goto err_exclusive;
 	dmc->bus3_retained = true;
-	if (!exynos8890_dmc_bus_source_valid(dmc, true) ||
-	    clk_get_rate(dmc->bus3_pll) != EXYNOS8890_BUS3_PLL_HZ) {
+	rate_hz = clk_get_rate(dmc->bus3_pll);
+	if (!exynos8890_dmc_bus3_rate_supported(rate_hz) ||
+	    !exynos8890_dmc_bus_source_valid(dmc, true, rate_hz)) {
 		ret = -ERANGE;
 		/* BUS3 may already be the live DRAM source: retain it fail-safe. */
 		return ret;
@@ -1104,11 +1166,10 @@ err_exclusive:
 }
 
 static bool exynos8890_dmc_bus_source_valid(struct exynos8890_dmc *dmc,
-					     bool bus3)
+					     bool bus3,
+					     unsigned long expected_rate)
 {
 	void __iomem *top = dmc->regions[DMC_REGION_TOP].base;
-	unsigned long expected_rate = bus3 ? EXYNOS8890_BUS3_PLL_HZ :
-		EXYNOS8890_BUS0_PLL_HZ;
 	u16 pll_offset = bus3 ? TOP_BUS3_PLL_CON0 : TOP_BUS0_PLL_CON0;
 	u16 mux_offset = bus3 ? TOP_BUS3_PLL_MUX_CTRL :
 		TOP_BUS0_PLL_MUX_CTRL;
@@ -1142,7 +1203,7 @@ static bool exynos8890_dmc_bus_source_valid(struct exynos8890_dmc *dmc,
 }
 
 static bool exynos8890_dmc_switch_sources_valid(
-		struct exynos8890_dmc *dmc)
+		struct exynos8890_dmc *dmc, unsigned long expected_bus3_rate)
 {
 	void __iomem *top = dmc->regions[DMC_REGION_TOP].base;
 
@@ -1150,8 +1211,10 @@ static bool exynos8890_dmc_switch_sources_valid(
 		dmc->switch_gate_enabled &&
 		(readl_relaxed(top + TOP_SWITCH_GATE_CTRL) &
 		 TOP_SWITCH_GATE_ENABLE) &&
-		exynos8890_dmc_bus_source_valid(dmc, false) &&
-		exynos8890_dmc_bus_source_valid(dmc, true);
+		exynos8890_dmc_bus_source_valid(dmc, false,
+						 EXYNOS8890_BUS0_PLL_HZ) &&
+		exynos8890_dmc_bus_source_valid(dmc, true,
+						 expected_bus3_rate);
 }
 
 static int exynos8890_dmc_verify_timing_set(struct exynos8890_dmc *dmc)
@@ -1225,6 +1288,7 @@ static int exynos8890_dmc_enter_switch(struct exynos8890_dmc *dmc,
 				       unsigned long switch_hz)
 {
 	const struct exynos8890_calib_pscdc_entry *entry;
+	unsigned long bus3_rate;
 	unsigned long pll_rate;
 	unsigned int old_timing_set;
 	int from, sw, ret, restore_ret;
@@ -1241,6 +1305,7 @@ static int exynos8890_dmc_enter_switch(struct exynos8890_dmc *dmc,
 		return -EINVAL;
 	entry = &dmc->pscdc->entries[sw];
 	pll_rate = exynos8890_dmc_level_value(dmc, from, dmc->pll_member);
+	bus3_rate = exynos8890_dmc_level_value(dmc, from, dmc->bus3_member);
 
 	exynos8890_dmc_channels_prepare(dmc);
 	ret = exynos8890_dmc_retain_bus3(dmc);
@@ -1271,7 +1336,7 @@ static int exynos8890_dmc_enter_switch(struct exynos8890_dmc *dmc,
 	if (ret)
 		goto fail;
 
-	if (!exynos8890_dmc_switch_sources_valid(dmc)) {
+	if (!exynos8890_dmc_switch_sources_valid(dmc, bus3_rate)) {
 		ret = -ERANGE;
 		goto fail;
 	}
@@ -1353,6 +1418,7 @@ static int exynos8890_dmc_leave_switch(struct exynos8890_dmc *dmc,
 				       unsigned long target_hz)
 {
 	const struct exynos8890_calib_pscdc_entry *entry;
+	unsigned long bus3_rate;
 	unsigned long pll_rate;
 	unsigned int old_timing_set;
 	bool pscdc_committed = false;
@@ -1368,6 +1434,7 @@ static int exynos8890_dmc_leave_switch(struct exynos8890_dmc *dmc,
 		return -EINVAL;
 	entry = &dmc->pscdc->entries[to];
 	pll_rate = exynos8890_dmc_level_value(dmc, to, dmc->pll_member);
+	bus3_rate = exynos8890_dmc_level_value(dmc, to, dmc->bus3_member);
 	if (dmc->current_rate_hz == EXYNOS8890_MIF_SWITCH_HIGH_HZ && !pll_rate)
 		return -EINVAL;
 	if (target_hz > EXYNOS8890_MIF_BUS3_THRESHOLD_HZ) {
@@ -1395,7 +1462,7 @@ static int exynos8890_dmc_leave_switch(struct exynos8890_dmc *dmc,
 	if (ret)
 		goto fail;
 
-	if (!exynos8890_dmc_switch_sources_valid(dmc)) {
+	if (!exynos8890_dmc_switch_sources_valid(dmc, bus3_rate)) {
 		ret = -ERANGE;
 		goto fail;
 	}
@@ -1980,6 +2047,9 @@ static int exynos8890_dmc_validate_calibration(struct exynos8890_dmc *dmc)
 			if (field->kind == DMC_FIELD_PLL) {
 				if (exynos8890_dmc_pll_rate_supported(value))
 					continue;
+			} else if (field->kind == DMC_FIELD_BUS3_PLL) {
+				if (exynos8890_dmc_bus3_rate_supported(value))
+					continue;
 			} else if (value <= GENMASK_ULL(field->width - 1, 0)) {
 				continue;
 			}
@@ -2006,9 +2076,12 @@ static int exynos8890_dmc_validate_calibration(struct exynos8890_dmc *dmc)
 static int exynos8890_dmc_load_calibration(struct exynos8890_dmc *dmc)
 {
 	const struct exynos8890_calib_mif_voltages *voltages;
+	u32 key_high, key_low, training_pa;
 	u64 key;
+	bool bus3_found = false;
 	bool pll_found = false;
 	unsigned int i, j;
+	int ret;
 
 	dmc->domain = exynos8890_calib_get_domain(EXYNOS8890_CALIB_MIF);
 	if (IS_ERR(dmc->domain))
@@ -2018,12 +2091,20 @@ static int exynos8890_dmc_load_calibration(struct exynos8890_dmc *dmc)
 		return PTR_ERR(dmc->pscdc);
 	if (dmc->pscdc->num_entries < dmc->domain->num_opps)
 		return -EINVAL;
-	key = (u64)readl_relaxed(exynos8890_dmc_reg(dmc, DMC_REGION_PMU,
-						     PMU_DREX_CALIBRATION2)) << 32;
-	key |= readl_relaxed(exynos8890_dmc_reg(dmc, DMC_REGION_PMU,
-						 PMU_DREX_CALIBRATION3));
+	ret = regmap_read(dmc->pmu, PMU_DREX_CALIBRATION1, &training_pa);
+	if (ret)
+		return ret;
+	ret = regmap_read(dmc->pmu, PMU_DREX_CALIBRATION2, &key_high);
+	if (ret)
+		return ret;
+	ret = regmap_read(dmc->pmu, PMU_DREX_CALIBRATION3, &key_low);
+	if (ret)
+		return ret;
+	key = (u64)key_high << 32 | key_low;
 	if (!key)
 		return -ENODATA;
+	dmc->calibration_key = key;
+	dmc->training_pa = training_pa;
 	voltages = exynos8890_calib_get_mif_voltages(key);
 	if (IS_ERR(voltages))
 		return PTR_ERR(voltages);
@@ -2065,9 +2146,12 @@ static int exynos8890_dmc_load_calibration(struct exynos8890_dmc *dmc)
 		if (field->kind == DMC_FIELD_PLL) {
 			dmc->pll_member = i;
 			pll_found = true;
+		} else if (field->kind == DMC_FIELD_BUS3_PLL) {
+			dmc->bus3_member = i;
+			bus3_found = true;
 		}
 	}
-	if (!pll_found)
+	if (!pll_found || !bus3_found)
 		return -EINVAL;
 	return exynos8890_dmc_validate_calibration(dmc);
 }
@@ -2272,6 +2356,11 @@ static int exynos8890_dmc_probe(struct platform_device *pdev)
 	dmc->dev = &pdev->dev;
 	dmc->current_level = -1;
 	mutex_init(&dmc->lock);
+	dmc->pmu = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+						   "samsung,pmu");
+	if (IS_ERR(dmc->pmu))
+		return dev_err_probe(&pdev->dev, PTR_ERR(dmc->pmu),
+				     "failed to get PMU syscon\n");
 
 	ret = exynos8890_dmc_link_apm(pdev, dmc);
 	if (ret)
@@ -2285,7 +2374,7 @@ static int exynos8890_dmc_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret,
 				     "invalid MIF calibration tables\n");
 	/*
-	 * These three handles can hold a live DRAM source.  They deliberately
+	 * These four handles can hold or control a live DRAM source. They deliberately
 	 * are not devm managed: after the first successful source lease, even
 	 * platform-device removal must not clk_put() and drop rate protection.
 	 */
@@ -2299,11 +2388,17 @@ static int exynos8890_dmc_probe(struct platform_device *pdev)
 				    "missing BUS3 PLL\n");
 		goto err_put_bus0;
 	}
+	dmc->bus3_gate = clk_get(&pdev->dev, "bus3-gate");
+	if (IS_ERR(dmc->bus3_gate)) {
+		ret = dev_err_probe(&pdev->dev, PTR_ERR(dmc->bus3_gate),
+				    "missing BUS3 output gate\n");
+		goto err_put_bus3;
+	}
 	dmc->switch_gate = clk_get(&pdev->dev, "switch-gate");
 	if (IS_ERR(dmc->switch_gate)) {
 		ret = dev_err_probe(&pdev->dev, PTR_ERR(dmc->switch_gate),
 				    "missing MIF switch gate\n");
-		goto err_put_bus3;
+		goto err_put_bus3_gate;
 	}
 	dmc->vdd_mif = devm_regulator_get(&pdev->dev, "vdd");
 	if (IS_ERR(dmc->vdd_mif)) {
@@ -2339,7 +2434,8 @@ static int exynos8890_dmc_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_owner;
 
-	ret = exynos8890_dmc_timing_init(dmc);
+	ret = exynos8890_dmc_timing_init(dmc, dmc->calibration_key,
+					 dmc->training_pa);
 	if (ret)
 		goto err_owner;
 	ret = exynos8890_dmc_read_timing_set(dmc, &dmc->timing_set);
@@ -2359,7 +2455,7 @@ static int exynos8890_dmc_probe(struct platform_device *pdev)
 		goto err_timing;
 	}
 	if (exynos8890_dmc_level_value(dmc, boot_level, dmc->pll_member)) {
-		if (!exynos8890_dmc_live_path_matches(dmc, 0, 1, 0)) {
+		if (!exynos8890_dmc_live_path_matches(dmc, 1, 0)) {
 			ret = -EIO;
 			dev_err(&pdev->dev, "boot MIF PLL path is not live\n");
 			goto err_timing;
@@ -2426,6 +2522,8 @@ err_owner:
 	mutex_unlock(&exynos8890_dmc_owner_lock);
 err_put_switch:
 	clk_put(dmc->switch_gate);
+err_put_bus3_gate:
+	clk_put(dmc->bus3_gate);
 err_put_bus3:
 	clk_put(dmc->bus3_pll);
 err_put_bus0:

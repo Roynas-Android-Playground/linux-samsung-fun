@@ -18,7 +18,6 @@ struct exynos8890_dmc;
 #define CMU_MIF1_BASE		0x10950000UL
 #define CMU_MIF2_BASE		0x10a50000UL
 #define CMU_MIF3_BASE		0x10b50000UL
-#define PMU_ALIVE_BASE		0x105c0000UL
 #define DMC_MISC_CCORE_BASE	0x10520000UL
 #define SMC0_BASE		0x10800000UL
 #define SMC1_BASE		0x10900000UL
@@ -41,7 +40,8 @@ void exynos8890_dmc_write_addr(uintptr_t sfr, u32 value);
 	exynos8890_dmc_read_addr((uintptr_t)(_sfr))
 #define exynos8890_dmc_write(_sfr, _value) \
 	exynos8890_dmc_write_addr((uintptr_t)(_sfr), (_value))
-int exynos8890_dmc_timing_init(struct exynos8890_dmc *dmc);
+int exynos8890_dmc_timing_init(struct exynos8890_dmc *dmc,
+			       u64 calibration_key, phys_addr_t training_pa);
 void exynos8890_dmc_timing_exit(struct exynos8890_dmc *dmc);
 int exynos8890_dmc_program_timing(unsigned long target_hz,
 				  unsigned int timing_set);

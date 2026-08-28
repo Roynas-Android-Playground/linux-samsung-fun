@@ -201,7 +201,6 @@
 			reg = <0x10520000 0x10000>,
 			      <0x10570000 0x8000>,
 			      <0x105b0000 0x8000>,
-			      <0x105c0000 0x10000>,
 			      <0x10850000 0x8000>,
 			      <0x10950000 0x8000>,
 			      <0x10a50000 0x8000>,
@@ -219,15 +218,18 @@
 			      <0x10a90000 0x1000>,
 			      <0x10b90000 0x1000>;
 			reg-names = "dmc-misc-ccore", "cmu-top", "cmu-ccore",
-				    "pmu-alive", "cmu-mif0", "cmu-mif1",
+				    "cmu-mif0", "cmu-mif1",
 				    "cmu-mif2", "cmu-mif3", "smc0", "smc1",
 				    "smc2", "smc3", "phy0", "phy1", "phy2",
 				    "phy3", "dmc-misc0", "dmc-misc1",
 				    "dmc-misc2", "dmc-misc3";
 			clocks = <&cmu_top CLK_UMOUT_TOP_BUS0_PLL>,
+				 <&cmu_top CLK_FOUT_BUS3_PLL>,
 				 <&cmu_top CLK_UMOUT_TOP_BUS3_PLL>,
 				 <&cmu_top CLK_GOUT_TOP_SCLK_BUS_PLL_MIF>;
-			clock-names = "bus0-pll", "bus3-pll", "switch-gate";
+			clock-names = "bus0-pll", "bus3-pll", "bus3-gate",
+				      "switch-gate";
+			samsung,pmu = <&pmu_system_controller>;
 			samsung,apm = <&apm>;
 			status = "disabled";
 		};
