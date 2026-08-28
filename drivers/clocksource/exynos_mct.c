@@ -56,8 +56,17 @@
 #define MCT_CLKSOURCE_RATING		450
 #define MCT_CLKEVENTS_RATING		500
 #else
+/*
+ * On Exynos8890 the CPU power sequencer does not reliably deliver the
+ * arch-timer PPI to a core whose LOCAL_PWR_CFG was cycled (cores come
+ * back from C2 without their pending tick interrupt). The stock kernel
+ * avoided this entirely: its arch_timer was clocksource-only and all
+ * per-CPU ticks came from MCT local timers, whose SPIs are always
+ * delivered. Rate the MCT above the arch timer so it wins the per-CPU
+ * clockevent election, mirroring stock behaviour.
+ */
 #define MCT_CLKSOURCE_RATING		350
-#define MCT_CLKEVENTS_RATING		350
+#define MCT_CLKEVENTS_RATING		460
 #endif
 
 /* There are four Global timers starting with 0 offset */
