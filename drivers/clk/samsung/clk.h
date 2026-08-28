@@ -132,6 +132,7 @@ struct samsung_fixed_factor_clock {
  * @stat_shift: starting bit of the one-hot transition-status field
  * @stat_width: width of the transition-status field, or zero if unused
  * @user_mux: update Exynos user-mux manual-control bit 27 around selection
+ * @user_gate: control the Exynos user-mux embedded gate at bit 21
  */
 struct samsung_mux_clock {
 	unsigned int		id;
@@ -147,8 +148,54 @@ struct samsung_mux_clock {
 	u8			stat_shift;
 	u8			stat_width;
 	bool			user_mux;
+	bool			user_gate;
 	bool			read_only;
 };
+
+enum samsung_hwacg_type {
+	SAMSUNG_HWACG_QCH,
+	SAMSUNG_HWACG_QSTATE,
+};
+
+struct samsung_hwacg_clock {
+	unsigned int id;
+	const char *name;
+	const char *parent_name;
+	unsigned long flags;
+	unsigned long offset;
+	enum samsung_hwacg_type type;
+	u32 owned_mask;
+	u32 auto_value;
+	u32 force_value;
+	unsigned long status_offset;
+	u32 status_mask;
+	u32 status_active;
+	u16 status_timeout_us;
+	unsigned long manual_offset;
+	u32 manual_mask;
+};
+
+#define SAMSUNG_QCH_MASK		(BIT(0) | BIT(12) | GENMASK(19, 16))
+#define SAMSUNG_QCH_AUTO		0x000f1001
+#define SAMSUNG_QCH_FORCE	0x000f1000
+#define SAMSUNG_QSTATE_MASK	GENMASK(1, 0)
+#define SAMSUNG_QSTATE_AUTO	0x1
+#define SAMSUNG_QSTATE_FORCE	0x3
+
+#define HWACG_QCH(_id, _name, _parent, _off, _manual, _manual_mask, _flags) \
+	{ .id = (_id), .name = (_name), .parent_name = (_parent), \
+	  .flags = (_flags), .offset = (_off), .type = SAMSUNG_HWACG_QCH, \
+	  .owned_mask = SAMSUNG_QCH_MASK, .auto_value = SAMSUNG_QCH_AUTO, \
+	  .force_value = SAMSUNG_QCH_FORCE, .manual_offset = (_manual), \
+	  .manual_mask = (_manual_mask) }
+
+#define HWACG_QSTATE(_id, _name, _parent, _off, _manual, _manual_mask, \
+		     _flags) \
+	{ .id = (_id), .name = (_name), .parent_name = (_parent), \
+	  .flags = (_flags), .offset = (_off), .type = SAMSUNG_HWACG_QSTATE, \
+	  .owned_mask = SAMSUNG_QSTATE_MASK, .auto_value = SAMSUNG_QSTATE_AUTO, \
+	  .force_value = SAMSUNG_QSTATE_FORCE, .manual_offset = (_manual), \
+	  .manual_mask = (_manual_mask) }
 
 #define __MUX(_id, cname, pnames, o, s, w, f, mf)		\
 	{							\
@@ -182,24 +229,26 @@ struct samsung_mux_clock {
 #define nMUX_F(_id, cname, pnames, o, s, w, f, mf)		\
 	__MUX(_id, cname, pnames, o, s, w, f, mf)
 
-#define __MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, user) \
+#define __MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, f, user, gate) \
 	{							\
-		.id		= _id,				\
-		.name		= cname,			\
-		.parent_names	= pnames,			\
+		.id		= (_id),			\
+		.name		= (cname),			\
+		.parent_names	= (pnames),			\
 		.num_parents	= ARRAY_SIZE(pnames),		\
-		.flags		= CLK_SET_RATE_NO_REPARENT,	\
-		.offset		= o,				\
-		.shift		= s,				\
-		.width		= w,				\
-		.stat_offset	= so,				\
-		.stat_shift	= ss,				\
-		.stat_width	= sw,				\
-		.user_mux	= user,				\
+		.flags		= (f),				\
+		.offset		= (o),				\
+		.shift		= (s),				\
+		.width		= (w),				\
+		.stat_offset	= (so),			\
+		.stat_shift	= (ss),			\
+		.stat_width	= (sw),			\
+		.user_mux	= (user),			\
+		.user_gate	= (gate),			\
 	}
 
 #define MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw) \
-	__MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, false)
+	__MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, \
+		   CLK_SET_RATE_NO_REPARENT, false, false)
 
 #define MUX_STAT_RO(_id, cname, pnames, o, s, w, so, ss, sw) \
 	{ .id = (_id), .name = (cname), .parent_names = (pnames),	\
@@ -210,10 +259,16 @@ struct samsung_mux_clock {
 	  .read_only = true }
 
 #define MUX_USER_STAT(_id, cname, pnames, o, s, w, so, ss, sw) \
-	__MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, true)
+	__MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, \
+		   CLK_SET_RATE_NO_REPARENT, true, true)
+
+#define MUX_USER_STAT_F(_id, cname, pnames, o, s, w, so, ss, sw, f) \
+	__MUX_STAT(_id, cname, pnames, o, s, w, so, ss, sw, \
+		   (f) | CLK_SET_RATE_NO_REPARENT, true, true)
 
 #define MUX_USER(_id, cname, pnames, o, s, w) \
-	__MUX_STAT(_id, cname, pnames, o, s, w, 0, 0, 0, true)
+	__MUX_STAT(_id, cname, pnames, o, s, w, 0, 0, 0, \
+		   CLK_SET_RATE_NO_REPARENT, true, false)
 
 /**
  * struct samsung_div_clock - information about div clock
@@ -421,6 +476,8 @@ struct samsung_clock_reg_cache {
  * @nr_div_clks: count of clocks in @div_clks
  * @gate_clks: list of gate clocks
  * @nr_gate_clks: count of clocks in @gate_clks
+ * @hwacg_clks: list of hardware auto-gating clocks
+ * @nr_hwacg_clks: count of clocks in @hwacg_clks
  * @fixed_clks: list of fixed clocks
  * @nr_fixed_clks: count clocks in @fixed_clks
  * @fixed_factor_clks: list of fixed factor clocks
@@ -451,6 +508,8 @@ struct samsung_cmu_info {
 	unsigned int nr_div_clks;
 	const struct samsung_gate_clock *gate_clks;
 	unsigned int nr_gate_clks;
+	const struct samsung_hwacg_clock *hwacg_clks;
+	unsigned int nr_hwacg_clks;
 	const struct samsung_fixed_rate_clock *fixed_clks;
 	unsigned int nr_fixed_clks;
 	const struct samsung_fixed_factor_clock *fixed_factor_clks;
@@ -511,6 +570,11 @@ void samsung_clk_register_div(struct samsung_clk_provider *ctx,
 void samsung_clk_register_gate(struct samsung_clk_provider *ctx,
 			const struct samsung_gate_clock *clk_list,
 			unsigned int nr_clk);
+void samsung_clk_register_hwacg(struct samsung_clk_provider *ctx,
+				const struct samsung_hwacg_clock *clk_list,
+				unsigned int nr_clk);
+bool samsung_clk_hwacg_validate(const struct samsung_hwacg_clock *clk_list,
+			       unsigned int nr_clk, unsigned int nr_clk_ids);
 void samsung_clk_register_pll(struct samsung_clk_provider *ctx,
 			const struct samsung_pll_clock *pll_list,
 			unsigned int nr_clk);

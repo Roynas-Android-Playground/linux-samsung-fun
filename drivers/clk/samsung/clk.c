@@ -192,6 +192,7 @@ struct samsung_status_mux {
 	u8 stat_shift;
 	u8 stat_width;
 	bool user_mux;
+	bool user_gate;
 };
 
 #define to_samsung_status_mux(_hw) \
@@ -298,7 +299,66 @@ static int samsung_status_mux_set_parent(struct clk_hw *hw, u8 index)
 	return ret;
 }
 
+static int samsung_status_mux_enable(struct clk_hw *hw)
+{
+	struct samsung_status_mux *mux = to_samsung_status_mux(hw);
+	unsigned long flags = 0;
+	u32 val;
+
+	if (!mux->user_gate)
+		return 0;
+
+	if (mux->mux.lock)
+		spin_lock_irqsave(mux->mux.lock, flags);
+
+	val = readl(mux->mux.reg);
+	writel(val | BIT(21), mux->mux.reg);
+
+	if (mux->mux.lock)
+		spin_unlock_irqrestore(mux->mux.lock, flags);
+
+	return 0;
+}
+
+static void samsung_status_mux_disable(struct clk_hw *hw)
+{
+	struct samsung_status_mux *mux = to_samsung_status_mux(hw);
+	unsigned long flags = 0;
+	u32 val;
+
+	if (!mux->user_gate)
+		return;
+
+	if (mux->mux.lock)
+		spin_lock_irqsave(mux->mux.lock, flags);
+
+	val = readl(mux->mux.reg);
+	writel(val & ~BIT(21), mux->mux.reg);
+
+	if (mux->mux.lock)
+		spin_unlock_irqrestore(mux->mux.lock, flags);
+}
+
+static int samsung_status_mux_is_enabled(struct clk_hw *hw)
+{
+	struct samsung_status_mux *mux = to_samsung_status_mux(hw);
+
+	if (!mux->user_gate)
+		return 1;
+
+	return !!(readl(mux->mux.reg) & BIT(21));
+}
+
 static const struct clk_ops samsung_status_mux_ops = {
+	.get_parent = samsung_status_mux_get_parent,
+	.determine_rate = samsung_status_mux_determine_rate,
+	.set_parent = samsung_status_mux_set_parent,
+};
+
+static const struct clk_ops samsung_user_gate_status_mux_ops = {
+	.enable = samsung_status_mux_enable,
+	.disable = samsung_status_mux_disable,
+	.is_enabled = samsung_status_mux_is_enabled,
 	.get_parent = samsung_status_mux_get_parent,
 	.determine_rate = samsung_status_mux_determine_rate,
 	.set_parent = samsung_status_mux_set_parent,
@@ -327,8 +387,12 @@ samsung_clk_register_status_mux(struct samsung_clk_provider *ctx,
 		return ERR_PTR(-ENOMEM);
 
 	init.name = list->name;
-	init.ops = list->read_only ? &samsung_read_only_status_mux_ops :
-		&samsung_status_mux_ops;
+	if (list->read_only)
+		init.ops = &samsung_read_only_status_mux_ops;
+	else if (list->user_gate)
+		init.ops = &samsung_user_gate_status_mux_ops;
+	else
+		init.ops = &samsung_status_mux_ops;
 	init.flags = list->flags;
 	init.parent_names = list->parent_names;
 	init.num_parents = list->num_parents;
@@ -343,6 +407,7 @@ samsung_clk_register_status_mux(struct samsung_clk_provider *ctx,
 	mux->stat_shift = list->stat_shift;
 	mux->stat_width = list->stat_width;
 	mux->user_mux = list->user_mux;
+	mux->user_gate = list->user_gate;
 
 	ret = clk_hw_register(ctx->dev, &mux->mux.hw);
 	if (ret) {
@@ -823,6 +888,9 @@ void __init samsung_cmu_register_clocks(struct samsung_clk_provider *ctx,
 	if (cmu->gate_clks)
 		samsung_clk_register_gate(ctx, cmu->gate_clks,
 					  cmu->nr_gate_clks);
+	if (cmu->hwacg_clks)
+		samsung_clk_register_hwacg(ctx, cmu->hwacg_clks,
+					   cmu->nr_hwacg_clks);
 	if (cmu->fixed_clks)
 		samsung_clk_register_fixed_rate(ctx, cmu->fixed_clks,
 						cmu->nr_fixed_clks);

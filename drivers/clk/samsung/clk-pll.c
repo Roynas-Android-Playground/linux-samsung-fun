@@ -119,6 +119,13 @@ static void samsung_pll3xxx_disable(struct clk_hw *hw)
 	writel_relaxed(tmp, pll->con_reg);
 }
 
+static int samsung_pll3xxx_is_enabled(struct clk_hw *hw)
+{
+	struct samsung_clk_pll *pll = to_clk_pll(hw);
+
+	return !!(readl_relaxed(pll->con_reg) & BIT(pll->enable_offs));
+}
+
 /*
  * PLL2126 Clock Type
  */
@@ -312,6 +319,7 @@ static const struct clk_ops samsung_pll35xx_clk_ops = {
 	.set_rate = samsung_pll35xx_set_rate,
 	.enable = samsung_pll3xxx_enable,
 	.disable = samsung_pll3xxx_disable,
+	.is_enabled = samsung_pll3xxx_is_enabled,
 };
 
 static const struct clk_ops samsung_pll35xx_clk_min_ops = {
@@ -424,6 +432,7 @@ static const struct clk_ops samsung_pll36xx_clk_ops = {
 	.determine_rate = samsung_pll_determine_rate,
 	.enable = samsung_pll3xxx_enable,
 	.disable = samsung_pll3xxx_disable,
+	.is_enabled = samsung_pll3xxx_is_enabled,
 };
 
 static const struct clk_ops samsung_pll36xx_clk_min_ops = {
@@ -528,6 +537,7 @@ static const struct clk_ops samsung_pll0822x_clk_ops = {
 	.set_rate = samsung_pll0822x_set_rate,
 	.enable = samsung_pll3xxx_enable,
 	.disable = samsung_pll3xxx_disable,
+	.is_enabled = samsung_pll3xxx_is_enabled,
 };
 
 static const struct clk_ops samsung_pll0822x_clk_min_ops = {
@@ -625,6 +635,7 @@ static const struct clk_ops samsung_pll0831x_clk_ops = {
 	.determine_rate = samsung_pll_determine_rate,
 	.enable = samsung_pll3xxx_enable,
 	.disable = samsung_pll3xxx_disable,
+	.is_enabled = samsung_pll3xxx_is_enabled,
 };
 
 static const struct clk_ops samsung_pll0831x_clk_min_ops = {
