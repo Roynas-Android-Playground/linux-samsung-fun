@@ -85,28 +85,44 @@ static int max86900_chip_init(struct max86900_data *max)
 	unsigned int status;
 
 	ret = regmap_write(max->regmap, MAX86900_MODE_CONFIG, 0x40);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to reset chip: %d\n", ret);
 		return ret;
+	}
 
 	/* clear latched interrupt status */
 	ret = regmap_read(max->regmap, MAX86900_INT_STATUS, &status);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to read interrupt status: %d\n", ret);
 		return ret;
+	}
 
 	ret = regmap_write(max->regmap, MAX86900_MODE_CONFIG, 0x83);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write mode config: %d\n", ret);
 		return ret;
+	}
 
 	ret = regmap_write(max->regmap, MAX86900_INT_ENABLE, 0x10);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write interrupt enable: %d\n", ret);
 		return ret;
+	}
 
 	/* 400 Hz sample rate, 400us LED pulse width */
 	ret = regmap_write(max->regmap, MAX86900_SPO2_CONFIG, 0x51);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write SPO2 config: %d\n", ret);
 		return ret;
+	}
 
-	return regmap_write(max->regmap, MAX86900_LED_CONFIG, 0x00);
+	ret = regmap_write(max->regmap, MAX86900_LED_CONFIG, 0x00);
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write LED config: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
 }
 
 static int max86900_enable(struct max86900_data *max)
@@ -116,26 +132,38 @@ static int max86900_enable(struct max86900_data *max)
 	mutex_lock(&max->lock);
 
 	ret = regmap_write(max->regmap, MAX86900_LED_CONFIG, MAX86900_DEFAULT_LED_CURRENT);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write LED config: %d\n", ret);
 		goto out;
+	}
 
 	ret = regmap_write(max->regmap, MAX86900_FIFO_WR_PTR, 0x00);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write FIFO write pointer: %d\n", ret);
 		goto out;
+	}
 	ret = regmap_write(max->regmap, MAX86900_OVF_COUNTER, 0x00);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write overflow counter: %d\n", ret);
 		goto out;
+	}
 	ret = regmap_write(max->regmap, MAX86900_FIFO_RD_PTR, 0x00);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write FIFO read pointer: %d\n", ret);
 		goto out;
+	}
 
 	ret = max86900_read_temperature(max);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to read temperature: %d\n", ret);
 		goto out;
+	}
 
 	ret = regmap_write(max->regmap, MAX86900_MODE_CONFIG, 0x0b);
-	if (ret)
+	if (ret) {
+		dev_err(&max->client->dev, "failed to write mode config: %d\n", ret);
 		goto out;
+	}
 
 	enable_irq(max->irq);
 	max->enabled = true;
@@ -152,8 +180,14 @@ static int max86900_disable(struct max86900_data *max)
 	disable_irq(max->irq);
 
 	ret = regmap_write(max->regmap, MAX86900_MODE_CONFIG, 0x40);
-	if (!ret)
+	if (!ret) {
+		dev_dbg(&max->client->dev, "chip disabled\n");
 		ret = regmap_write(max->regmap, MAX86900_MODE_CONFIG, 0x80);
+		if (ret)
+			dev_err(&max->client->dev, "failed to write mode config: %d\n", ret);
+	} else {
+		dev_err(&max->client->dev, "failed to write mode config: %d\n", ret);
+	}
 
 	max->enabled = false;
 	mutex_unlock(&max->lock);
