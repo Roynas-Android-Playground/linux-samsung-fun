@@ -65,6 +65,8 @@ source "drivers/net/Kconfig"
 
 source "drivers/input/Kconfig"
 
+source "drivers/fingerprint/Kconfig"
+
 source "drivers/char/Kconfig"
 
 source "drivers/i2c/Kconfig"

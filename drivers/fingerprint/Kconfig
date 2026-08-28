@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+menu "Fingerprint sensor drivers"
+
+config SENSORS_VFS7XXX
+	tristate "Validity/Synaptics VFS7XXX fingerprint sensor"
+	depends on SPI
+	help
+	  Say Y here to enable support for the Validity/Synaptics VFS7XXX
+	  fingerprint sensor, connected over SPI. Provides a /dev/vfsspi
+	  character device with raw SPI transfer and DRDY-signal ioctls for
+	  a userspace matching daemon.
+
+endmenu
