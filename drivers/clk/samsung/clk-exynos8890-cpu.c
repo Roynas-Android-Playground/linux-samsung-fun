@@ -124,7 +124,12 @@ exynos8890_cpuclk_lookup_and_lock(struct clk_hw *hw)
 
 static bool exynos8890_same_clk(struct clk *left, struct clk *right)
 {
-	return left && right && __clk_get_hw(left) == __clk_get_hw(right);
+	return clk_is_match(left, right);
+}
+
+static void exynos8890_cpuclk_put(void *data)
+{
+	clk_put(data);
 }
 
 static int exynos8890_cpuclk_parent_index(struct exynos8890_cpuclk *cpuclk,
@@ -132,14 +137,20 @@ static int exynos8890_cpuclk_parent_index(struct exynos8890_cpuclk *cpuclk,
 					  struct clk **parent)
 {
 	struct clk_hw *parent_hw;
+	int ret;
 
 	parent_hw = clk_hw_get_parent_by_index(__clk_get_hw(mux), index);
 	if (!parent_hw)
 		return -EINVAL;
 
-	*parent = devm_clk_hw_get_clk(cpuclk->dev, parent_hw,
-				       dev_name(cpuclk->dev));
-	return PTR_ERR_OR_ZERO(*parent);
+	*parent = clk_hw_get_clk(parent_hw, dev_name(cpuclk->dev));
+	if (IS_ERR(*parent))
+		return PTR_ERR(*parent);
+	ret = devm_add_action_or_reset(cpuclk->dev, exynos8890_cpuclk_put,
+				       *parent);
+	if (ret)
+		*parent = NULL;
+	return ret;
 }
 
 static int exynos8890_cpuclk_set_parent(struct clk *mux, struct clk *parent)
