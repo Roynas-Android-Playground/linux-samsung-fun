@@ -2904,12 +2904,8 @@ static const struct samsung_gate_clock peris_gate_clks[] __initconst = {
 	GATE(CLK_GOUT_PERIS_PCLK_MONOCNT_APBIF, "gout_peris_pclk_monocnt_apbif",
 	     "mout_peris_aclk_peris_66_user", CG_CTRL_VAL_ACLK_PERIS, 10,
 	     CLK_IGNORE_UNUSED, 0),
-	GATE(CLK_GOUT_PERIS_PCLK_WDT_APOLLO, "gout_peris_pclk_wdt_apollo",
-	     "mout_peris_aclk_peris_66_user", CG_CTRL_VAL_ACLK_PERIS, 9, 0, 0),
 	GATE(CLK_GOUT_PERIS_PCLK_WDT_MNGS, "gout_peris_pclk_wdt_mngs",
 	     "mout_peris_aclk_peris_66_user", CG_CTRL_VAL_ACLK_PERIS, 8, 0, 0),
-	GATE(CLK_GOUT_PERIS_PCLK_MCT, "gout_peris_pclk_mct",
-	     "mout_peris_aclk_peris_66_user", CG_CTRL_VAL_ACLK_PERIS, 7, 0, 0),
 	GATE(CLK_GOUT_PERIS_PCLK_SYSREG_PERIS, "gout_peris_pclk_sysreg_peris",
 	     "mout_peris_aclk_peris_66_user", CG_CTRL_VAL_ACLK_PERIS, 6, 0, 0),
 	GATE(CLK_GOUT_PERIS_PCLK_PMU_PERIS, "gout_peris_pclk_pmu_peris",
@@ -2998,11 +2994,24 @@ static const struct samsung_gate_clock peris_gate_clks[] __initconst = {
 	     CLK_IGNORE_UNUSED, 0),
 };
 
+static const struct samsung_hwacg_clock peris_hwacg_clks[] __initconst = {
+	HWACG_QSTATE(CLK_GOUT_PERIS_PCLK_MCT, "gout_peris_pclk_mct",
+		       "mout_peris_aclk_peris_66_user",
+		       QSTATE_CTRL_MCT, CG_CTRL_VAL_ACLK_PERIS, BIT(7), 0),
+	HWACG_QSTATE(CLK_GOUT_PERIS_PCLK_WDT_APOLLO,
+		       "gout_peris_pclk_wdt_apollo",
+		       "mout_peris_aclk_peris_66_user",
+		       QSTATE_CTRL_WDT_APOLLO, CG_CTRL_VAL_ACLK_PERIS,
+		       BIT(9), 0),
+};
+
 static const struct samsung_cmu_info peris_cmu_info __initconst = {
 	.mux_clks		= peris_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(peris_mux_clks),
 	.gate_clks		= peris_gate_clks,
 	.nr_gate_clks		= ARRAY_SIZE(peris_gate_clks),
+	.hwacg_clks		= peris_hwacg_clks,
+	.nr_hwacg_clks		= ARRAY_SIZE(peris_hwacg_clks),
 	.nr_clk_ids		= PERIS_NR_CLK,
 	.clk_regs		= peris_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(peris_clk_regs),
