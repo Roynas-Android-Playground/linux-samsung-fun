@@ -533,13 +533,13 @@
 		wakeup-source;
 	};
 
-	/* vendor's HRM_1.8V_AP/HRM_3.3V_AP - real rails for these LDOs, confirmed against vendor's s2mps16 table */
+	/* Shipped herolte revisions route HRM rails through MAX77838. */
 	heart-rate@51 {
 		compatible = "maxim,max86900";
 		reg = <0x51>;
 
-		vdd-supply = <&s2mps16_ldo32>;
-		led-supply = <&s2mps16_ldo33>;
+		vdd-supply = <&max77838_ldo2>;
+		led-supply = <&max77838_ldo4>;
 
 		interrupt-parent = <&gpa1>;
 		interrupts = <7 IRQ_TYPE_EDGE_FALLING>;
