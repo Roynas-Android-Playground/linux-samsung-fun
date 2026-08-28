@@ -429,8 +429,8 @@
 		reg = <0x28>;
 		interrupt-parent = <&gpa2>;
 		interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
-		vdd-supply = <&grip_ldo>;
-		svdd-supply = <&grip_ldo>;
+		pinctrl-0 = <&grip_irq>;
+		pinctrl-names = "default";
 		#io-channel-cells = <1>;
 		status = "okay";
 	};
@@ -1194,6 +1194,13 @@
 };
 
 &pinctrl_alive {
+	grip_irq: grip-irq-pins {
+		samsung,pins = "gpa2-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
 	ssp_host_req: ssp-host-req-pins {
 		samsung,pins = "gpa3-4";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
