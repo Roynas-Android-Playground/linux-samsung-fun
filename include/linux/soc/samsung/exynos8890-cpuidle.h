@@ -15,11 +15,13 @@
 
 void exynos8890_cpd_block(void);
 void exynos8890_cpd_unblock(void);
+bool exynos8890_cpd_is_active(unsigned int cpu);
 
 #else
 
 static inline void exynos8890_cpd_block(void) {}
 static inline void exynos8890_cpd_unblock(void) {}
+static inline bool exynos8890_cpd_is_active(unsigned int cpu) { return false; }
 
 #endif
 

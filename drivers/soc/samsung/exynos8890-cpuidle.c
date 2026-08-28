@@ -1,22 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Exynos8890 local-core C2 with vendor cluster-down coordination.
+ * Exynos8890 C2 and cluster-power-down coordination.
  *
  * Port of the CPU-local part of Cronos_8890 drivers/soc/samsung/
  * exynos-powermode.c enter_c2()/wakeup_from_c2(), minus SICD/system-idle
  * promotion which stays unsupported here:
  *
- *   enter:
- *     - clear this CPU's PMU LOCAL_PWR_CFG
- *     - mark this CPU in c2_mask
- *     - if this is the last online core of the NON-BOOT cluster and every
- *       core in the cluster has enough timer residency and CPD is not
- *       blocked: cluster_down() (CPUSEQ bit0=1) and remember it
- *     - PSCI CPU_SUSPEND into C2
- *   wake:
- *     - if we collapsed the cluster: cluster_up() (bit0=0)
- *     - restore LOCAL_PWR_CFG if firmware left it cleared
- *     - clear c2_mask
+ * This follows Cronos_8890's enter_c2()/wakeup_from_c2() contract: both
+ * clusters expose per-core C2, only the non-boot cluster may enter CPD,
+ * the local architectural timer remains the wake source, and whichever
+ * CPU wakes first clears the cluster-global CPU sequencer state.
  *
  * Boot-cluster collapse is refused, same as vendor ("no benefit").
  *
@@ -25,10 +18,11 @@
  * block_cpd()/release_cpd() and must be called around frequency changes
  * once DVFS runs concurrently with idle.
  *
- * Opt-in is CONFIG_EXYNOS8890_CPUIDLE itself; no boot flag gates it.
+ * The DT node remains the board-level opt-in gate.
  */
 
 #include <linux/atomic.h>
+#include <linux/arch_topology.h>
 #include <linux/bits.h>
 #include <linux/clockchips.h>
 #include <linux/context_tracking.h>
@@ -46,11 +40,11 @@
 #include <linux/smp.h>
 #include <linux/spinlock.h>
 #include <linux/tick.h>
-#include <linux/hrtimer.h>
 
 #include <asm/barrier.h>
 #include <asm/cpuidle.h>
 #include <asm/smp_plat.h>
+#include <asm/suspend.h>
 
 #include <linux/soc/samsung/exynos8890-cpupm.h>
 #include <linux/soc/samsung/exynos8890-cpuidle.h>
@@ -59,9 +53,12 @@
 #define EXYNOS8890_PMU_CPU_STRIDE	0x80
 #define EXYNOS8890_CPU_LOCAL_PWR_CFG	GENMASK(3, 0)
 #define EXYNOS8890_C2_STATE		0x00010000
+/* Cronos PSCI_CLUSTER_SLEEP: affinity level 1, state ID/type both zero. */
+#define EXYNOS8890_CPD_STATE		0x01000000
 
 /* Default CPD residency: below this much promised idle, stay in plain C2 */
-#define EXYNOS8890_CPD_RESIDENCY_DEFAULT_US	50000
+#define EXYNOS8890_CPD_RESIDENCY_DEFAULT_US	3000
+#define EXYNOS8890_CLUSTER_COUNT		2
 
 struct exynos8890_c2_stats {
 	u64 attempts;
@@ -76,12 +73,18 @@ struct exynos8890_c2_stats {
 };
 
 static DEFINE_PER_CPU(struct exynos8890_c2_stats, exynos8890_c2_stats);
-static unsigned int boot_cluster;
+
+struct exynos8890_cpuidle;
+
+struct exynos8890_idle_driver {
+	struct cpuidle_driver driver;
+	struct cpumask cpus;
+	struct exynos8890_cpuidle *idle;
+};
 
 struct exynos8890_cpuidle {
 	void __iomem *pmu;
-	struct cpuidle_driver driver;
-	struct cpumask cpus;
+	struct exynos8890_idle_driver clusters[EXYNOS8890_CLUSTER_COUNT];
 	atomic_t faulted;
 	unsigned int cpd_residency_us;
 };
@@ -93,7 +96,7 @@ struct exynos8890_cpuidle {
  */
 static DEFINE_SPINLOCK(c2_lock);
 static struct cpumask c2_mask;
-static int cluster_idle_state[2];
+static int cluster_idle_state[EXYNOS8890_CLUSTER_COUNT];
 static bool cpd_blocked;
 static unsigned int boot_cluster;
 
@@ -104,13 +107,12 @@ static unsigned int cluster_id_of(unsigned int cpu)
 
 static s64 next_event_time_us(unsigned int cpu)
 {
-	ktime_t delta_next;
-	ktime_t len;
+	ktime_t next = READ_ONCE(per_cpu(cpuidle_dev, cpu).next_hrtimer);
 
-	/* Must be called for the local CPU: reads this CPU's tick device */
-	len = tick_nohz_get_sleep_length(&delta_next);
+	if (!next)
+		return 0;
 
-	return ktime_to_us(len);
+	return ktime_to_us(ktime_sub(next, ktime_get()));
 }
 
 /*
@@ -131,12 +133,12 @@ static bool cpd_available_locked(struct exynos8890_cpuidle *idle,
 	if (cluster_id_of(cpu) == boot_cluster)
 		return false;
 
-	cluster_mask = topology_sibling_cpumask(cpu);
+	cluster_mask = cpu_coregroup_mask(cpu);
 
 	for_each_cpu_and(member, cluster_mask, cpu_online_mask) {
 		if (!cpumask_test_cpu(member, &c2_mask))
 			return false;
-		if (member != cpu && next_event_time_us(member) < residency)
+		if (next_event_time_us(member) < residency)
 			return false;
 	}
 
@@ -169,18 +171,22 @@ static int __cpuidle exynos8890_enter_wfi_rcu(void)
 	return 0;
 }
 
+static int noinstr exynos8890_cpd_finisher(unsigned long state)
+{
+	return psci_ops.cpu_suspend(state, __pa_symbol(cpu_resume));
+}
+
 static int __cpuidle exynos8890_enter_c2(struct cpuidle_device *dev,
 					 struct cpuidle_driver *drv, int index)
 {
-	struct exynos8890_cpuidle *idle = container_of(drv,
-						       struct exynos8890_cpuidle,
-						       driver);
+	struct exynos8890_idle_driver *cluster_drv = container_of(drv,
+						struct exynos8890_idle_driver,
+						driver);
+	struct exynos8890_cpuidle *idle = cluster_drv->idle;
 	struct exynos8890_c2_stats *stats = this_cpu_ptr(&exynos8890_c2_stats);
 	unsigned int cpu = smp_processor_id();
 	unsigned int cluster = cluster_id_of(cpu);
-	bool cluster_was_down = false;
 	bool cpd_taken = false;
-	bool early_wakeup;
 	void __iomem *config;
 	u32 before, after;
 	unsigned long flags;
@@ -221,35 +227,42 @@ static int __cpuidle exynos8890_enter_c2(struct cpuidle_device *dev,
 	 */
 	spin_lock_irqsave(&c2_lock, flags);
 	cpumask_set_cpu(cpu, &c2_mask);
-	cpd_taken = cpd_available_locked(idle, cpu);
-	if (cpd_taken) {
+	if (next_event_time_us(cpu) >= idle->cpd_residency_us &&
+	    cpd_available_locked(idle, cpu)) {
 		exynos8890_cluster_down(cluster);
 		cluster_idle_state[cluster] = 1;
-		cluster_was_down = true;
+		cpd_taken = true;
 	}
 	spin_unlock_irqrestore(&c2_lock, flags);
 
 	stats->before_psci++;
 	dsb(sy);
-	ret = psci_cpu_suspend_enter(EXYNOS8890_C2_STATE);
+	if (cpd_taken)
+		ret = cpu_suspend(EXYNOS8890_CPD_STATE,
+				  exynos8890_cpd_finisher);
+	else
+		ret = psci_cpu_suspend_enter(EXYNOS8890_C2_STATE);
 	stats->last_psci_ret = ret;
 	stats->after_psci++;
 
-	early_wakeup = ret != 0;
+	/* Vendor restores local power immediately on an aborted suspend. */
+	if (ret)
+		exynos8890_cpu_power_up(cpu);
 
-	/* Vendor wakeup_from_c2(): undo the cluster collapse first. */
-	if (cluster_was_down) {
+	/* Whichever core wakes first owns the cluster-global CPD unwind. */
+	spin_lock_irqsave(&c2_lock, flags);
+	if (cluster_idle_state[cluster]) {
 		exynos8890_cluster_up(cluster);
 		cluster_idle_state[cluster] = 0;
 	}
+	cpumask_clear_cpu(cpu, &c2_mask);
+	spin_unlock_irqrestore(&c2_lock, flags);
 
 	after = readl_relaxed(config);
 	stats->last_after = after;
 
 	if (ret) {
 		stats->psci_fail++;
-		writel_relaxed(before, config);
-		dsb(sy);
 		if ((readl_relaxed(config) & EXYNOS8890_CPU_LOCAL_PWR_CFG) !=
 		    EXYNOS8890_CPU_LOCAL_PWR_CFG) {
 			stats->rollback_fail++;
@@ -263,13 +276,78 @@ static int __cpuidle exynos8890_enter_c2(struct cpuidle_device *dev,
 		exynos8890_cpu_power_up(cpu);
 	}
 
-	spin_lock_irqsave(&c2_lock, flags);
-	cpumask_clear_cpu(cpu, &c2_mask);
-	spin_unlock_irqrestore(&c2_lock, flags);
-
 out_pm:
 	cpu_pm_exit();
 	return ret ? -1 : index;
+}
+
+void exynos8890_cpd_block(void)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&c2_lock, flags);
+	cpd_blocked = true;
+	spin_unlock_irqrestore(&c2_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos8890_cpd_block);
+
+void exynos8890_cpd_unblock(void)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&c2_lock, flags);
+	cpd_blocked = false;
+	spin_unlock_irqrestore(&c2_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos8890_cpd_unblock);
+
+bool exynos8890_cpd_is_active(unsigned int cpu)
+{
+	unsigned int cluster = cluster_id_of(cpu);
+	unsigned long flags;
+	bool active;
+
+	if (cluster >= EXYNOS8890_CLUSTER_COUNT)
+		return false;
+
+	spin_lock_irqsave(&c2_lock, flags);
+	active = cluster_idle_state[cluster];
+	spin_unlock_irqrestore(&c2_lock, flags);
+
+	return active;
+}
+EXPORT_SYMBOL_GPL(exynos8890_cpd_is_active);
+
+static void exynos8890_init_idle_driver(struct exynos8890_idle_driver *cluster,
+					bool is_boot_cluster)
+{
+	struct cpuidle_driver *drv = &cluster->driver;
+
+	drv->name = is_boot_cluster ? "exynos8890-c2-boot" :
+					    "exynos8890-c2-nonboot";
+	drv->owner = THIS_MODULE;
+	drv->cpumask = &cluster->cpus;
+	drv->safe_state_index = 0;
+	drv->state_count = 2;
+	drv->states[0] = (struct cpuidle_state) {
+		.name = "WFI",
+		.desc = "ARM WFI",
+		.exit_latency_ns = 1000,
+		.target_residency_ns = 1000,
+		.enter = exynos8890_enter_wfi,
+	};
+	drv->states[1] = (struct cpuidle_state) {
+		.name = "C2",
+		/* Cronos parser used entry + exit latency for this field. */
+		.exit_latency_ns = is_boot_cluster ? 125000 : 105000,
+		.target_residency_ns = is_boot_cluster ? 750000 : 2000000,
+		/* Cronos DT deliberately has no local-timer-stop property. */
+		.flags = CPUIDLE_FLAG_RCU_IDLE,
+		.enter = exynos8890_enter_c2,
+	};
+	strscpy(drv->states[1].desc,
+		is_boot_cluster ? "Exynos8890 boot-cluster C2" :
+				  "Exynos8890 non-boot C2/CPD");
 }
 
 static int exynos8890_cpuidle_probe(struct platform_device *pdev)
@@ -277,24 +355,12 @@ static int exynos8890_cpuidle_probe(struct platform_device *pdev)
 	struct device_node *pmu_np;
 	struct exynos8890_cpuidle *idle;
 	u32 state = 0;
-	int cpu, ret;
+	int cluster, cpu, ret;
 
-	/*
-	 * Hardware finding (herolte, 2026-08-25): every C2 variant tried -
-	 * boot-cluster included, CPD on or off - wedges a random core in
-	 * idle within ~20s of boot. The core stops responding to pseudo-NMI
-	 * while LOCAL_PWR_CFG reads powered-on again, i.e. the core went
-	 * down through CPU_SUSPEND and the wake never reached it.
-	 *
-	 * Vendor Cronos runs this exact PSCI call too, but its EL3 monitor
-	 * pairs it with CAL PM-table sequences (exynos_prepare_cp_call /
-	 * wakeup_cp_call via the exynos_pm notifier chain) that this port
-	 * does not have. Until those are ported, C2 stays disabled at the
-	 * DT level: the driver only probes when the node is enabled.
-	 */
-	if (!of_property_read_bool(pdev->dev.of_node, "status") ||
-	    !of_device_is_available(pdev->dev.of_node))
+	if (!of_device_is_available(pdev->dev.of_node))
 		return -ENODEV;
+	if (!exynos8890_cpupm_ready())
+		return -EPROBE_DEFER;
 
 	ret = of_property_read_u32(pdev->dev.of_node,
 				   "samsung,psci-suspend-param", &state);
@@ -334,52 +400,43 @@ static int exynos8890_cpuidle_probe(struct platform_device *pdev)
 		}
 	}
 
-	idle->driver.name = "exynos8890-c2";
-	idle->driver.owner = THIS_MODULE;
-	idle->driver.safe_state_index = 0;
-	idle->driver.state_count = 2;
-	idle->driver.states[0] = (struct cpuidle_state) {
-		.name = "WFI",
-		.desc = "ARM WFI",
-		.exit_latency_ns = 1000,
-		.target_residency_ns = 1000,
-		.enter = exynos8890_enter_wfi,
-	};
-	idle->driver.states[1] = (struct cpuidle_state) {
-		.name = "C2",
-		.desc = "Exynos8890 C2 + cluster down",
-		.exit_latency_ns = 90000,
-		.target_residency_ns = 2000000,
-		.flags = CPUIDLE_FLAG_TIMER_STOP | CPUIDLE_FLAG_RCU_IDLE |
-			 CPUIDLE_FLAG_OFF,
-		.enter = exynos8890_enter_c2,
-	};
+	for (cluster = 0; cluster < EXYNOS8890_CLUSTER_COUNT; cluster++) {
+		idle->clusters[cluster].idle = idle;
+		cpumask_clear(&idle->clusters[cluster].cpus);
+	}
 
-	/*
-	 * The boot cluster must never enter C2. Vendor Cronos only ever
-	 * registers its C2-capable idle state for non-boot-cluster CPUs;
-	 * on this hardware a boot-cluster (cpu0/Mongoose) PSCI CPU_SUSPEND
-	 * into 0x00010000 never wakes - RCU stalls on cpu0 with the core
-	 * unresponsive to pseudo-NMI, while every other core idles fine.
-	 * Restrict the whole driver to the non-boot cluster; boot-cluster
-	 * cores fall back to the default arch WFI loop.
-	 */
-	cpumask_clear(&idle->cpus);
 	for_each_possible_cpu(cpu) {
-		if (cluster_id_of(cpu) != boot_cluster)
-			cpumask_set_cpu(cpu, &idle->cpus);
+		cluster = cluster_id_of(cpu);
+		if (cluster >= EXYNOS8890_CLUSTER_COUNT) {
+			ret = -EINVAL;
+			goto err_unmap;
+		}
+		cpumask_set_cpu(cpu, &idle->clusters[cluster].cpus);
 	}
 
 	platform_set_drvdata(pdev, idle);
-	ret = cpuidle_register(&idle->driver, &idle->cpus);
-	if (ret)
-		goto err_unmap;
+	for (cluster = 0; cluster < EXYNOS8890_CLUSTER_COUNT; cluster++) {
+		struct exynos8890_idle_driver *cluster_drv =
+			&idle->clusters[cluster];
 
-	dev_info(&pdev->dev,
-		 "C2 registered for non-boot cluster %*pbl (CPD residency %uus)\n",
-		 cpumask_pr_args(&idle->cpus), idle->cpd_residency_us);
+		if (cpumask_empty(&cluster_drv->cpus))
+			continue;
+		exynos8890_init_idle_driver(cluster_drv,
+					    cluster == boot_cluster);
+		ret = cpuidle_register(&cluster_drv->driver, NULL);
+		if (ret)
+			goto err_unregister;
+	}
+
+	dev_info(&pdev->dev, "vendor C2 registered on all CPUs; CPD residency %uus\n",
+		 idle->cpd_residency_us);
 	return 0;
 
+err_unregister:
+	while (--cluster >= 0) {
+		if (!cpumask_empty(&idle->clusters[cluster].cpus))
+			cpuidle_unregister(&idle->clusters[cluster].driver);
+	}
 err_unmap:
 	iounmap(idle->pmu);
 	return ret;
@@ -391,7 +448,10 @@ static void exynos8890_cpuidle_remove(struct platform_device *pdev)
 
 	if (!idle)
 		return;
-	cpuidle_unregister(&idle->driver);
+	for (int cluster = 0; cluster < EXYNOS8890_CLUSTER_COUNT; cluster++) {
+		if (!cpumask_empty(&idle->clusters[cluster].cpus))
+			cpuidle_unregister(&idle->clusters[cluster].driver);
+	}
 	iounmap(idle->pmu);
 }
 
