@@ -1168,12 +1168,12 @@
 
 		clocks = <&cmu_aud CLK_GOUT_AUD_PCLK_SFR0>;
 		clock-names = "sfr0_ctrl";
+		power-domains = <&pd_aud>;
 
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
-		/* AUD power-domain ownership is not established yet. */
-		status = "disabled";
+		status = "okay";
 
 		adma: dma-controller@11420000 {
 			compatible = "arm,pl330", "arm,primecell";

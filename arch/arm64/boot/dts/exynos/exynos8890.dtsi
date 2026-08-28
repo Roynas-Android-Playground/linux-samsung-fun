@@ -1102,6 +1102,13 @@
 			status = "disabled";
 		};
 
+		pd_aud: power-domain@105c40c0 {
+			compatible = "samsung,exynos8890-aud-pd";
+			reg = <0x105c40c0 0x20>;
+			#power-domain-cells = <0>;
+			label = "AUD";
+		};
+
 		tmuctrl_0: tmu@10060000 {
 			compatible = "samsung,exynos8890-tmu";
 			reg = <0x10060000 0x200>;

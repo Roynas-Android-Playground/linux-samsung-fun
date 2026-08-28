@@ -113,6 +113,15 @@ static const struct exynos_pm_domain_config exynos8890_disp_cfg = {
 	.flags			= GENPD_FLAG_ALWAYS_ON,
 };
 
+// AUD: same OPTION=0x2/always-on quirk as the domains above (vendor's aud_config(),
+// S5E8890-pmu.c:991-995 - aud_post()'s extra work is the same class of clock-gate
+// housekeeping already skipped for MFC/DISP/CAM/ISP)
+static const struct exynos_pm_domain_config exynos8890_aud_cfg = {
+	.local_pwr_cfg		= 0xf,
+	.power_on_option	= 0x2,
+	.flags			= GENPD_FLAG_ALWAYS_ON,
+};
+
 static const struct of_device_id exynos_pm_domain_of_match[] = {
 	{
 		.compatible = "samsung,exynos4210-pd",
@@ -126,6 +135,9 @@ static const struct of_device_id exynos_pm_domain_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8890-disp-pd",
 		.data = &exynos8890_disp_cfg,
+	}, {
+		.compatible = "samsung,exynos8890-aud-pd",
+		.data = &exynos8890_aud_cfg,
 	},
 	{ },
 };
