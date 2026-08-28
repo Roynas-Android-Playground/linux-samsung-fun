@@ -8,7 +8,9 @@
  */
 
 #include <linux/console.h>
+#include <linux/kstrtox.h>
 #include <linux/kvm_para.h>
+#include <linux/moduleparam.h>
 #include <linux/rcu_notifier.h>
 #include <linux/smp.h>
 
@@ -19,6 +21,25 @@
 /* panic() on RCU Stall sysctl. */
 static int sysctl_panic_on_rcu_stall __read_mostly;
 static int sysctl_max_rcu_stall_to_panic __read_mostly;
+
+/*
+ * Early-boot debugging aid: on hardware where a wedged CPU prevents
+ * userspace from ever setting the sysctl, allow enabling panic-on-stall
+ * from the command line (rcu_stall_panic=1). The resulting panic drops
+ * into kdb when CONFIG_KGDB_KDB + kgdboc are configured, which works
+ * even while other CPUs are unresponsive.
+ */
+static int __init rcu_stall_panic_setup(char *str)
+{
+	bool val;
+
+	if (kstrtobool(str, &val))
+		return -EINVAL;
+
+	sysctl_panic_on_rcu_stall = val;
+	return 0;
+}
+early_param("rcu_stall_panic", rcu_stall_panic_setup);
 
 static const struct ctl_table rcu_stall_sysctl_table[] = {
 	{
