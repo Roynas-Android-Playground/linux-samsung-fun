@@ -1359,6 +1359,10 @@
 
 			clocks = <&s2mps16_osc S2MPS11_CLK_AP>;
 			clock-names = "mclk2";
+
+			controller-data {
+				samsung,spi-feedback-delay = <1>;
+			};
 		};
 	};
 };
