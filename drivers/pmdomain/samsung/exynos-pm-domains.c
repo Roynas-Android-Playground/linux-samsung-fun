@@ -97,6 +97,22 @@ static const struct exynos_pm_domain_config exynos8890_mfc_cfg = {
 	.flags			= GENPD_FLAG_ALWAYS_ON,
 };
 
+/*
+ * Exynos8890 DISP0/DISP1 (DECON/DSIM/VPP) - same OPTION=0x2 quirk as MFC
+ * above (confirmed identical in vendor's S5E8890-pmu.c: both domains write
+ * DISPn_OPTION=0x2 before asserting LOCAL_PWR_CFG). Vendor's real power-on
+ * sequence for these domains also does dozens of manual CG_CTRL_MAN_*
+ * clock-gating writes around the LOCAL_PWR_CFG toggle - not replicated
+ * here, so keep the domain always-on (matches bootloader-established
+ * state, same assumption the DRM "takeover" decon driver already makes)
+ * rather than risk an incomplete power-on/off sequence on real hardware.
+ */
+static const struct exynos_pm_domain_config exynos8890_disp_cfg = {
+	.local_pwr_cfg		= 0xf,
+	.power_on_option	= 0x2,
+	.flags			= GENPD_FLAG_ALWAYS_ON,
+};
+
 static const struct of_device_id exynos_pm_domain_of_match[] = {
 	{
 		.compatible = "samsung,exynos4210-pd",
@@ -107,6 +123,9 @@ static const struct of_device_id exynos_pm_domain_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8890-mfc-pd",
 		.data = &exynos8890_mfc_cfg,
+	}, {
+		.compatible = "samsung,exynos8890-disp-pd",
+		.data = &exynos8890_disp_cfg,
 	},
 	{ },
 };
