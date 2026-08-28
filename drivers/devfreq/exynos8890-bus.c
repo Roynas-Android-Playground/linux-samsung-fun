@@ -11,6 +11,8 @@
 #include <linux/soc/samsung/exynos8890-apm.h>
 #include <linux/soc/samsung/exynos8890-calibration.h>
 
+#define EXYNOS8890_DISPCAM_MAX_UV	1000000
+
 struct exynos8890_bus_soc_data {
 	enum exynos8890_calib_domain_id id;
 	unsigned long ceiling_rate;
@@ -72,6 +74,9 @@ static int exynos8890_bus_get_cur_freq(struct device *dev,
 static int exynos8890_bus_add_opps(struct exynos8890_bus *bus)
 {
 	struct dev_pm_opp_data opp = { .level = OPP_LEVEL_UNSET };
+	bool shared_rail = bus->calib->id == EXYNOS8890_CALIB_CAM ||
+			   bus->calib->id == EXYNOS8890_CALIB_DISP;
+	unsigned long target_uv;
 	unsigned int i;
 	int count = 0;
 	int ret;
@@ -85,12 +90,30 @@ static int exynos8890_bus_add_opps(struct exynos8890_bus *bus)
 		if (bus->calib->opps[i].rate_hz > bus->ceiling_rate)
 			continue;
 
+		target_uv = bus->calib->opps[i].voltage_uv;
+		if (shared_rail && target_uv > EXYNOS8890_DISPCAM_MAX_UV) {
+			dev_pm_opp_remove_all_dynamic(bus->dev);
+			return -EINVAL;
+		}
 		opp.freq = bus->calib->opps[i].rate_hz;
-		opp.u_volt = bus->calib->opps[i].voltage_uv;
+		/*
+		 * Seed shared-rail OPPs at a distinct target so adjust_voltage()
+		 * installs the calibrated target/minimum and the common maximum.
+		 */
+		opp.u_volt = shared_rail ? EXYNOS8890_DISPCAM_MAX_UV : target_uv;
 		ret = dev_pm_opp_add_dynamic(bus->dev, &opp);
 		if (ret) {
 			dev_pm_opp_remove_all_dynamic(bus->dev);
 			return ret;
+		}
+		if (shared_rail) {
+			ret = dev_pm_opp_adjust_voltage(bus->dev, opp.freq,
+							target_uv, target_uv,
+							EXYNOS8890_DISPCAM_MAX_UV);
+			if (ret) {
+				dev_pm_opp_remove_all_dynamic(bus->dev);
+				return ret;
+			}
 		}
 		if (!bus->min_rate || opp.freq < bus->min_rate)
 			bus->min_rate = opp.freq;
