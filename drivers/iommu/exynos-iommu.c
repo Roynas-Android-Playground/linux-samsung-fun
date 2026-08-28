@@ -1465,6 +1465,12 @@ static int exynos_iommu_of_xlate(struct device *dev,
 		if (entry == data)
 			return 0;
 
+	if (data->master && data->master != dev) {
+		dev_err(dev, "%s already owned by %s\n",
+			dev_name(data->sysmmu), dev_name(data->master));
+		return -EBUSY;
+	}
+
 	list_add_tail(&data->owner_node, &owner->controllers);
 	data->master = dev;
 
