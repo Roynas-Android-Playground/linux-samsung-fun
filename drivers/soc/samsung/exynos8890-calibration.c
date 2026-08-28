@@ -36,10 +36,10 @@
 #define EXYNOS8890_MAX_MIF_VOLTAGE_UV	1000000U
 
 /* Legacy Exynos register-read SMC ABI used by the shipping boot firmware. */
-#define EXYNOS8890_SMC_CMD_REG		((unsigned long)-101L)
+#define EXYNOS8890_SMC_CMD_REG		0xffffff9bU
 #define EXYNOS8890_SMC_REG_CLASS_SFR_R	(0x3U << 30)
 #define EXYNOS8890_SMC_REG_ID_SFR_R(addr) \
-	(EXYNOS8890_SMC_REG_CLASS_SFR_R | ((addr) >> 2))
+	(EXYNOS8890_SMC_REG_CLASS_SFR_R | ((u32)(addr) >> 2))
 
 #define EXYNOS8890_KHZ_TO_HZ		1000UL
 #define EXYNOS8890_MHZ_TO_HZ		1000000UL
@@ -222,10 +222,11 @@ static const struct exynos8890_calib_cpu_metadata cpu_metadata[] = {
 static int exynos8890_calib_secure_read(u32 address, u32 *value)
 {
 	struct arm_smccc_res res;
+	u32 command = EXYNOS8890_SMC_CMD_REG;
+	u32 register_id = EXYNOS8890_SMC_REG_ID_SFR_R(address);
 
 	asm volatile("dsb sy" ::: "memory");
-	arm_smccc_smc(EXYNOS8890_SMC_CMD_REG,
-		      EXYNOS8890_SMC_REG_ID_SFR_R(address),
+	arm_smccc_smc(command, register_id,
 		      0, 0, 0, 0, 0, 0, &res);
 	if (res.a0)
 		return (int)res.a0;
@@ -242,8 +243,11 @@ static int exynos8890_calib_read_fuses(void)
 	for (i = 0; i < ARRAY_SIZE(asv_fuses); i++) {
 		ret = exynos8890_calib_secure_read(EXYNOS8890_ASV_INFO_BASE + i * 4,
 						   &asv_fuses[i]);
-		if (ret)
+		if (ret) {
+			pr_err_once("Exynos8890 calibration: ASV fuse read at %#lx failed: %d\n",
+				    EXYNOS8890_ASV_INFO_BASE + i * 4, ret);
 			return ret;
+		}
 	}
 
 	return 0;
@@ -414,19 +418,6 @@ static int exynos8890_calib_read_ssa(enum exynos8890_calib_domain_id id,
 }
 
 static int
-exynos8890_calib_find_asv_level(const struct ect_voltage_domain *domain,
-				unsigned int rate_khz)
-{
-	unsigned int i;
-
-	for (i = 0; i < domain->num_of_level; i++)
-		if (domain->level_list[i] == rate_khz)
-			return i;
-
-	return -ENOENT;
-}
-
-static int
 exynos8890_calib_base_voltage_uv(const struct ect_voltage_domain *domain,
 				 const struct ect_voltage_table *table,
 				 const struct ect_margin_domain *margin,
@@ -510,9 +501,9 @@ exynos8890_calib_build_domain(enum exynos8890_calib_domain_id id,
 	char *ect_name = (char *)domain_descs[id].ect_name;
 	void *margin_block;
 	unsigned long min_rate = ULONG_MAX, max_rate = 0;
-	u32 rate_khz;
 	unsigned int level, member;
-	int asv_level, group, ret;
+	unsigned int asv_level;
+	int group, ret;
 	size_t num_values;
 
 	if (dvfs->num_of_level <= 0 || dvfs->num_of_level > EXYNOS8890_MAX_LEVELS ||
@@ -521,6 +512,12 @@ exynos8890_calib_build_domain(enum exynos8890_calib_domain_id id,
 	    asv->num_of_group <= 0 ||
 	    asv->num_of_group > EXYNOS8890_MAX_ASV_GROUPS)
 		return -EINVAL;
+	/* Vendor PWRCAL pairs each DFS row with the same ASV row index. */
+	if (dvfs->num_of_level > asv->num_of_level) {
+		pr_err_once("Exynos8890 calibration: %s has %d DFS rows but only %d ASV rows\n",
+			    ect_name, dvfs->num_of_level, asv->num_of_level);
+		return -EINVAL;
+	}
 	if (check_mul_overflow((size_t)dvfs->num_of_level,
 			       (size_t)dvfs->num_of_clock, &num_values))
 		return -EOVERFLOW;
@@ -616,12 +613,13 @@ exynos8890_calib_build_domain(enum exynos8890_calib_domain_id id,
 			goto err_free;
 		}
 		opp->rate_hz = rate_hz;
-		rate_khz = dvfs->list_level[level].level;
-		asv_level = exynos8890_calib_find_asv_level(asv, rate_khz);
-		if (asv_level < 0) {
-			ret = asv_level;
-			goto err_free;
-		}
+		asv_level = level;
+		if (asv->level_list[asv_level] !=
+		    dvfs->list_level[level].level)
+			pr_warn_once("Exynos8890 calibration: %s row %u rates differ (%u/%u kHz); using vendor row mapping\n",
+				     ect_name, level,
+				     dvfs->list_level[level].level,
+				     asv->level_list[asv_level]);
 
 		if (id == EXYNOS8890_CALIB_MIF) {
 			store->opp_to_asv_level[level] = asv_level;
@@ -723,8 +721,11 @@ static int exynos8890_calib_build_domains(void)
 		dvfs = dvfs_domains[id];
 		asv = asv_domains[id];
 		ret = exynos8890_calib_build_domain(id, dvfs, asv, version);
-		if (ret)
+		if (ret) {
+			pr_err_once("Exynos8890 calibration: domain %s build failed: %d\n",
+				    domain_descs[id].ect_name, ret);
 			return ret;
+		}
 	}
 
 	return 0;
@@ -973,8 +974,11 @@ int exynos8890_calib_init(void)
 	}
 
 	ret = exynos8890_calib_prepare_ect();
-	if (ret)
+	if (ret) {
+		pr_err_once("Exynos8890 calibration: ECT preparation failed: %d\n",
+			    ret);
 		goto out_unlock;
+	}
 	ret = exynos8890_calib_read_fuses();
 	if (ret)
 		goto out_unlock;
@@ -982,14 +986,23 @@ int exynos8890_calib_init(void)
 	if (ret)
 		goto err_free;
 	ret = exynos8890_calib_build_pscdc();
-	if (ret)
+	if (ret) {
+		pr_err_once("Exynos8890 calibration: PSCDC build failed: %d\n",
+			    ret);
 		goto err_free;
+	}
 	ret = exynos8890_calib_build_timings();
-	if (ret)
+	if (ret) {
+		pr_err_once("Exynos8890 calibration: timing build failed: %d\n",
+			    ret);
 		goto err_free;
+	}
 	ret = exynos8890_calib_build_mif_voltages();
-	if (ret)
+	if (ret) {
+		pr_err_once("Exynos8890 calibration: MIF voltage build failed: %d\n",
+			    ret);
 		goto err_free;
+	}
 
 	/* Publish the fully populated immutable cache as one unit. */
 	smp_store_release(&calib_ready, true);

@@ -13,24 +13,29 @@ description: |
   Diagnostic-only controller for validating affinity-level-0 CPU power-down on
   Exynos8890. The driver is disabled unless selected in Kconfig, enabled in the
   device tree, opted in on the kernel command line, and enabled per CPU through
-  cpuidle sysfs. Cluster and system power-down are not supported.
+  cpuidle sysfs. Both clusters support local C2. When every online CPU in the
+  non-boot cluster is eligible, the driver may also request cluster power-down.
+  Boot-cluster and system power-down are not supported.
 
 properties:
   compatible:
     const: samsung,exynos8890-cpuidle-test
-
-  samsung,pmu-syscon:
-    $ref: /schemas/types.yaml#/definitions/phandle
-    description: Phandle to the Exynos8890 PMU system controller.
 
   samsung,psci-suspend-param:
     $ref: /schemas/types.yaml#/definitions/uint32
     const: 0x00010000
     description: PSCI original-format affinity-level-0 power-down state.
 
+  samsung,cpd-residency-us:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    default: 3000
+    description:
+      Minimum promised idle duration for every online non-boot-cluster CPU
+      before cluster power-down may be requested.
+
 required:
   - compatible
-  - samsung,pmu-syscon
   - samsung,psci-suspend-param
 
 additionalProperties: false
@@ -39,7 +44,6 @@ examples:
   - |
     cpuidle-test {
         compatible = "samsung,exynos8890-cpuidle-test";
-        samsung,pmu-syscon = <&pmu_system_controller>;
         samsung,psci-suspend-param = <0x00010000>;
         status = "disabled";
     };

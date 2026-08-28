@@ -109,7 +109,13 @@ static int exynos8890_apm_probe(struct platform_device *pdev)
 
 	apm->dev = &pdev->dev;
 	mutex_init(&apm->lock);
-	apm->pmu = syscon_regmap_lookup_by_phandle(pdev->dev.of_node, "samsung,pmu");
+	if (pdev->dev.parent && pdev->dev.parent->of_node)
+		apm->pmu = syscon_node_to_regmap(pdev->dev.parent->of_node);
+	else
+		apm->pmu = ERR_PTR(-ENODEV);
+	if (IS_ERR(apm->pmu))
+		apm->pmu = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+							   "samsung,pmu");
 	if (IS_ERR(apm->pmu))
 		return dev_err_probe(&pdev->dev, PTR_ERR(apm->pmu),
 				     "failed to get PMU syscon\n");
@@ -148,6 +154,7 @@ static struct platform_driver exynos8890_apm_driver = {
 		.of_match_table = exynos8890_apm_of_match,
 		.pm = pm_ptr(&exynos8890_apm_pm_ops),
 		.suppress_bind_attrs = true,
+		.probe_type = PROBE_FORCE_SYNCHRONOUS,
 	},
 };
 
@@ -155,7 +162,7 @@ static int __init exynos8890_apm_init(void)
 {
 	return platform_driver_register(&exynos8890_apm_driver);
 }
-subsys_initcall(exynos8890_apm_init);
+postcore_initcall(exynos8890_apm_init);
 
 MODULE_DESCRIPTION("Samsung Exynos8890 APM DVFS ownership provider");
 MODULE_LICENSE("GPL");

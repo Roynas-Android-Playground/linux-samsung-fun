@@ -342,6 +342,10 @@
 				     "samsung,exynos7-pmu", "syscon";
 			reg = <0x105c0000 0x10000>;
 
+			apm: apm {
+				compatible = "samsung,exynos8890-apm";
+			};
+
 			cpupm {
 				compatible = "samsung,exynos8890-cpupm";
 			};
@@ -594,11 +598,6 @@
 		sysreg_apollo: system-controller@11940000 {
 			compatible = "samsung,exynos8890-sysreg-apollo", "syscon";
 			reg = <0x11940000 0x2000>;
-		};
-
-		apm: apm {
-			compatible = "samsung,exynos8890-apm";
-			samsung,pmu = <&pmu_system_controller>;
 		};
 
 		cmu_bus0: clock-controller@13400000 {
@@ -1956,7 +1955,6 @@
 
 	exynos8890_cpuidle_test: cpuidle-test {
 		compatible = "samsung,exynos8890-cpuidle-test";
-		samsung,pmu-syscon = <&pmu_system_controller>;
 		samsung,psci-suspend-param = <0x00010000>;
 		status = "disabled";
 	};

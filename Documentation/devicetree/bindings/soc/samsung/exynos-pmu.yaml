@@ -119,6 +119,9 @@ properties:
     description:
       Phandle to PMU interrupt generation interface.
 
+  apm:
+    $ref: /schemas/soc/samsung/samsung,exynos8890-apm.yaml#
+
   cpupm:
     $ref: /schemas/power/samsung,exynos8890-cpupm.yaml#
 
@@ -140,6 +143,7 @@ allOf:
               const: samsung,exynos8890-pmu
     then:
       properties:
+        apm: false
         cpupm: false
         pm: false
 

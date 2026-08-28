@@ -77,6 +77,9 @@ jobs:
           for symbol in \
             EXYNOS8890_CALIBRATION \
             EXYNOS8890_APM \
+            EXYNOS8890_CPUPM \
+            EXYNOS8890_CPUIDLE \
+            CPU_IDLE_MULTIPLE_DRIVERS \
             PM_DEVFREQ \
             EXYNOS8890_DMC \
             ARM_EXYNOS8890_DEVFREQ \
@@ -95,7 +98,7 @@ jobs:
       - name: Validate Exynos8890 device-tree schemas
         run: |
           set -eu
-          schemas='Documentation/devicetree/bindings/clock/samsung,exynos8890-cmu.yaml:Documentation/devicetree/bindings/clock/samsung,exynos8890-cpu-clock.yaml:Documentation/devicetree/bindings/cpufreq/samsung,exynos8890-cpufreq.yaml:Documentation/devicetree/bindings/devfreq/samsung,exynos8890-bus.yaml:Documentation/devicetree/bindings/devfreq/samsung,exynos8890-mif-devfreq.yaml:Documentation/devicetree/bindings/memory-controllers/samsung,exynos8890-dmc.yaml:Documentation/devicetree/bindings/power/samsung,exynos8890-cpupm.yaml:Documentation/devicetree/bindings/power/samsung,exynos8890-pm.yaml:Documentation/devicetree/bindings/soc/samsung/exynos-pmu.yaml:Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml:Documentation/devicetree/bindings/soc/samsung/samsung,exynos8890-apm.yaml'
+          schemas='Documentation/devicetree/bindings/clock/samsung,exynos8890-cmu.yaml:Documentation/devicetree/bindings/clock/samsung,exynos8890-cpu-clock.yaml:Documentation/devicetree/bindings/cpufreq/samsung,exynos8890-cpufreq.yaml:Documentation/devicetree/bindings/devfreq/samsung,exynos8890-bus.yaml:Documentation/devicetree/bindings/devfreq/samsung,exynos8890-mif-devfreq.yaml:Documentation/devicetree/bindings/memory-controllers/samsung,exynos8890-dmc.yaml:Documentation/devicetree/bindings/power/samsung,exynos8890-cpuidle-test.yaml:Documentation/devicetree/bindings/power/samsung,exynos8890-cpupm.yaml:Documentation/devicetree/bindings/power/samsung,exynos8890-pm.yaml:Documentation/devicetree/bindings/soc/samsung/exynos-pmu.yaml:Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml:Documentation/devicetree/bindings/soc/samsung/samsung,exynos8890-apm.yaml'
 
           PATH="${GITHUB_WORKSPACE}/.venv-dtschema/bin:${PATH}" \
             make --jobs="$(nproc)" ARCH=arm64 LLVM=1 \
@@ -108,7 +111,7 @@ jobs:
         run: |
           set -uo pipefail
 
-          make --jobs="$(nproc)" ARCH=arm64 LLVM=1 W=1 Image.gz dtbs \
+          make --jobs="$(nproc)" ARCH=arm64 LLVM=1 W=1 Image Image.gz dtbs \
             2>&1 | tee build.log
           build_status=${PIPESTATUS[0]}
           warning_count=$(grep -Ec '(^|[[:space:]])warning:' build.log || true)
@@ -129,3 +132,50 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
           exit "${build_status}"
+
+      - name: Verify retained callback lifetime
+        run: |
+          python3 - <<'PY'
+          import subprocess
+
+          wanted = {
+              "__init_begin",
+              "__init_end",
+              "exynos8890_devfreq_mif_init_prepare",
+          }
+          symbols = {}
+          output = subprocess.check_output(
+              ["llvm-nm", "-n", "vmlinux"], text=True
+          )
+          for line in output.splitlines():
+              fields = line.split()
+              if len(fields) >= 3 and fields[-1] in wanted:
+                  symbols[fields[-1]] = int(fields[0], 16)
+
+          missing = wanted - symbols.keys()
+          if missing:
+              raise SystemExit(f"missing vmlinux symbols: {sorted(missing)}")
+          callback = symbols["exynos8890_devfreq_mif_init_prepare"]
+          if symbols["__init_begin"] <= callback < symbols["__init_end"]:
+              raise SystemExit("retained MIF callback is still in init memory")
+          PY
+
+      - name: Verify herolte boot artifacts
+        run: |
+          test -s arch/arm64/boot/Image
+          test -s arch/arm64/boot/Image.gz
+          test -s arch/arm64/boot/dts/exynos/exynos8890-herolte.dtb
+
+      - name: Upload herolte kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: herolte-${{ github.sha }}
+          if-no-files-found: error
+          include-hidden-files: true
+          path: |
+            arch/arm64/boot/Image
+            arch/arm64/boot/Image.gz
+            arch/arm64/boot/dts/exynos/exynos8890-herolte.dtb
+            System.map
+            .config
+            build.log

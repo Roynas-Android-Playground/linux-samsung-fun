@@ -18,17 +18,11 @@
  *   Cluster regs: NONCPU_STATUS 0x2404, CPUSEQ_OPTION 0x2488,
  *             L2_STATUS 0x2604, stride 0x20
  *
- * The vendor kernel also enforces one lifecycle invariant on every
- * CPU_STARTING event: the non-boot cluster's sequencer must be disabled
- * (cluster_up). S-Boot already leaves it that way on this device (boot
- * dump: non-boot CPUSEQ_OPTION=0x1000, bit0 clear), but hotplug/C2 paths
- * flip it, so restore it here exactly like vendor's INT_MAX-priority
- * notifier did. Boot-cluster CPD is not supported by Samsung and never
- * gets touched.
+ * C2 owns the higher-level hotplug/cluster coordination. This file is the
+ * sole low-level owner of CPU_CONFIG and CPUSEQ_OPTION register access.
  */
 
 #include <linux/cpu.h>
-#include <linux/cpuhotplug.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/mfd/syscon.h>
@@ -61,10 +55,9 @@ static struct regmap *pmureg;
 
 bool exynos8890_cpupm_ready(void)
 {
-	return !IS_ERR_OR_NULL(pmureg);
+	return !IS_ERR_OR_NULL(READ_ONCE(pmureg));
 }
 EXPORT_SYMBOL_GPL(exynos8890_cpupm_ready);
-static unsigned int boot_cluster;
 static DEFINE_SPINLOCK(cpupm_lock);
 
 static unsigned int pmu_cpu_offset(unsigned int cpu)
@@ -75,19 +68,39 @@ static unsigned int pmu_cpu_offset(unsigned int cpu)
 		 MPIDR_AFFINITY_LEVEL(mpidr, 0)) * PMU_CPU_ADDR_OFFSET);
 }
 
-void exynos8890_cpu_power_up(unsigned int cpu)
+int exynos8890_cpu_power_up(unsigned int cpu)
 {
-	regmap_update_bits(pmureg, PMU_CPU_CONFIG_BASE + pmu_cpu_offset(cpu),
-			   CPU_LOCAL_PWR_CFG, CPU_LOCAL_PWR_CFG);
+	if (!exynos8890_cpupm_ready())
+		return -ENODEV;
+
+	return regmap_update_bits(pmureg,
+				  PMU_CPU_CONFIG_BASE + pmu_cpu_offset(cpu),
+				  CPU_LOCAL_PWR_CFG, CPU_LOCAL_PWR_CFG);
 }
 EXPORT_SYMBOL_GPL(exynos8890_cpu_power_up);
 
-void exynos8890_cpu_power_down(unsigned int cpu)
+int exynos8890_cpu_power_down(unsigned int cpu)
 {
-	regmap_update_bits(pmureg, PMU_CPU_CONFIG_BASE + pmu_cpu_offset(cpu),
-			   CPU_LOCAL_PWR_CFG, 0);
+	if (!exynos8890_cpupm_ready())
+		return -ENODEV;
+
+	return regmap_update_bits(pmureg,
+				  PMU_CPU_CONFIG_BASE + pmu_cpu_offset(cpu),
+				  CPU_LOCAL_PWR_CFG, 0);
 }
 EXPORT_SYMBOL_GPL(exynos8890_cpu_power_down);
+
+int exynos8890_cpu_power_config_read(unsigned int cpu, u32 *value)
+{
+	if (!value)
+		return -EINVAL;
+	if (!exynos8890_cpupm_ready())
+		return -ENODEV;
+
+	return regmap_read(pmureg, PMU_CPU_CONFIG_BASE + pmu_cpu_offset(cpu),
+			   value);
+}
+EXPORT_SYMBOL_GPL(exynos8890_cpu_power_config_read);
 
 int exynos8890_cpu_power_state(unsigned int cpu)
 {
@@ -108,24 +121,36 @@ EXPORT_SYMBOL_GPL(exynos8890_cpu_power_state);
 
 /*
  * Vendor: "While Exynos with multi cluster supports to shutdown down both
- * cluster, there is no benefit in boot cluster." Callers must gate on
- * is_boot_cluster(); this function does not.
+ * cluster, there is no benefit in boot cluster." Callers must gate on the
+ * boot-cluster ID; this function does not.
  */
-void exynos8890_cluster_up(unsigned int cluster)
+int exynos8890_cluster_up(unsigned int cluster)
 {
+	int ret;
+
+	if (!exynos8890_cpupm_ready())
+		return -ENODEV;
+
 	spin_lock(&cpupm_lock);
-	regmap_update_bits(pmureg, PMU_CPUSEQ_OPTION_BASE +
-				   cluster * PMU_CLUSTER_ADDR_OFFSET, 1, 0);
+	ret = regmap_update_bits(pmureg, PMU_CPUSEQ_OPTION_BASE +
+				 cluster * PMU_CLUSTER_ADDR_OFFSET, 1, 0);
 	spin_unlock(&cpupm_lock);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(exynos8890_cluster_up);
 
-void exynos8890_cluster_down(unsigned int cluster)
+int exynos8890_cluster_down(unsigned int cluster)
 {
+	int ret;
+
+	if (!exynos8890_cpupm_ready())
+		return -ENODEV;
+
 	spin_lock(&cpupm_lock);
-	regmap_update_bits(pmureg, PMU_CPUSEQ_OPTION_BASE +
-				   cluster * PMU_CLUSTER_ADDR_OFFSET, 1, 1);
+	ret = regmap_update_bits(pmureg, PMU_CPUSEQ_OPTION_BASE +
+				 cluster * PMU_CLUSTER_ADDR_OFFSET, 1, 1);
 	spin_unlock(&cpupm_lock);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(exynos8890_cluster_down);
 
@@ -152,30 +177,12 @@ int exynos8890_cluster_power_state(unsigned int cluster)
 }
 EXPORT_SYMBOL_GPL(exynos8890_cluster_power_state);
 
-static bool is_boot_cluster(unsigned int cpu)
-{
-	return MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 1) == boot_cluster;
-}
-
-/*
- * Vendor lifecycle invariant: whenever a CPU starts in the non-boot
- * cluster, its sequencer must be back in the cluster-up (disabled) state.
- */
-static int exynos8890_cpupm_starting(unsigned int cpu)
-{
-	if (!is_boot_cluster(cpu))
-		exynos8890_cluster_up(MPIDR_AFFINITY_LEVEL(
-						cpu_logical_map(cpu), 1));
-
-	return 0;
-}
-
 static int exynos8890_cpupm_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct regmap *regmap;
 	unsigned int cluster, val;
-	int cpu, ret;
+	int cpu;
 
 	/*
 	 * We are a child node of the PMU system-controller itself
@@ -198,14 +205,13 @@ static int exynos8890_cpupm_probe(struct platform_device *pdev)
 					     "failed to get PMU regmap\n");
 	}
 
-	boot_cluster = MPIDR_AFFINITY_LEVEL(cpu_logical_map(0), 1);
-
 	for (cluster = 0; cluster < 2; cluster++) {
 		regmap_read(regmap, PMU_CPUSEQ_OPTION_BASE +
 				    cluster * PMU_CLUSTER_ADDR_OFFSET, &val);
 		pr_info("exynos8890-cpupm: cluster%u (%s) CPUSEQ_OPTION=%#x\n",
-			cluster, cluster == boot_cluster ? "boot" : "non-boot",
-			val);
+			cluster,
+			cluster == MPIDR_AFFINITY_LEVEL(cpu_logical_map(0), 1) ?
+				"boot" : "non-boot", val);
 	}
 
 	for_each_possible_cpu(cpu) {
@@ -216,20 +222,8 @@ static int exynos8890_cpupm_probe(struct platform_device *pdev)
 			cpu, val, val & CPU_LOCAL_PWR_CFG);
 	}
 
-	/*
-	 * cpuhp_setup_state() invokes the startup callback for already-online
-	 * CPUs, so publish the fully resolved regmap immediately before it.
-	 */
-	pmureg = regmap;
-	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
-				"soc/exynos8890/cpupm:starting",
-				exynos8890_cpupm_starting, NULL);
-	if (ret < 0) {
-		pmureg = NULL;
-		return dev_err_probe(&pdev->dev, ret,
-				     "failed to register CPU hotplug state\n");
-	}
-
+	/* Publish only after the PMU regmap and initial register audit succeed. */
+	WRITE_ONCE(pmureg, regmap);
 	return 0;
 }
 

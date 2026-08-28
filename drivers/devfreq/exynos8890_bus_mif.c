@@ -255,8 +255,8 @@ static int exynos8890_devfreq_mif_exit(struct device *dev,
 	return 0;
 }
 
-static int __init exynos8890_devfreq_mif_init_prepare(
-		struct exynos_devfreq_data *data)
+static int
+exynos8890_devfreq_mif_init_prepare(struct exynos_devfreq_data *data)
 {
 	/* CPUs keep running during s2idle, so retain the constrained live rate. */
 	data->suspend_freq = 0;

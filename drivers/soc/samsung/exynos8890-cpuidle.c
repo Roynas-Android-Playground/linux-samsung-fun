@@ -18,22 +18,25 @@
  * block_cpd()/release_cpd() and must be called around frequency changes
  * once DVFS runs concurrently with idle.
  *
- * The DT node remains the board-level opt-in gate.
+ * The DT node remains the board-level availability gate. A boot parameter
+ * and cpuidle's per-CPU disabled-by-default state provide the two runtime
+ * opt-ins.
  */
 
 #include <linux/atomic.h>
 #include <linux/arch_topology.h>
 #include <linux/bits.h>
+#include <linux/clk/samsung.h>
 #include <linux/clockchips.h>
 #include <linux/context_tracking.h>
 #include <linux/cpu.h>
+#include <linux/cpuhotplug.h>
 #include <linux/cpu_pm.h>
 #include <linux/cpuidle.h>
 #include <linux/init.h>
-#include <linux/io.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/psci.h>
 #include <linux/slab.h>
@@ -49,8 +52,6 @@
 #include <linux/soc/samsung/exynos8890-cpupm.h>
 #include <linux/soc/samsung/exynos8890-cpuidle.h>
 
-#define EXYNOS8890_PMU_CPU_CONFIG_BASE	0x2000
-#define EXYNOS8890_PMU_CPU_STRIDE	0x80
 #define EXYNOS8890_CPU_LOCAL_PWR_CFG	GENMASK(3, 0)
 #define EXYNOS8890_C2_STATE		0x00010000
 /* Cronos PSCI_CLUSTER_SLEEP: affinity level 1, state ID/type both zero. */
@@ -83,7 +84,6 @@ struct exynos8890_idle_driver {
 };
 
 struct exynos8890_cpuidle {
-	void __iomem *pmu;
 	struct exynos8890_idle_driver clusters[EXYNOS8890_CLUSTER_COUNT];
 	atomic_t faulted;
 	unsigned int cpd_residency_us;
@@ -99,6 +99,14 @@ static struct cpumask c2_mask;
 static int cluster_idle_state[EXYNOS8890_CLUSTER_COUNT];
 static bool cpd_blocked;
 static unsigned int boot_cluster;
+static bool exynos8890_c2_opt_in;
+static struct exynos8890_cpuidle *exynos8890_idle_owner;
+
+static int __init exynos8890_c2_setup(char *str)
+{
+	return kstrtobool(str, &exynos8890_c2_opt_in);
+}
+early_param("exynos8890.c2", exynos8890_c2_setup);
 
 static unsigned int cluster_id_of(unsigned int cpu)
 {
@@ -145,17 +153,6 @@ static bool cpd_available_locked(struct exynos8890_cpuidle *idle,
 	return true;
 }
 
-static unsigned int exynos8890_cpu_config_reg(unsigned int cpu)
-{
-	u64 mpidr = cpu_logical_map(cpu);
-	u32 index;
-
-	index = (MPIDR_AFFINITY_LEVEL(mpidr, 1) << 2) |
-		MPIDR_AFFINITY_LEVEL(mpidr, 0);
-	return EXYNOS8890_PMU_CPU_CONFIG_BASE +
-		index * EXYNOS8890_PMU_CPU_STRIDE;
-}
-
 static int __cpuidle exynos8890_enter_wfi(struct cpuidle_device *dev,
 					  struct cpuidle_driver *drv, int index)
 {
@@ -187,9 +184,10 @@ static int __cpuidle exynos8890_enter_c2(struct cpuidle_device *dev,
 	unsigned int cpu = smp_processor_id();
 	unsigned int cluster = cluster_id_of(cpu);
 	bool cpd_taken = false;
-	void __iomem *config;
+	bool entry_failed = false;
 	u32 before, after;
 	unsigned long flags;
+	int psci_ret = 0;
 	int ret;
 
 	if (unlikely(atomic_read(&idle->faulted) || cpu != dev->cpu))
@@ -200,23 +198,33 @@ static int __cpuidle exynos8890_enter_c2(struct cpuidle_device *dev,
 	if (ret)
 		return -1;
 
-	config = idle->pmu + exynos8890_cpu_config_reg(cpu);
-	before = readl_relaxed(config);
+	ret = exynos8890_cpu_power_config_read(cpu, &before);
+	if (unlikely(ret)) {
+		atomic_set(&idle->faulted, 1);
+		entry_failed = true;
+		goto out_pm;
+	}
 	stats->last_before = before;
 	if (unlikely((before & EXYNOS8890_CPU_LOCAL_PWR_CFG) !=
 		     EXYNOS8890_CPU_LOCAL_PWR_CFG)) {
 		atomic_set(&idle->faulted, 1);
-		ret = -EIO;
+		entry_failed = true;
 		goto out_pm;
 	}
 
-	writel_relaxed(before & ~EXYNOS8890_CPU_LOCAL_PWR_CFG, config);
-	after = readl_relaxed(config);
-	if (unlikely(after & EXYNOS8890_CPU_LOCAL_PWR_CFG)) {
-		writel_relaxed(before, config);
+	ret = exynos8890_cpu_power_down(cpu);
+	if (unlikely(ret)) {
+		atomic_set(&idle->faulted, 1);
+		entry_failed = true;
+		goto out_pm;
+	}
+	ret = exynos8890_cpu_power_config_read(cpu, &after);
+	if (unlikely(ret || (after & EXYNOS8890_CPU_LOCAL_PWR_CFG))) {
+		if (exynos8890_cpu_power_up(cpu))
+			stats->rollback_fail++;
 		dsb(sy);
 		atomic_set(&idle->faulted, 1);
-		ret = -EIO;
+		entry_failed = true;
 		goto out_pm;
 	}
 
@@ -229,56 +237,75 @@ static int __cpuidle exynos8890_enter_c2(struct cpuidle_device *dev,
 	cpumask_set_cpu(cpu, &c2_mask);
 	if (next_event_time_us(cpu) >= idle->cpd_residency_us &&
 	    cpd_available_locked(idle, cpu)) {
-		exynos8890_cluster_down(cluster);
-		cluster_idle_state[cluster] = 1;
-		cpd_taken = true;
+		ret = exynos8890_cluster_down(cluster);
+		if (ret) {
+			atomic_set(&idle->faulted, 1);
+		} else {
+			cluster_idle_state[cluster] = 1;
+			cpd_taken = true;
+		}
 	}
 	spin_unlock_irqrestore(&c2_lock, flags);
 
 	stats->before_psci++;
 	dsb(sy);
 	if (cpd_taken)
-		ret = cpu_suspend(EXYNOS8890_CPD_STATE,
-				  exynos8890_cpd_finisher);
+		psci_ret = cpu_suspend(EXYNOS8890_CPD_STATE,
+				       exynos8890_cpd_finisher);
 	else
-		ret = psci_cpu_suspend_enter(EXYNOS8890_C2_STATE);
-	stats->last_psci_ret = ret;
+		psci_ret = psci_cpu_suspend_enter(EXYNOS8890_C2_STATE);
+	stats->last_psci_ret = psci_ret;
 	stats->after_psci++;
 
 	/* Vendor restores local power immediately on an aborted suspend. */
-	if (ret)
-		exynos8890_cpu_power_up(cpu);
+	if (psci_ret && exynos8890_cpu_power_up(cpu)) {
+		stats->rollback_fail++;
+		atomic_set(&idle->faulted, 1);
+	}
 
 	/* Whichever core wakes first owns the cluster-global CPD unwind. */
 	spin_lock_irqsave(&c2_lock, flags);
 	if (cluster_idle_state[cluster]) {
-		exynos8890_cluster_up(cluster);
-		cluster_idle_state[cluster] = 0;
+		if (exynos8890_cluster_up(cluster))
+			atomic_set(&idle->faulted, 1);
+		else
+			cluster_idle_state[cluster] = 0;
 	}
 	cpumask_clear_cpu(cpu, &c2_mask);
 	spin_unlock_irqrestore(&c2_lock, flags);
 
-	after = readl_relaxed(config);
+	ret = exynos8890_cpu_power_config_read(cpu, &after);
+	if (unlikely(ret)) {
+		stats->wake_pmu_bad++;
+		if (exynos8890_cpu_power_up(cpu))
+			stats->rollback_fail++;
+		atomic_set(&idle->faulted, 1);
+		entry_failed = true;
+		goto out_pm;
+	}
 	stats->last_after = after;
 
-	if (ret) {
+	if (psci_ret) {
 		stats->psci_fail++;
-		if ((readl_relaxed(config) & EXYNOS8890_CPU_LOCAL_PWR_CFG) !=
+		if ((after & EXYNOS8890_CPU_LOCAL_PWR_CFG) !=
 		    EXYNOS8890_CPU_LOCAL_PWR_CFG) {
-			stats->rollback_fail++;
-			exynos8890_cpu_power_up(cpu);
+			if (exynos8890_cpu_power_up(cpu))
+				stats->rollback_fail++;
 			atomic_set(&idle->faulted, 1);
 		}
 	} else if (unlikely((after & EXYNOS8890_CPU_LOCAL_PWR_CFG) !=
 			    EXYNOS8890_CPU_LOCAL_PWR_CFG)) {
 		/* Firmware lost our power-on; put it back like vendor would */
 		stats->wake_pmu_bad++;
-		exynos8890_cpu_power_up(cpu);
+		if (exynos8890_cpu_power_up(cpu))
+			stats->rollback_fail++;
+		atomic_set(&idle->faulted, 1);
+		entry_failed = true;
 	}
 
 out_pm:
 	cpu_pm_exit();
-	return ret ? -1 : index;
+	return entry_failed || psci_ret ? -1 : index;
 }
 
 void exynos8890_cpd_block(void)
@@ -318,6 +345,34 @@ bool exynos8890_cpd_is_active(unsigned int cpu)
 }
 EXPORT_SYMBOL_GPL(exynos8890_cpd_is_active);
 
+/*
+ * Vendor CPU_STARTING ordering: serialize the non-boot cluster sequencer
+ * reset against C2/CPD decisions. STARTING callbacks cannot reject hotplug,
+ * so a register failure permanently faults this diagnostic instead.
+ */
+static int exynos8890_cpuidle_starting(unsigned int cpu)
+{
+	struct exynos8890_cpuidle *idle = READ_ONCE(exynos8890_idle_owner);
+	unsigned int cluster = cluster_id_of(cpu);
+	unsigned long flags;
+	int ret;
+
+	if (cluster == boot_cluster || cluster >= EXYNOS8890_CLUSTER_COUNT)
+		return 0;
+
+	spin_lock_irqsave(&c2_lock, flags);
+	ret = exynos8890_cluster_up(cluster);
+	spin_unlock_irqrestore(&c2_lock, flags);
+	if (ret) {
+		if (idle)
+			atomic_set(&idle->faulted, 1);
+		pr_err_ratelimited("exynos8890-cpuidle: CPU%u cluster-up failed: %d\n",
+				   cpu, ret);
+	}
+
+	return 0;
+}
+
 static void exynos8890_init_idle_driver(struct exynos8890_idle_driver *cluster,
 					bool is_boot_cluster)
 {
@@ -342,7 +397,7 @@ static void exynos8890_init_idle_driver(struct exynos8890_idle_driver *cluster,
 		.exit_latency_ns = is_boot_cluster ? 125000 : 105000,
 		.target_residency_ns = is_boot_cluster ? 750000 : 2000000,
 		/* Cronos DT deliberately has no local-timer-stop property. */
-		.flags = CPUIDLE_FLAG_RCU_IDLE,
+		.flags = CPUIDLE_FLAG_RCU_IDLE | CPUIDLE_FLAG_OFF,
 		.enter = exynos8890_enter_c2,
 	};
 	strscpy(drv->states[1].desc,
@@ -352,14 +407,20 @@ static void exynos8890_init_idle_driver(struct exynos8890_idle_driver *cluster,
 
 static int exynos8890_cpuidle_probe(struct platform_device *pdev)
 {
-	struct device_node *pmu_np;
 	struct exynos8890_cpuidle *idle;
 	u32 state = 0;
 	int cluster, cpu, ret;
 
 	if (!of_device_is_available(pdev->dev.of_node))
 		return -ENODEV;
+	if (!exynos8890_c2_opt_in) {
+		dev_info(&pdev->dev,
+			 "C2/CPD not opted in; using architectural WFI\n");
+		return 0;
+	}
 	if (!exynos8890_cpupm_ready())
+		return -EPROBE_DEFER;
+	if (!exynos8890_clk_cpu_idle_ready())
 		return -EPROBE_DEFER;
 
 	ret = of_property_read_u32(pdev->dev.of_node,
@@ -377,26 +438,20 @@ static int exynos8890_cpuidle_probe(struct platform_device *pdev)
 			     &idle->cpd_residency_us);
 	boot_cluster = cluster_id_of(0);
 
-	pmu_np = of_parse_phandle(pdev->dev.of_node, "samsung,pmu-syscon", 0);
-	if (!pmu_np)
-		return dev_err_probe(&pdev->dev, -ENODEV,
-				     "missing PMU phandle\n");
-	idle->pmu = of_iomap(pmu_np, 0);
-	of_node_put(pmu_np);
-	if (!idle->pmu)
-		return dev_err_probe(&pdev->dev, -ENOMEM, "failed to map PMU\n");
+	for_each_online_cpu(cpu) {
+		u32 value;
 
-	for_each_possible_cpu(cpu) {
-		u32 value = readl_relaxed(idle->pmu +
-					  exynos8890_cpu_config_reg(cpu));
+		ret = exynos8890_cpu_power_config_read(cpu, &value);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+					     "failed to read CPU%d PMU config\n",
+					     cpu);
 
 		if ((value & EXYNOS8890_CPU_LOCAL_PWR_CFG) !=
 		    EXYNOS8890_CPU_LOCAL_PWR_CFG) {
-			dev_err(&pdev->dev,
-				"CPU%d starts with invalid PMU config %#x\n",
-				cpu, value);
-			ret = -EIO;
-			goto err_unmap;
+			return dev_err_probe(&pdev->dev, -EIO,
+					     "CPU%d starts with invalid PMU config %#x\n",
+					     cpu, value);
 		}
 	}
 
@@ -407,11 +462,23 @@ static int exynos8890_cpuidle_probe(struct platform_device *pdev)
 
 	for_each_possible_cpu(cpu) {
 		cluster = cluster_id_of(cpu);
-		if (cluster >= EXYNOS8890_CLUSTER_COUNT) {
-			ret = -EINVAL;
-			goto err_unmap;
-		}
+		if (cluster >= EXYNOS8890_CLUSTER_COUNT)
+			return -EINVAL;
 		cpumask_set_cpu(cpu, &idle->clusters[cluster].cpus);
+	}
+
+	WRITE_ONCE(exynos8890_idle_owner, idle);
+	ret = cpuhp_setup_state(CPUHP_AP_CPU_PM_STARTING,
+				"soc/exynos8890/cpuidle:starting",
+				exynos8890_cpuidle_starting, NULL);
+	if (ret < 0) {
+		WRITE_ONCE(exynos8890_idle_owner, NULL);
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to register CPU hotplug state\n");
+	}
+	if (atomic_read(&idle->faulted)) {
+		ret = -EIO;
+		goto err_cpuhp;
 	}
 
 	platform_set_drvdata(pdev, idle);
@@ -437,8 +504,10 @@ err_unregister:
 		if (!cpumask_empty(&idle->clusters[cluster].cpus))
 			cpuidle_unregister(&idle->clusters[cluster].driver);
 	}
-err_unmap:
-	iounmap(idle->pmu);
+err_cpuhp:
+	cpuhp_remove_state(CPUHP_AP_CPU_PM_STARTING);
+	WRITE_ONCE(exynos8890_idle_owner, NULL);
+	platform_set_drvdata(pdev, NULL);
 	return ret;
 }
 
@@ -452,7 +521,8 @@ static void exynos8890_cpuidle_remove(struct platform_device *pdev)
 		if (!cpumask_empty(&idle->clusters[cluster].cpus))
 			cpuidle_unregister(&idle->clusters[cluster].driver);
 	}
-	iounmap(idle->pmu);
+	cpuhp_remove_state(CPUHP_AP_CPU_PM_STARTING);
+	WRITE_ONCE(exynos8890_idle_owner, NULL);
 }
 
 static const struct of_device_id exynos8890_cpuidle_of_match[] = {

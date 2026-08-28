@@ -27,6 +27,8 @@ static inline void s3c64xx_clk_init(struct device_node *np,
 #endif /* CONFIG_S3C64XX_COMMON_CLK */
 
 #if IS_ENABLED(CONFIG_EXYNOS_ARM64_COMMON_CLK)
+bool exynos8890_clk_cpu_idle_ready(void);
+
 /*
  * Controls physically located beside the Exynos8890 CPU clock domains. The
  * CPU clock provider owns EMA and SMPL registers; CPUFreq only supplies the
@@ -37,6 +39,11 @@ int exynos8890_cpuclk_get_error(struct clk *clk);
 int exynos8890_cpuclk_smpl_status(struct clk *clk);
 int exynos8890_cpuclk_smpl_trigger(struct clk *clk);
 #else
+static inline bool exynos8890_clk_cpu_idle_ready(void)
+{
+	return false;
+}
+
 static inline int exynos8890_cpuclk_set_ema(struct clk *clk, u32 voltage_uv)
 {
 	return -EOPNOTSUPP;

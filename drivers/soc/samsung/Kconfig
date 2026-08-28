@@ -55,11 +55,16 @@ config EXYNOS8890_CPUIDLE
 	bool "Exynos8890 opt-in local-core C2 diagnostics"
 	depends on ARM64 && ARCH_EXYNOS && CPU_IDLE && ARM_PSCI_FW
 	depends on !ARM_PSCI_CPUIDLE
+	depends on !PREEMPT_RT
+	depends on EXYNOS8890_CPUPM
+	select CPU_IDLE_MULTIPLE_DRIVERS
 	help
 	  Build a deliberately opt-in Exynos8890 local-core power-down driver.
-	  It excludes cluster and system idle, starts C2 disabled, and requires
-	  both exynos8890.c2=1 and explicit per-CPU sysfs enablement. This is a
-	  hardware diagnostic and must not be enabled as production policy.
+	  It supports local C2 on both clusters and cluster power-down only on
+	  the non-boot cluster. C2 starts disabled and requires both
+	  exynos8890.c2=1 and explicit per-CPU sysfs enablement. System idle is
+	  excluded. This is a hardware diagnostic and must not be enabled as
+	  production policy.
 
 config EXYNOS8890_CPUPM
 	bool "Exynos8890 CPU/cluster PMU power-control ops"
@@ -99,7 +104,7 @@ config EXYNOS8890_CPCTL
 
 config EXYNOS8890_APM
 	bool "Exynos8890 APM DVFS ownership provider"
-	depends on ARM64 && ARCH_EXYNOS && OF
+	depends on ARM64 && ARCH_EXYNOS && OF && EXYNOS_PMU
 	select MFD_SYSCON
 	help
 	  Hold the Exynos8890 APM Cortex-M3 in PMU power-down so it can never

@@ -6,6 +6,7 @@
  * Common Clock Framework support for Exynos8890 SoC.
  */
 
+#include <linux/atomic.h>
 #include <linux/bitfield.h>
 #include <linux/clk-provider.h>
 #include <linux/clk/samsung.h>
@@ -51,6 +52,11 @@
 static struct samsung_clk_provider *exynos8890_top_clk_ctx;
 static struct samsung_clk_provider *exynos8890_ccore_clk_ctx;
 static struct samsung_clk_provider *exynos8890_mif_clk_ctx[4];
+static atomic_t exynos8890_cpu_idle_ready_mask = ATOMIC_INIT(0);
+
+#define EXYNOS8890_CPU_IDLE_APOLLO_READY	BIT(0)
+#define EXYNOS8890_CPU_IDLE_MNGS_READY		BIT(1)
+#define EXYNOS8890_CPU_IDLE_READY_MASK		GENMASK(1, 0)
 
 /*
  * As exynos8890 first introduced hwacg, cmu registers are mapped similarly
@@ -9400,6 +9406,59 @@ int exynos8890_clk_sync_dmc(void)
 }
 EXPORT_SYMBOL_GPL(exynos8890_clk_sync_dmc);
 
+bool exynos8890_clk_cpu_idle_ready(void)
+{
+	return (atomic_read_acquire(&exynos8890_cpu_idle_ready_mask) &
+		EXYNOS8890_CPU_IDLE_READY_MASK) ==
+		EXYNOS8890_CPU_IDLE_READY_MASK;
+}
+EXPORT_SYMBOL_GPL(exynos8890_clk_cpu_idle_ready);
+
+#define EXYNOS8890_PWR_CTRL3_USE_L2QACTIVE	BIT(0)
+#define EXYNOS8890_PWR_CTRL3_IGNORE_L2QREQUEST	BIT(1)
+#define EXYNOS8890_PWR_CTRL3_L2QDELAY_MASK	GENMASK(18, 16)
+
+static void __init
+exynos8890_cmu_enable_cpu_idle(struct device *dev,
+			       struct samsung_clk_provider *ctx,
+			       const struct samsung_cmu_info *info)
+{
+	void __iomem *reg;
+	int ready_bit;
+	u32 mask, value;
+
+	if (info == &apollo_cmu_info) {
+		reg = ctx->reg_base + PWR_CTRL3_APOLLO;
+		mask = EXYNOS8890_PWR_CTRL3_USE_L2QACTIVE |
+			EXYNOS8890_PWR_CTRL3_IGNORE_L2QREQUEST;
+		ready_bit = EXYNOS8890_CPU_IDLE_APOLLO_READY;
+	} else if (info == &mngs_cmu_info) {
+		reg = ctx->reg_base + PWR_CTRL3_MNGS;
+		mask = EXYNOS8890_PWR_CTRL3_USE_L2QACTIVE |
+			EXYNOS8890_PWR_CTRL3_IGNORE_L2QREQUEST |
+			EXYNOS8890_PWR_CTRL3_L2QDELAY_MASK;
+		ready_bit = EXYNOS8890_CPU_IDLE_MNGS_READY;
+	} else {
+		return;
+	}
+
+	value = readl(reg);
+	value = (value & ~mask) |
+		EXYNOS8890_PWR_CTRL3_USE_L2QACTIVE |
+		EXYNOS8890_PWR_CTRL3_IGNORE_L2QREQUEST;
+	writel(value, reg);
+	value = readl(reg);
+	if ((value & mask) !=
+	    (EXYNOS8890_PWR_CTRL3_USE_L2QACTIVE |
+	     EXYNOS8890_PWR_CTRL3_IGNORE_L2QREQUEST)) {
+		dev_err(dev, "failed to verify CPU idle clockdown: PWR_CTRL3=%#x\n",
+			value);
+		return;
+	}
+
+	atomic_fetch_or(ready_bit, &exynos8890_cpu_idle_ready_mask);
+}
+
 static int __init exynos8890_cmu_probe(struct platform_device *pdev)
 {
 	const struct samsung_cmu_info *info;
@@ -9417,6 +9476,7 @@ static int __init exynos8890_cmu_probe(struct platform_device *pdev)
 	    info != &mif2_cmu_info && info != &mif3_cmu_info)
 		exynos8890_init_clocks(dev->of_node, info);
 	ctx = samsung_cmu_register_one(dev->of_node, info);
+	exynos8890_cmu_enable_cpu_idle(dev, ctx, info);
 	if (info == &ccore_cmu_info)
 		WRITE_ONCE(exynos8890_ccore_clk_ctx, ctx);
 	else if (info == &mif0_cmu_info)

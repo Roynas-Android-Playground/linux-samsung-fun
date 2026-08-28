@@ -1692,6 +1692,11 @@ Kernel parameters
 			Permit 'security.evm' to be updated regardless of
 			current integrity status.
 
+	exynos8890.c2=
+			[ARM64,EARLY] Enable registration of the diagnostic Exynos8890
+			C2/CPD cpuidle states. Each CPU's C2 state remains disabled
+			until explicitly enabled through cpuidle sysfs. Format: <bool>
+
 	early_page_ext [KNL,EARLY] Enforces page_ext initialization to earlier
 			stages so cover more early boot allocations.
 			Please note that as side effect some optimizations

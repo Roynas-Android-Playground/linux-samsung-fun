@@ -13,7 +13,9 @@ description:
   The Exynos8890 APM Cortex-M3 can run firmware that controls DVFS through a
   mailbox. When Linux owns native clock and regulator transitions, this node
   binds the provider that keeps the APM powered down and proves exclusive
-  ownership through the PMU system controller.
+  ownership through the PMU system controller. The node is normally a child
+  of that controller. The samsung,pmu phandle is a compatibility fallback for
+  a standalone node.
 
 properties:
   compatible:
@@ -25,14 +27,17 @@ properties:
 
 required:
   - compatible
-  - samsung,pmu
 
 additionalProperties: false
 
 examples:
   - |
-    apm {
-        compatible = "samsung,exynos8890-apm";
-        samsung,pmu = <&pmu_system_controller>;
+    pmu_system_controller: system-controller@105c0000 {
+        compatible = "samsung,exynos8890-pmu", "samsung,exynos7-pmu", "syscon";
+        reg = <0x105c0000 0x10000>;
+
+        apm {
+            compatible = "samsung,exynos8890-apm";
+        };
     };
 ...
