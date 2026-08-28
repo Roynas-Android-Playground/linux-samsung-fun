@@ -605,6 +605,7 @@ exynos8890_calib_build_domain(enum exynos8890_calib_domain_id id,
 		struct exynos8890_calib_opp *opp = &store->opps[level];
 		u64 rate_hz = (u64)dvfs->list_level[level].level *
 			      EXYNOS8890_KHZ_TO_HZ;
+		u64 asv_rate_hz;
 		u32 base_voltage_uv = 0;
 		bool asv_enabled;
 
@@ -614,12 +615,13 @@ exynos8890_calib_build_domain(enum exynos8890_calib_domain_id id,
 		}
 		opp->rate_hz = rate_hz;
 		asv_level = level;
-		if (asv->level_list[asv_level] !=
-		    dvfs->list_level[level].level)
-			pr_warn_once("Exynos8890 calibration: %s row %u rates differ (%u/%u kHz); using vendor row mapping\n",
+		asv_rate_hz = (u64)asv->level_list[asv_level] *
+			      EXYNOS8890_MHZ_TO_HZ;
+		if (asv_rate_hz != rate_hz)
+			pr_warn_once("Exynos8890 calibration: %s row %u rates differ (%llu/%llu Hz); using vendor row mapping\n",
 				     ect_name, level,
-				     dvfs->list_level[level].level,
-				     asv->level_list[asv_level]);
+				     (unsigned long long)rate_hz,
+				     (unsigned long long)asv_rate_hz);
 
 		if (id == EXYNOS8890_CALIB_MIF) {
 			store->opp_to_asv_level[level] = asv_level;
