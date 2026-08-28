@@ -1149,6 +1149,12 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
+
+	fp_drdy: fp-drdy-pins {
+		samsung,pins = "gpa1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
 };
 
 &pinctrl_peric1 {
@@ -1156,6 +1162,26 @@
 		samsung,pins = "gpe6-5";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+
+	fp_ldo: fp-ldo-pins {
+		samsung,pins = "gpe3-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	fp_vendor: fp-vendor-pins {
+		samsung,pins = "gpe3-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+&pinctrl_fsys0 {
+	fp_sleep: fp-sleep-pins {
+		samsung,pins = "gpi1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 };
 
@@ -1389,6 +1415,48 @@
 			pinctrl-0 = <&ssp_host_req &gps_power_en
 				     &ssp_mcu_req &ssp_mcu_resp>;
 			pinctrl-names = "default";
+		};
+	};
+
+	/*
+	 * Validity VFS7XXX fingerprint sensor. Vendor also dualizes an
+	 * alternate ET320 sensor at reg=1 on this same bus (different units
+	 * shipped with either chip) - this unit's vendor-detect GPIO check
+	 * confirmed VFS7XXX (stock-kernel dmesg), so only that one is wired
+	 * here. dmas/dma-names channel numbers are hardware-wired PL330
+	 * request-line IDs, unchanged from vendor.
+	 */
+	spi_4: spi@14d70000 {
+		compatible = "samsung,exynos8890-spi", "samsung,exynos7-spi";
+		reg = <0x14d70000 0x100>;
+		interrupts = <GIC_SPI 452 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_peric1 CLK_GOUT_PERIC1_PCLK_SPI4>,
+			 <&cmu_peric1 CLK_GOUT_PERIC1_SCLK_SPI4>;
+		clock-names = "spi", "spi_busclk0";
+		samsung,spi-src-clk = <0>;
+
+		dmas = <&pdma0 9>, <&pdma0 8>;
+		dma-names = "tx", "rx";
+
+		pinctrl-0 = <&spi4_bus &fp_drdy &fp_sleep &fp_ldo &fp_vendor>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+		num-cs = <1>;
+
+		status = "okay";
+
+		fingerprint@0 {
+			compatible = "vfsspi,vfs7xxx";
+			reg = <0>;
+			spi-max-frequency = <19200000>;
+
+			drdy-gpios = <&gpa1 3 GPIO_ACTIVE_HIGH>;
+			sleep-gpios = <&gpi1 3 GPIO_ACTIVE_HIGH>;
+			ldo-gpios = <&gpe3 0 GPIO_ACTIVE_HIGH>;
+			vendor-gpios = <&gpe3 2 GPIO_ACTIVE_HIGH>;
 		};
 	};
 };
