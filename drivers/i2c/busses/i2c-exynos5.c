@@ -201,6 +201,7 @@ struct exynos5_i2c {
 	 * Called from atomic context, don't use interrupts.
 	 */
 	unsigned int		atomic;
+	bool			reset_before_trans;
 
 	/* Controller operating frequency */
 	unsigned int		op_clock;
@@ -893,6 +894,10 @@ static int exynos5_i2c_xfer(struct i2c_adapter *adap,
 	ret = clk_enable(i2c->clk);
 	if (ret)
 		goto err_pclk;
+	if (i2c->reset_before_trans &&
+	    (readl(i2c->regs + HSI2C_TRANS_STATUS) & HSI2C_MASTER_ST_MASK) ==
+	    HSI2C_MASTER_ST_LOSE)
+		exynos5_i2c_reset(i2c);
 
 	for (i = 0; i < num; ++i) {
 		ret = exynos5_i2c_xfer_msg(i2c, msgs + i, i + 1 == num);
@@ -950,6 +955,8 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 	i2c->variant = of_device_get_match_data(&pdev->dev);
 	if (!i2c->variant)
 		return -EINVAL;
+	i2c->reset_before_trans = of_property_read_bool(np,
+						  "samsung,reset-before-trans");
 
 	if (of_property_read_u32(np, "clock-frequency", &i2c->op_clock)) {
 		i2c->op_clock = i2c->variant->default_frequency;

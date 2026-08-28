@@ -54,14 +54,21 @@ properties:
     maxItems: 1
 
   clock-frequency:
-    default: 100000
     description:
       Desired operating frequency in Hz of the bus.
 
-      If not specified, the bus operates in fast-speed mode at 100kHz.
+      If not specified, Exynos8890 operates at 400kHz and other variants
+      operate at 100kHz.
 
       If specified, the bus operates in high-speed mode only if the
       clock-frequency is >= 1MHz.
+
+  samsung,reset-before-trans:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Reset the controller before a transfer when it is already reporting
+      arbitration-lost state. Required by selected Exynos8890 buses whose
+      attached device can leave the controller in that state across reset.
 
   clocks:
     minItems: 1
@@ -83,6 +90,19 @@ required:
 
 allOf:
   - $ref: /schemas/i2c/i2c-controller.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8890-hsi2c
+    then:
+      properties:
+        clock-frequency:
+          default: 400000
+    else:
+      properties:
+        clock-frequency:
+          default: 100000
   - if:
       properties:
         compatible:
