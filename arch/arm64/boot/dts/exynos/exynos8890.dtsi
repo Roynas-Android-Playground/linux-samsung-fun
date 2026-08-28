@@ -305,6 +305,10 @@
 			compatible = "samsung,exynos8890-pmu",
 				     "samsung,exynos7-pmu", "syscon";
 			reg = <0x105c0000 0x10000>;
+
+			cpupm {
+				compatible = "samsung,exynos8890-cpupm";
+			};
 		};
 
 		cmu_mif0: clock-controller@10850000 {

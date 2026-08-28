@@ -5,6 +5,7 @@ obj-$(CONFIG_EXYNOS_CHIPID)	+= exynos_chipid.o
 exynos_chipid-y			+= exynos-chipid.o exynos-asv.o
 obj-$(CONFIG_EXYNOS8890_ECT)	+= exynos8890-ect.o
 obj-$(CONFIG_EXYNOS8890_CPUIDLE)	+= exynos8890-cpuidle.o
+obj-$(CONFIG_EXYNOS8890_CPUPM)	+= exynos8890-cpupm.o
 obj-$(CONFIG_EXYNOS8890_CPCTL)	+= exynos8890-cpctl.o
 
 obj-$(CONFIG_EXYNOS_USI)	+= exynos-usi.o

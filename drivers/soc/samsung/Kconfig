@@ -43,6 +43,20 @@ config EXYNOS8890_CPUIDLE
 	  both exynos8890.c2=1 and explicit per-CPU sysfs enablement. This is a
 	  hardware diagnostic and must not be enabled as production policy.
 
+config EXYNOS8890_CPUPM
+	bool "Exynos8890 CPU/cluster PMU power-control ops"
+	depends on ARM64 && ARCH_EXYNOS && OF
+	select MFD_SYSCON
+	default y
+	help
+	  Port of vendor Cronos_8890 exynos-pmu.c CPU power ops: PMU
+	  CPU_CONFIG/CPU_STATUS local power gating, cluster CPUSEQ_OPTION
+	  sequencer control (cluster_up = sequencer disabled), and
+	  NONCPU/L2 cluster status queries. Also enforces the vendor
+	  lifecycle invariant that the non-boot cluster's sequencer is
+	  disabled on every CPU hotplug-in. Consumers: future C2/CPD idle
+	  coordination and the cpufreq block_cpd()/release_cpd() exclusion.
+
 config EXYNOS8890_CPCTL
 	tristate "Exynos8890 SS310AP control plane"
 	depends on ARM64 && ARCH_EXYNOS && OF && MAILBOX
