@@ -44,7 +44,7 @@ CONFIG_ARCH_EXYNOS=y
 # CONFIG_QCOM_QDF2400_ERRATUM_0065 is not set
 # CONFIG_QCOM_FALKOR_ERRATUM_E1041 is not set
 CONFIG_NR_CPUS=8
-CONFIG_CMDLINE="earlycon=exynos4210,0x14c50000 console=ttySAC0,115200n8 clk_ignore_unused pd_ignore_unused cpuidle.off=1 nohlt"
+CONFIG_CMDLINE="earlycon=exynos4210,0x14c50000 console=ttySAC0,115200n8 clk_ignore_unused pd_ignore_unused initcall_debug ignore_loglevel ftrace_dump_on_oops s3c2410-wdt.tmr_atboot=1 s3c2410-wdt.tmr_margin=30"
 # CONFIG_CMDLINE="earlycon=exynos4210,0x14c50000 console=ttySAC0,115200n8 clk_ignore_unused pd_ignore_unused kgdboc=ttySAC1,115200 kgdboc_earlycon nokaslr rodata=off"
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_EFI is not set
@@ -283,6 +283,7 @@ CONFIG_CHARGER_P9220_ENUM=y
 CONFIG_THERMAL=y
 CONFIG_WATCHDOG=y
 CONFIG_DW_WATCHDOG=y
+CONFIG_S3C2410_WATCHDOG=y
 CONFIG_MFD_MAX77759=y
 CONFIG_MFD_MAX77843=y
 CONFIG_MFD_S2MPB02=y
@@ -485,3 +486,7 @@ CONFIG_KGDB_KDB=y
 CONFIG_DEBUG_MEMORY_INIT=y
 CONFIG_FUNCTION_TRACER=y
 CONFIG_MEMTEST=y
+CONFIG_SOFTLOCKUP_DETECTOR=y
+CONFIG_HARDLOCKUP_DETECTOR=y
+CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y
+CONFIG_DETECT_HUNG_TASK=y

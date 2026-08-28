@@ -205,6 +205,16 @@
 			clock-names = "oscclk", "peris";
 		};
 
+		// reg/irq/clock cross-checked against vendor's exynos8890_Oneui.dtsi (Cronos_8890)
+		watchdog: watchdog@10020000 {
+			compatible = "samsung,exynos8890-wdt";
+			reg = <0x10020000 0x100>;
+			interrupts = <GIC_SPI 80 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cmu_peris CLK_GOUT_PERIS_PCLK_WDT_APOLLO>;
+			clock-names = "watchdog";
+			samsung,syscon-phandle = <&pmu_system_controller>;
+		};
+
 		mct: mct@101c0000 {
 			compatible = "samsung,exynos8890-mct",
 				     "samsung,exynos4210-mct";
