@@ -834,6 +834,8 @@ static int dw_mci_exynos_probe(struct platform_device *pdev)
 	pm_runtime_get_noresume(&pdev->dev);
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
+	pm_runtime_set_autosuspend_delay(&pdev->dev, 50);
+	pm_runtime_use_autosuspend(&pdev->dev);
 
 	ret = dw_mci_pltfm_register(pdev, drv_data);
 	if (ret) {
@@ -843,14 +845,15 @@ static int dw_mci_exynos_probe(struct platform_device *pdev)
 
 		return ret;
 	}
+	pm_runtime_put_autosuspend(&pdev->dev);
 
 	return 0;
 }
 
 static void dw_mci_exynos_remove(struct platform_device *pdev)
 {
+	pm_runtime_get_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
 
 	dw_mci_pltfm_remove(pdev);
