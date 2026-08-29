@@ -1141,6 +1141,18 @@
  */
 
 &pinctrl_alive {
+	tdmb_irq_on: tdmb-irq-on-pins {
+		samsung,pins = "gpa1-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	tdmb_irq_off: tdmb-irq-off-pins {
+		samsung,pins = "gpa1-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+
 	codec_irq: codec-irq-pins {
 		samsung,pins = "gpa2-6";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
@@ -1171,6 +1183,33 @@
 		samsung,pins = "gpe3-2";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	spi5_bus: spi5-bus-pins {
+		samsung,pins = "gpe3-7", "gpe3-6", "gpe3-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+
+	spi5_cs: spi5-cs-pins {
+		samsung,pins = "gpe3-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+
+	tdmb_pwr_on: tdmb-pwr-on-pins {
+		samsung,pins = "gpe6-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	tdmb_pwr_off: tdmb-pwr-off-pins {
+		samsung,pins = "gpe6-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
 	};
 };
 
@@ -1282,6 +1321,23 @@
 				samsung,spi-feedback-delay = <1>;
 			};
 		};
+	};
+};
+
+/ {
+	tdmb {
+		compatible = "samsung,tdmb";
+
+		pinctrl-names = "tdmb_on", "tdmb_off";
+		pinctrl-0 = <&tdmb_pwr_on &tdmb_irq_on>;
+		pinctrl-1 = <&tdmb_pwr_off &tdmb_irq_off>;
+
+		tdmb_en-gpios = <&gpe6 7 GPIO_ACTIVE_HIGH>;
+		tdmb_irq-gpios = <&gpa1 1 GPIO_ACTIVE_HIGH>;
+		tdmb_use_irq;
+
+		/* kHz; herolte fits a 24.000MHz part, not the driver default */
+		tdmb_xtal_freq = <24000>;
 	};
 };
 
@@ -1448,6 +1504,41 @@
 	 * here. dmas/dma-names channel numbers are hardware-wired PL330
 	 * request-line IDs, unchanged from vendor.
 	 */
+	/*
+	 * T-DMB tuner, Korean models only. The FC8080 hangs off SPI5 and is
+	 * powered and reset through a pair of pinctrl states rather than a
+	 * regulator.
+	 */
+	spi_5: spi@14d90000 {
+		compatible = "samsung,exynos8890-spi", "samsung,exynos7-spi";
+		reg = <0x14d90000 0x100>;
+		interrupts = <GIC_SPI 453 IRQ_TYPE_LEVEL_HIGH>;
+
+		clocks = <&cmu_peric1 CLK_GOUT_PERIC1_PCLK_SPI5>,
+			 <&cmu_peric1 CLK_GOUT_PERIC1_SCLK_SPI5>;
+		clock-names = "spi", "spi_busclk0";
+		samsung,spi-src-clk = <0>;
+
+		dmas = <&pdma0 21>, <&pdma0 20>;
+		dma-names = "tx", "rx";
+
+		pinctrl-0 = <&spi5_bus &spi5_cs>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+		num-cs = <1>;
+		cs-gpios = <&gpe3 5 GPIO_ACTIVE_LOW>;
+
+		status = "okay";
+
+		tdmb_spi: tdmb-spi@0 {
+			compatible = "tdmb_spi_comp";
+			reg = <0>;
+			spi-max-frequency = <9600000>;
+		};
+	};
+
 	spi_4: spi@14d70000 {
 		compatible = "samsung,exynos8890-spi", "samsung,exynos7-spi";
 		reg = <0x14d70000 0x100>;
