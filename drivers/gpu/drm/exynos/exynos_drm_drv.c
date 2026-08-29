@@ -168,6 +168,13 @@ static struct exynos_drm_driver_info exynos_drm_drivers[] = {
 		DRV_PTR(decon_driver, CONFIG_DRM_EXYNOS7_DECON),
 		DRM_COMPONENT_DRIVER
 	}, {
+		/* VPP first: it owns the DMA/IOMMU master DECON-F composes from */
+		DRV_PTR(exynos8890_vpp_driver, CONFIG_DRM_EXYNOS8890_DECON_F),
+		DRM_COMPONENT_DRIVER
+	}, {
+		DRV_PTR(exynos8890_decon_f_driver, CONFIG_DRM_EXYNOS8890_DECON_F),
+		DRM_COMPONENT_DRIVER
+	}, {
 		DRV_PTR(mixer_driver, CONFIG_DRM_EXYNOS_MIXER),
 		DRM_COMPONENT_DRIVER
 	}, {

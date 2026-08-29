@@ -36,15 +36,13 @@ config DRM_EXYNOS7_DECON
 	help
 	  Choose this option if you want to use Exynos DECON for DRM.
 
-config DRM_EXYNOS8890_DECON
-	bool "Minimal Exynos8890 inherited DECON/G1 takeover"
+config DRM_EXYNOS8890_DECON_F
+	bool "DECON-F on Exynos8890"
 	depends on ARM64
-	select DRM_GEM_DMA_HELPER
 	help
-	  Build the fixed-mode Exynos8890 DECON-F and IDMA_G1 takeover driver.
-	  Probe only validates the exact bootloader state. Hardware ownership starts
-	  on the first explicit atomic commit; DECON, MIC, DSIM and panel state are
-	  preserved and no fbdev client is created.
+	  Choose this option if you want to use the Exynos8890 DECON-F
+	  display controller and its four DISP0 VPP window-DMA engines
+	  for DRM. Requires the bootloader to have brought up the panel.
 
 config DRM_EXYNOS_MIXER
 	bool "Mixer"
@@ -68,7 +66,8 @@ config DRM_EXYNOS_DPI
 
 config DRM_EXYNOS_DSI
 	bool "MIPI-DSI host"
-	depends on DRM_EXYNOS_FIMD || DRM_EXYNOS5433_DECON || DRM_EXYNOS7_DECON
+	depends on DRM_EXYNOS_FIMD || DRM_EXYNOS5433_DECON || DRM_EXYNOS7_DECON || \
+		   DRM_EXYNOS8890_DECON_F
 	select DRM_MIPI_DSI
 	select DRM_PANEL
 	select DRM_SAMSUNG_DSIM
