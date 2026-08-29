@@ -340,28 +340,6 @@ out:
 	return ret;
 }
 
-static int exynos8890_cbd_legacy_state(enum exynos8890_cp_state state)
-{
-	switch (state) {
-	case EXYNOS8890_CP_OFFLINE:
-	case EXYNOS8890_CP_POWERING:
-	case EXYNOS8890_CP_STOPPING:
-		return EXYNOS8890_CBD_STATE_OFFLINE;
-	case EXYNOS8890_CP_CRASH_RESET:
-		return EXYNOS8890_CBD_STATE_CRASH_RESET;
-	case EXYNOS8890_CP_CRASH_EXIT:
-	case EXYNOS8890_CP_DUMPING:
-	case EXYNOS8890_CP_FAULTED:
-		return EXYNOS8890_CBD_STATE_CRASH_EXIT;
-	case EXYNOS8890_CP_BOOTING:
-		return EXYNOS8890_CBD_STATE_BOOTING;
-	case EXYNOS8890_CP_ONLINE:
-		return EXYNOS8890_CBD_STATE_ONLINE;
-	case EXYNOS8890_CP_CRASH_WATCHDOG:
-		return EXYNOS8890_CBD_STATE_CRASH_WATCHDOG;
-	}
-	return EXYNOS8890_CBD_STATE_CRASH_EXIT;
-}
 
 static __poll_t exynos8890_cbd_poll(struct file *file, poll_table *wait)
 {
@@ -393,7 +371,7 @@ static __poll_t exynos8890_cbd_poll(struct file *file, poll_table *wait)
 	 */
 	if (endpoint->config->type == EXYNOS8890_CBD_ENDPOINT_BOOT &&
 	    !exynos8890_cpctl_get_status(endpoint->cbd->cpctl, &status)) {
-		int legacy_state = exynos8890_cbd_legacy_state(status.state);
+		int legacy_state = exynos8890_cp_state_to_legacy(status.state);
 
 		if (legacy_state == EXYNOS8890_CBD_STATE_CRASH_RESET ||
 		    legacy_state == EXYNOS8890_CBD_STATE_CRASH_EXIT ||
@@ -601,7 +579,7 @@ static long exynos8890_cbd_ioctl_status(struct exynos8890_cbd *cbd)
 					   EXYNOS8890_CBD_STATE_SIM_DETACH;
 	}
 
-	return exynos8890_cbd_legacy_state(status.state);
+	return exynos8890_cp_state_to_legacy(status.state);
 }
 
 static long exynos8890_cbd_ioctl_full_dump(struct file *file,

@@ -4,6 +4,7 @@
 
 #include <linux/bitops.h>
 #include <linux/device.h>
+#include <linux/exynos8890_cbd.h>
 #include <linux/notifier.h>
 #include <linux/types.h>
 
@@ -42,6 +43,35 @@ enum exynos8890_cp_state {
 	EXYNOS8890_CP_STOPPING,
 	EXYNOS8890_CP_FAULTED,
 };
+
+/*
+ * Translate to the state numbering Samsung's RIL expects back from
+ * IOCTL_MODEM_STATUS. Anything it does not recognise has to look like a
+ * crash rather than like silence, or the RIL waits forever.
+ */
+static inline enum exynos8890_cbd_modem_state
+exynos8890_cp_state_to_legacy(enum exynos8890_cp_state state)
+{
+	switch (state) {
+	case EXYNOS8890_CP_OFFLINE:
+	case EXYNOS8890_CP_POWERING:
+	case EXYNOS8890_CP_STOPPING:
+		return EXYNOS8890_CBD_STATE_OFFLINE;
+	case EXYNOS8890_CP_CRASH_RESET:
+		return EXYNOS8890_CBD_STATE_CRASH_RESET;
+	case EXYNOS8890_CP_CRASH_EXIT:
+	case EXYNOS8890_CP_DUMPING:
+	case EXYNOS8890_CP_FAULTED:
+		return EXYNOS8890_CBD_STATE_CRASH_EXIT;
+	case EXYNOS8890_CP_BOOTING:
+		return EXYNOS8890_CBD_STATE_BOOTING;
+	case EXYNOS8890_CP_ONLINE:
+		return EXYNOS8890_CBD_STATE_ONLINE;
+	case EXYNOS8890_CP_CRASH_WATCHDOG:
+		return EXYNOS8890_CBD_STATE_CRASH_WATCHDOG;
+	}
+	return EXYNOS8890_CBD_STATE_CRASH_EXIT;
+}
 
 enum exynos8890_cp_boot_mode {
 	EXYNOS8890_CP_BOOT_NORMAL,

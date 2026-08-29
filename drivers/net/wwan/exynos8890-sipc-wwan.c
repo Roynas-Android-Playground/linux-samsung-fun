@@ -2,7 +2,9 @@
 /* Exynos8890 SIPC WWAN, raw-IP netdev and endpoint presentation. */
 
 #include <linux/err.h>
+#include <linux/compat.h>
 #include <linux/etherdevice.h>
+#include <linux/exynos8890_cbd.h>
 #include <linux/fs.h>
 #include <linux/if_arp.h>
 #include <linux/ip.h>
@@ -574,6 +576,41 @@ static __poll_t exynos8890_misc_poll(struct file *file, poll_table *wait)
 	return mask;
 }
 
+/*
+ * Samsung's RIL calls IOCTL_MODEM_STATUS before every read on umts_ipc0 and
+ * only proceeds when it answers STATE_ONLINE, so without this the transport
+ * below never gets used no matter how well it works. The command numbers are
+ * shared with the boot endpoint - it is one ABI, split across two drivers.
+ *
+ * SIM attach/detach is deliberately not reported here. It is edge-triggered,
+ * so reporting it would replace one STATE_ONLINE answer with a state the RIL
+ * reads as "not online" and cost a read cycle; the boot endpoint already
+ * delivers those transitions.
+ */
+static long exynos8890_misc_ioctl(struct file *file, unsigned int command,
+				  unsigned long argument)
+{
+	struct exynos8890_endpoint *endpoint = file->private_data;
+	struct exynos8890_cp_status status;
+	int ret;
+
+	switch (command) {
+	case EXYNOS8890_CBD_IOCTL_MODEM_STATUS:
+		ret = exynos8890_cpctl_get_status(endpoint->sipc->cpctl,
+						  &status);
+		if (ret)
+			return ret;
+		return exynos8890_cp_state_to_legacy(status.state);
+	case EXYNOS8890_CBD_IOCTL_NET_SUSPEND:
+	case EXYNOS8890_CBD_IOCTL_NET_RESUME:
+		return exynos8890_cpctl_set_network_suspended(
+			endpoint->sipc->cpctl,
+			command == EXYNOS8890_CBD_IOCTL_NET_SUSPEND);
+	default:
+		return -ENOTTY;
+	}
+}
+
 static const struct file_operations exynos8890_misc_fops = {
 	.owner = THIS_MODULE,
 	.open = exynos8890_misc_open,
@@ -581,6 +618,8 @@ static const struct file_operations exynos8890_misc_fops = {
 	.read = exynos8890_misc_read,
 	.write = exynos8890_misc_write,
 	.poll = exynos8890_misc_poll,
+	.unlocked_ioctl = exynos8890_misc_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
 	.llseek = noop_llseek,
 };
 
