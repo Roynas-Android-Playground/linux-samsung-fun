@@ -27,8 +27,8 @@
 
 #define MAX77854_CHGIN_LIM_MASK			GENMASK(6, 0)
 #define MAX77854_CHGIN_MIN_UA			100000
-/* Conservative bring-up ceiling until thermal/cable policy is present. */
-#define MAX77854_CHGIN_MAX_UA			450000
+/* Hardware ceiling; the conservative policy lives in MAX77854_DEFAULT_INPUT_UA. */
+#define MAX77854_CHGIN_MAX_UA			4000000
 #define MAX77854_AICL_MIN_UA			300000
 #define MAX77854_AICL_STEP_CODE			3
 #define MAX77854_AICL_DELAY_MS			100
@@ -57,6 +57,13 @@
 #define MAX77854_DEFAULT_INPUT_UA		450000
 #define MAX77854_DEFAULT_CHARGE_UA		450000
 
+/*
+ * What the MUIC negotiated over AFC/QC. 9V is only offered by a charger that
+ * answered the handshake, so the higher input limit applies to it alone.
+ */
+#define MAX77854_AFC_9V_THRESHOLD_UV		7000000
+#define MAX77854_AFC_9V_INPUT_UA		1650000
+
 enum max77854_chg_irq {
 	MAX77854_IRQ_BYP,
 	MAX77854_IRQ_INP_LIMIT,
@@ -78,6 +85,7 @@ struct max77854_charger {
 	struct mutex lock;
 	int max_charge_current_ua;
 	int charge_voltage_uv;
+	int input_current_ua;
 	struct notifier_block wireless_nb;
 	bool wireless_active;
 };
@@ -376,6 +384,8 @@ static int max77854_set_input_current(struct max77854_charger *chg, int ua)
 
 	mutex_lock(&chg->lock);
 	ret = regmap_update_bits(chg->regmap, reg, mask, code);
+	if (!ret)
+		chg->input_current_ua = ua;
 	mutex_unlock(&chg->lock);
 
 	return ret;
@@ -526,6 +536,42 @@ static int max77854_property_is_writeable(struct power_supply *psy,
 	}
 }
 
+/*
+ * The MUIC reports the input voltage it negotiated. Wired input is the only
+ * path AFC applies to, so leave a wireless pad alone.
+ */
+static void max77854_external_power_changed(struct power_supply *psy)
+{
+	struct max77854_charger *chg = power_supply_get_drvdata(psy);
+	union power_supply_propval val;
+	int ua, ret;
+
+	if (chg->wireless_active)
+		return;
+
+	ret = power_supply_get_property_from_supplier(psy,
+						      POWER_SUPPLY_PROP_VOLTAGE_NOW,
+						      &val);
+	if (ret)
+		return;
+
+	ua = val.intval >= MAX77854_AFC_9V_THRESHOLD_UV ?
+		MAX77854_AFC_9V_INPUT_UA : MAX77854_DEFAULT_INPUT_UA;
+
+	if (ua == chg->input_current_ua)
+		return;
+
+	ret = max77854_set_input_current(chg, ua);
+	if (ret) {
+		dev_err(chg->dev, "failed to set input current: %d\n", ret);
+		return;
+	}
+
+	dev_info(chg->dev, "input %d.%03dV, limit %d.%03dA\n",
+		 val.intval / 1000000, (val.intval / 1000) % 1000,
+		 ua / 1000000, (ua / 1000) % 1000);
+}
+
 static const struct power_supply_desc max77854_charger_desc = {
 	.name			= MAX77854_CHARGER_NAME,
 	.type			= POWER_SUPPLY_TYPE_USB,
@@ -534,6 +580,7 @@ static const struct power_supply_desc max77854_charger_desc = {
 	.get_property		= max77854_get_property,
 	.set_property		= max77854_set_property,
 	.property_is_writeable	= max77854_property_is_writeable,
+	.external_power_changed	= max77854_external_power_changed,
 };
 
 static void max77854_changed_work(struct work_struct *work)
@@ -543,6 +590,7 @@ static void max77854_changed_work(struct work_struct *work)
 
 	power_supply_changed(chg->psy);
 }
+
 
 static irqreturn_t max77854_changed_irq(int irq, void *data)
 {
