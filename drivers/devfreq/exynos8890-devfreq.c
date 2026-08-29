@@ -873,10 +873,9 @@ static int exynos_init_freq_table(struct device *dev, struct exynos_devfreq_data
 	/* volt_table should be filled (data->volt_table) */
 	if (data->ops.get_volt_table) {
 		ret = data->ops.get_volt_table(dev, data->volt_table, data);
-		if (ret) {
-			dev_err(dev, "failed get voltage table\n");
-			return ret;
-		}
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "failed to get voltage table\n");
 	}
 
 	for (i = 0; i < data->max_state; i++) {
@@ -1366,7 +1365,8 @@ static int exynos_devfreq_probe(struct platform_device *pdev)
 
 	ret = exynos_init_freq_table(data->dev, data);
 	if (ret) {
-		dev_err(data->dev, "failed initailize freq_table\n");
+		dev_err_probe(data->dev, ret,
+			      "failed to initialize frequency table\n");
 		goto err_init_table;
 	}
 
