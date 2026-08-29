@@ -1,0 +1,57 @@
+#
+# T-DMB tuner driver configuration
+#
+
+config TDMB
+	tristate "T-DMB tuner driver support"
+	help
+	  Say Y here to enable the T-DMB tuner driver.
+	  This driver supports the Samsung Exynos8890 Herolte platform
+	  with the FC8080 tuner via SPI.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called tdmb.
+
+config TDMB_FC8080
+	bool "FC8080 tuner"
+	depends on TDMB
+	select DVB_FC8080
+	help
+	  Select this if your tuner is an FC8080.
+
+config TDMB_SPI
+	bool "T-DMB over SPI"
+	depends on TDMB && SPI_MASTER
+	help
+	  Select this if the tuner's host interface is SPI. This is the
+	  only transport wired up on herolte; without it the driver has no
+	  way to reach the chip's registers.
+
+config TDMB_XTAL_FREQ
+	bool "T-DMB crystal frequency from device tree"
+	depends on TDMB
+	default y
+	help
+	  Take the tuner's reference crystal frequency from the
+	  tdmb_xtal_freq device tree property instead of the driver's
+	  24.576MHz default. herolte fits a 24.000MHz part, and the FC8080
+	  tuner PLL is programmed straight from this value.
+
+config TDMB_DEBUG
+	bool "T-DMB debug prints"
+	depends on TDMB
+	default n
+	help
+	  Enable debug prints for the T-DMB driver.
+
+config TDMB_ANT_DET
+	bool "T-DMB antenna detection"
+	depends on TDMB
+	help
+	  Enable antenna detection via GPIO input event.
+
+config TDMB_VREG_SUPPORT
+	bool "T-DMB regulator support"
+	depends on TDMB
+	help
+	  Enable regulator support for the T-DMB tuner power supply.

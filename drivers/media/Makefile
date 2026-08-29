@@ -30,5 +30,6 @@ obj-$(CONFIG_CEC_CORE) += cec/
 #
 
 obj-y += common/ platform/ pci/ usb/ mmc/ firewire/ spi/ test-drivers/
+obj-$(CONFIG_TDMB) += tdmb/
 obj-$(CONFIG_VIDEO_DEV) += radio/
 
