@@ -357,28 +357,6 @@
 	status = "okay";
 };
 
-/*
- * Swapped from the DRM "takeover" driver to decon8890 (drivers/video/
- * fbdev/exynos/decon8890/) for real-hardware bring-up testing - only one
- * of the two can be enabled at a time, they claim the same DECON/VPP-G1/
- * SysMMU-disp01 registers.
- */
-&decon_f {
-	status = "disabled";
-};
-
-&dsim0_observer {
-	status = "disabled";
-};
-
-&vpp_g1_observer {
-	status = "disabled";
-};
-
-&sysmmu_disp01_observer {
-	status = "disabled";
-};
-
 / {
 	/*
 	 * decon8890's dsim8890_0 lcd_info phandle target - real timing
@@ -1526,7 +1504,7 @@
 		#size-cells = <0>;
 		num-cs = <1>;
 
-		status = "disabled";
+		status = "okay";
 
 		fingerprint@0 {
 			compatible = "vfsspi,vfs7xxx";

@@ -946,7 +946,6 @@
 				 <&cmu_isp0 CLK_GOUT_ISP0_PCLK_SYSMMU601>;
 			power-domains = <&pd_isp0>;
 			#iommu-cells = <0>;
-			status = "disabled";
 		};
 
 		// fimc-is2 core node, DT scaffolding only, no driver yet
@@ -1573,24 +1572,6 @@
 			      <0x13952000 0x1000>,
 			      <0x13a10000 0x1000>;
 			reg-names = "decon", "vpp-g1", "sysmmu-disp01";
-			status = "disabled";
-		};
-
-		dsim0_observer: dsi-observer@13900000 {
-			compatible = "samsung,exynos8890-dsim-observer";
-			reg = <0x13900000 0x100>;
-			status = "disabled";
-		};
-
-		vpp_g1_observer: vpp-observer@13952000 {
-			compatible = "samsung,exynos8890-vpp-observer";
-			reg = <0x13952000 0x1000>;
-			status = "disabled";
-		};
-
-		sysmmu_disp01_observer: iommu-observer@13a10000 {
-			compatible = "samsung,exynos8890-sysmmu-observer";
-			reg = <0x13a10000 0x1000>;
 			status = "disabled";
 		};
 
