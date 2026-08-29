@@ -1295,6 +1295,30 @@
 	};
 };
 
+/ {
+	sound {
+		compatible = "samsung,herolte-audio";
+		model = "Samsung Galaxy S7";
+
+		i2s-controller = <&i2s0 0>;
+		audio-codec = <&audio_codec>;
+		speaker-codec = <&speaker_amp>;
+
+		audio-routing =
+			"HP", "HPOUT1L",
+			"HP", "HPOUT1R",
+			"RCV", "HPOUT3L",
+			"RCV", "HPOUT3R",
+			"SPK", "SPKOUT",
+			"Main Mic", "MICBIAS2A",
+			"IN1AR", "Main Mic",
+			"Sub Mic", "MICBIAS2B",
+			"IN3L", "Sub Mic",
+			"Headset Mic", "MICBIAS1A",
+			"IN2BL", "Headset Mic";
+	};
+};
+
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Samsung Galaxy S7 (herolte) BCM4773 GNSS transport bring-up.
