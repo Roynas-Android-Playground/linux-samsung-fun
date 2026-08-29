@@ -30,7 +30,7 @@ config PHY_EXYNOS8890_MIPI
 	help
 	  Isolation-bypass + reset-release control (through the PMU syscon)
 	  for the MIPI D-PHYs feeding Exynos8890's DSIM/CSIS host IP.
-	  dsim8890 (drivers/video/fbdev/exynos/decon8890/) requires this.
+	  The Exynos DRM DSIM bridge on exynos8890 requires this.
 
 config PHY_EXYNOS_PCIE
 	bool "Exynos PCIe PHY driver"
