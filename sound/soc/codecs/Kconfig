@@ -388,11 +388,13 @@ config SND_SOC_88PM860X
 config SND_SOC_ARIZONA
 	tristate
 	default y if SND_SOC_CS47L24=y
+	default y if SND_SOC_MOON=y
 	default y if SND_SOC_WM5102=y
 	default y if SND_SOC_WM5110=y
 	default y if SND_SOC_WM8997=y
 	default y if SND_SOC_WM8998=y
 	default m if SND_SOC_CS47L24=m
+	default m if SND_SOC_MOON=m
 	default m if SND_SOC_WM5102=m
 	default m if SND_SOC_WM5110=m
 	default m if SND_SOC_WM8997=m
@@ -1124,11 +1126,12 @@ config SND_SOC_CS47L24
 	select SND_SOC_WM_ADSP
 
 config SND_SOC_MOON
-	tristate "Cirrus Logic CS47L90/CS47L91 minimal Moon codec"
+	tristate "Cirrus Logic CS47L90/CS47L91 (Moon)"
 	depends on MFD_MOON && MFD_ARIZONA
 	help
-	  Register the four serial audio interfaces of CS47L90/CS47L91 Moon
-	  codecs. This minimal bring-up driver has no controls, DAPM or DSP.
+	  Support for the CS47L90/CS47L91 Moon audio SoCs: the four serial
+	  audio interfaces, IN1-IN4 and the HPOUT1/2/3 and SPKDAT1 outputs.
+	  The ADSP2 cores and the DSP-side processing blocks are not covered.
 
 config SND_SOC_CS47L35
 	tristate

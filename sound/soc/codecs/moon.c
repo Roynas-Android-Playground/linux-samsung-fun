@@ -1,74 +1,768 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Minimal ASoC component for CS47L90/CS47L91 (Moon). */
+/*
+ * ASoC driver for Cirrus Logic CS47L90/CS47L91 (Moon)
+ *
+ * Covers the routing the Galaxy S7 (herolte) actually uses: the four AIFs,
+ * IN1-IN4 with the IN1/IN2 A/B input muxes, and the HPOUT1/2/3 and SPKDAT1
+ * output paths. The ADSP2 cores, compressed/offload playback, SLIMbus, ANC,
+ * S/PDIF, and the EQ/DRC/LHPF/ISRC/ASRC processing blocks are not modelled;
+ * their mixer sources are therefore absent from the routing table too.
+ *
+ * IN5/IN6 are also left out: they need the v2 mixer source table, and no
+ * board wired here uses them.
+ */
 
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <sound/soc.h>
+#include <linux/pm_runtime.h>
+#include <linux/regmap.h>
 
+#include <linux/mfd/arizona/core.h>
+#include <linux/mfd/arizona/registers.h>
+#include <linux/mfd/arizona/moon-registers.h>
+
+#include <sound/pcm.h>
+#include <sound/pcm_params.h>
+#include <sound/soc.h>
+#include <sound/tlv.h>
+
+#include "arizona.h"
 #include "moon.h"
 
-static int moon_dai_startup(struct snd_pcm_substream *substream,
-			    struct snd_soc_dai *dai)
+#define DRV_NAME "moon-codec"
+
+struct moon_priv {
+	struct arizona_priv core;
+	struct arizona_fll fll[2];
+};
+
+static DECLARE_TLV_DB_SCALE(digital_tlv, -6400, 50, 0);
+static DECLARE_TLV_DB_SCALE(ana_tlv, 0, 100, 0);
+static DECLARE_TLV_DB_SCALE(noise_tlv, -13200, 600, 0);
+static DECLARE_TLV_DB_SCALE(ng_tlv, -10200, 600, 0);
+
+/* IN1 and IN2 each have two physical pin pairs behind one PGA */
+static const char * const moon_inmux_texts[] = { "A", "B" };
+
+static SOC_ENUM_SINGLE_DECL(moon_in1muxl_enum, ARIZONA_ADC_DIGITAL_VOLUME_1L,
+			    ARIZONA_IN1L_SRC_SHIFT, moon_inmux_texts);
+static SOC_ENUM_SINGLE_DECL(moon_in1muxr_enum, ARIZONA_ADC_DIGITAL_VOLUME_1R,
+			    ARIZONA_IN1R_SRC_SHIFT, moon_inmux_texts);
+static SOC_ENUM_SINGLE_DECL(moon_in2muxl_enum, ARIZONA_ADC_DIGITAL_VOLUME_2L,
+			    ARIZONA_IN2L_SRC_SHIFT, moon_inmux_texts);
+
+static const struct snd_kcontrol_new moon_in1mux[2] = {
+	SOC_DAPM_ENUM("IN1L Mux", moon_in1muxl_enum),
+	SOC_DAPM_ENUM("IN1R Mux", moon_in1muxr_enum),
+};
+
+static const struct snd_kcontrol_new moon_in2mux =
+	SOC_DAPM_ENUM("IN2L Mux", moon_in2muxl_enum);
+
+static const struct snd_kcontrol_new moon_snd_controls[] = {
+SOC_ENUM("IN HPF Cutoff Frequency", arizona_in_hpf_cut_enum),
+
+SOC_SINGLE("IN1L HPF Switch", ARIZONA_IN1L_CONTROL,
+	   ARIZONA_IN1L_HPF_SHIFT, 1, 0),
+SOC_SINGLE("IN1R HPF Switch", ARIZONA_IN1R_CONTROL,
+	   ARIZONA_IN1R_HPF_SHIFT, 1, 0),
+SOC_SINGLE("IN2L HPF Switch", ARIZONA_IN2L_CONTROL,
+	   ARIZONA_IN2L_HPF_SHIFT, 1, 0),
+SOC_SINGLE("IN2R HPF Switch", ARIZONA_IN2R_CONTROL,
+	   ARIZONA_IN2R_HPF_SHIFT, 1, 0),
+SOC_SINGLE("IN3L HPF Switch", ARIZONA_IN3L_CONTROL,
+	   ARIZONA_IN3L_HPF_SHIFT, 1, 0),
+SOC_SINGLE("IN3R HPF Switch", ARIZONA_IN3R_CONTROL,
+	   ARIZONA_IN3R_HPF_SHIFT, 1, 0),
+SOC_SINGLE("IN4L HPF Switch", ARIZONA_IN4L_CONTROL,
+	   ARIZONA_IN4L_HPF_SHIFT, 1, 0),
+SOC_SINGLE("IN4R HPF Switch", ARIZONA_IN4R_CONTROL,
+	   ARIZONA_IN4R_HPF_SHIFT, 1, 0),
+
+SOC_SINGLE_TLV("IN1L Volume", ARIZONA_IN1L_CONTROL,
+	       ARIZONA_IN1L_PGA_VOL_SHIFT, 0x5f, 0, ana_tlv),
+SOC_SINGLE_TLV("IN1R Volume", ARIZONA_IN1R_CONTROL,
+	       ARIZONA_IN1R_PGA_VOL_SHIFT, 0x5f, 0, ana_tlv),
+SOC_SINGLE_TLV("IN2L Volume", ARIZONA_IN2L_CONTROL,
+	       ARIZONA_IN2L_PGA_VOL_SHIFT, 0x5f, 0, ana_tlv),
+SOC_SINGLE_TLV("IN2R Volume", ARIZONA_IN2R_CONTROL,
+	       ARIZONA_IN2R_PGA_VOL_SHIFT, 0x5f, 0, ana_tlv),
+
+SOC_SINGLE_TLV("Noise Generator Volume", ARIZONA_COMFORT_NOISE_GENERATOR,
+	       ARIZONA_NOISE_GEN_GAIN_SHIFT, 0x16, 0, noise_tlv),
+
+SOC_DOUBLE_R("IN1 Digital Switch", ARIZONA_ADC_DIGITAL_VOLUME_1L,
+	     ARIZONA_ADC_DIGITAL_VOLUME_1R, ARIZONA_IN1L_MUTE_SHIFT, 1, 1),
+SOC_DOUBLE_R("IN2 Digital Switch", ARIZONA_ADC_DIGITAL_VOLUME_2L,
+	     ARIZONA_ADC_DIGITAL_VOLUME_2R, ARIZONA_IN2L_MUTE_SHIFT, 1, 1),
+SOC_DOUBLE_R("IN3 Digital Switch", ARIZONA_ADC_DIGITAL_VOLUME_3L,
+	     ARIZONA_ADC_DIGITAL_VOLUME_3R, ARIZONA_IN3L_MUTE_SHIFT, 1, 1),
+SOC_DOUBLE_R("IN4 Digital Switch", ARIZONA_ADC_DIGITAL_VOLUME_4L,
+	     ARIZONA_ADC_DIGITAL_VOLUME_4R, ARIZONA_IN4L_MUTE_SHIFT, 1, 1),
+
+SOC_DOUBLE_R_TLV("IN1 Digital Volume", ARIZONA_ADC_DIGITAL_VOLUME_1L,
+		 ARIZONA_ADC_DIGITAL_VOLUME_1R, ARIZONA_IN1L_DIG_VOL_SHIFT,
+		 0xbf, 0, digital_tlv),
+SOC_DOUBLE_R_TLV("IN2 Digital Volume", ARIZONA_ADC_DIGITAL_VOLUME_2L,
+		 ARIZONA_ADC_DIGITAL_VOLUME_2R, ARIZONA_IN2L_DIG_VOL_SHIFT,
+		 0xbf, 0, digital_tlv),
+SOC_DOUBLE_R_TLV("IN3 Digital Volume", ARIZONA_ADC_DIGITAL_VOLUME_3L,
+		 ARIZONA_ADC_DIGITAL_VOLUME_3R, ARIZONA_IN3L_DIG_VOL_SHIFT,
+		 0xbf, 0, digital_tlv),
+SOC_DOUBLE_R_TLV("IN4 Digital Volume", ARIZONA_ADC_DIGITAL_VOLUME_4L,
+		 ARIZONA_ADC_DIGITAL_VOLUME_4R, ARIZONA_IN4L_DIG_VOL_SHIFT,
+		 0xbf, 0, digital_tlv),
+
+SOC_ENUM("Input Ramp Up", arizona_in_vi_ramp),
+SOC_ENUM("Input Ramp Down", arizona_in_vd_ramp),
+
+ARIZONA_MIXER_CONTROLS("HPOUT1L", ARIZONA_OUT1LMIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("HPOUT1R", ARIZONA_OUT1RMIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("HPOUT2L", ARIZONA_OUT2LMIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("HPOUT2R", ARIZONA_OUT2RMIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("HPOUT3L", ARIZONA_OUT3LMIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("HPOUT3R", ARIZONA_OUT3RMIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("SPKDAT1L", ARIZONA_OUT5LMIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("SPKDAT1R", ARIZONA_OUT5RMIX_INPUT_1_SOURCE),
+
+SOC_DOUBLE_R("HPOUT1 Digital Switch", ARIZONA_DAC_DIGITAL_VOLUME_1L,
+	     ARIZONA_DAC_DIGITAL_VOLUME_1R, ARIZONA_OUT1L_MUTE_SHIFT, 1, 1),
+SOC_DOUBLE_R("HPOUT2 Digital Switch", ARIZONA_DAC_DIGITAL_VOLUME_2L,
+	     ARIZONA_DAC_DIGITAL_VOLUME_2R, ARIZONA_OUT2L_MUTE_SHIFT, 1, 1),
+SOC_DOUBLE_R("HPOUT3 Digital Switch", ARIZONA_DAC_DIGITAL_VOLUME_3L,
+	     ARIZONA_DAC_DIGITAL_VOLUME_3R, ARIZONA_OUT3L_MUTE_SHIFT, 1, 1),
+SOC_DOUBLE_R("SPKDAT1 Digital Switch", ARIZONA_DAC_DIGITAL_VOLUME_5L,
+	     ARIZONA_DAC_DIGITAL_VOLUME_5R, ARIZONA_OUT5L_MUTE_SHIFT, 1, 1),
+
+SOC_DOUBLE_R_TLV("HPOUT1 Digital Volume", ARIZONA_DAC_DIGITAL_VOLUME_1L,
+		 ARIZONA_DAC_DIGITAL_VOLUME_1R, ARIZONA_OUT1L_VOL_SHIFT,
+		 0xbf, 0, digital_tlv),
+SOC_DOUBLE_R_TLV("HPOUT2 Digital Volume", ARIZONA_DAC_DIGITAL_VOLUME_2L,
+		 ARIZONA_DAC_DIGITAL_VOLUME_2R, ARIZONA_OUT2L_VOL_SHIFT,
+		 0xbf, 0, digital_tlv),
+SOC_DOUBLE_R_TLV("HPOUT3 Digital Volume", ARIZONA_DAC_DIGITAL_VOLUME_3L,
+		 ARIZONA_DAC_DIGITAL_VOLUME_3R, ARIZONA_OUT3L_VOL_SHIFT,
+		 0xbf, 0, digital_tlv),
+SOC_DOUBLE_R_TLV("SPKDAT1 Digital Volume", ARIZONA_DAC_DIGITAL_VOLUME_5L,
+		 ARIZONA_DAC_DIGITAL_VOLUME_5R, ARIZONA_OUT5L_VOL_SHIFT,
+		 0xbf, 0, digital_tlv),
+
+SOC_ENUM("Output Ramp Up", arizona_out_vi_ramp),
+SOC_ENUM("Output Ramp Down", arizona_out_vd_ramp),
+
+SOC_SINGLE("Noise Gate Switch", ARIZONA_NOISE_GATE_CONTROL,
+	   ARIZONA_NGATE_ENA_SHIFT, 1, 0),
+SOC_SINGLE_TLV("Noise Gate Threshold Volume", ARIZONA_NOISE_GATE_CONTROL,
+	       ARIZONA_NGATE_THR_SHIFT, 7, 1, ng_tlv),
+SOC_ENUM("Noise Gate Hold", arizona_ng_hold),
+
+ARIZONA_MIXER_CONTROLS("AIF1TX1", ARIZONA_AIF1TX1MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF1TX2", ARIZONA_AIF1TX2MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF1TX3", ARIZONA_AIF1TX3MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF1TX4", ARIZONA_AIF1TX4MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF1TX5", ARIZONA_AIF1TX5MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF1TX6", ARIZONA_AIF1TX6MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF1TX7", ARIZONA_AIF1TX7MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF1TX8", ARIZONA_AIF1TX8MIX_INPUT_1_SOURCE),
+
+ARIZONA_MIXER_CONTROLS("AIF2TX1", ARIZONA_AIF2TX1MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF2TX2", ARIZONA_AIF2TX2MIX_INPUT_1_SOURCE),
+
+ARIZONA_MIXER_CONTROLS("AIF3TX1", ARIZONA_AIF3TX1MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF3TX2", ARIZONA_AIF3TX2MIX_INPUT_1_SOURCE),
+
+ARIZONA_MIXER_CONTROLS("AIF4TX1", ARIZONA_AIF4TX1MIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("AIF4TX2", ARIZONA_AIF4TX2MIX_INPUT_1_SOURCE),
+};
+
+ARIZONA_MIXER_ENUMS(HPOUT1L, ARIZONA_OUT1LMIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(HPOUT1R, ARIZONA_OUT1RMIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(HPOUT2L, ARIZONA_OUT2LMIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(HPOUT2R, ARIZONA_OUT2RMIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(HPOUT3L, ARIZONA_OUT3LMIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(HPOUT3R, ARIZONA_OUT3RMIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(SPKDAT1L, ARIZONA_OUT5LMIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(SPKDAT1R, ARIZONA_OUT5RMIX_INPUT_1_SOURCE);
+
+ARIZONA_MIXER_ENUMS(AIF1TX1, ARIZONA_AIF1TX1MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF1TX2, ARIZONA_AIF1TX2MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF1TX3, ARIZONA_AIF1TX3MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF1TX4, ARIZONA_AIF1TX4MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF1TX5, ARIZONA_AIF1TX5MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF1TX6, ARIZONA_AIF1TX6MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF1TX7, ARIZONA_AIF1TX7MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF1TX8, ARIZONA_AIF1TX8MIX_INPUT_1_SOURCE);
+
+ARIZONA_MIXER_ENUMS(AIF2TX1, ARIZONA_AIF2TX1MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF2TX2, ARIZONA_AIF2TX2MIX_INPUT_1_SOURCE);
+
+ARIZONA_MIXER_ENUMS(AIF3TX1, ARIZONA_AIF3TX1MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF3TX2, ARIZONA_AIF3TX2MIX_INPUT_1_SOURCE);
+
+ARIZONA_MIXER_ENUMS(AIF4TX1, ARIZONA_AIF4TX1MIX_INPUT_1_SOURCE);
+ARIZONA_MIXER_ENUMS(AIF4TX2, ARIZONA_AIF4TX2MIX_INPUT_1_SOURCE);
+
+static const struct snd_soc_dapm_widget moon_dapm_widgets[] = {
+SND_SOC_DAPM_SUPPLY("SYSCLK", ARIZONA_SYSTEM_CLOCK_1, ARIZONA_SYSCLK_ENA_SHIFT,
+		    0, arizona_clk_ev,
+		    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+SND_SOC_DAPM_SUPPLY("ASYNCCLK", ARIZONA_ASYNC_CLOCK_1,
+		    ARIZONA_ASYNC_CLK_ENA_SHIFT, 0, arizona_clk_ev,
+		    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+SND_SOC_DAPM_SUPPLY("OPCLK", ARIZONA_OUTPUT_SYSTEM_CLOCK,
+		    ARIZONA_OPCLK_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("ASYNCOPCLK", ARIZONA_OUTPUT_ASYNC_CLOCK,
+		    ARIZONA_OPCLK_ASYNC_ENA_SHIFT, 0, NULL, 0),
+
+SND_SOC_DAPM_REGULATOR_SUPPLY("CPVDD", 20, 0),
+SND_SOC_DAPM_REGULATOR_SUPPLY("MICVDD", 0, SND_SOC_DAPM_REGULATOR_BYPASS),
+SND_SOC_DAPM_REGULATOR_SUPPLY("SPKVDDL", 0, 0),
+SND_SOC_DAPM_REGULATOR_SUPPLY("SPKVDDR", 0, 0),
+
+SND_SOC_DAPM_SIGGEN("TONE"),
+SND_SOC_DAPM_SIGGEN("NOISE"),
+
+SND_SOC_DAPM_INPUT("IN1AL"),
+SND_SOC_DAPM_INPUT("IN1BL"),
+SND_SOC_DAPM_INPUT("IN1AR"),
+SND_SOC_DAPM_INPUT("IN1BR"),
+SND_SOC_DAPM_INPUT("IN2AL"),
+SND_SOC_DAPM_INPUT("IN2BL"),
+SND_SOC_DAPM_INPUT("IN2R"),
+SND_SOC_DAPM_INPUT("IN3L"),
+SND_SOC_DAPM_INPUT("IN3R"),
+SND_SOC_DAPM_INPUT("IN4L"),
+SND_SOC_DAPM_INPUT("IN4R"),
+
+SND_SOC_DAPM_MUX("IN1L Mux", SND_SOC_NOPM, 0, 0, &moon_in1mux[0]),
+SND_SOC_DAPM_MUX("IN1R Mux", SND_SOC_NOPM, 0, 0, &moon_in1mux[1]),
+SND_SOC_DAPM_MUX("IN2L Mux", SND_SOC_NOPM, 0, 0, &moon_in2mux),
+
+SND_SOC_DAPM_SUPPLY("MICBIAS1", ARIZONA_MIC_BIAS_CTRL_1,
+		    ARIZONA_MICB1_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("MICBIAS2", ARIZONA_MIC_BIAS_CTRL_2,
+		    ARIZONA_MICB1_ENA_SHIFT, 0, NULL, 0),
+
+SND_SOC_DAPM_SUPPLY("MICBIAS1A", ARIZONA_MIC_BIAS_CTRL_5,
+		    ARIZONA_MICB1A_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("MICBIAS1B", ARIZONA_MIC_BIAS_CTRL_5,
+		    ARIZONA_MICB1B_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("MICBIAS1C", ARIZONA_MIC_BIAS_CTRL_5,
+		    ARIZONA_MICB1C_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("MICBIAS1D", ARIZONA_MIC_BIAS_CTRL_5,
+		    ARIZONA_MICB1D_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("MICBIAS2A", ARIZONA_MIC_BIAS_CTRL_6,
+		    ARIZONA_MICB2A_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("MICBIAS2B", ARIZONA_MIC_BIAS_CTRL_6,
+		    ARIZONA_MICB2B_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("MICBIAS2C", ARIZONA_MIC_BIAS_CTRL_6,
+		    ARIZONA_MICB2C_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_SUPPLY("MICBIAS2D", ARIZONA_MIC_BIAS_CTRL_6,
+		    ARIZONA_MICB2D_ENA_SHIFT, 0, NULL, 0),
+
+SND_SOC_DAPM_PGA("Noise Generator", ARIZONA_COMFORT_NOISE_GENERATOR,
+		 ARIZONA_NOISE_GEN_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_PGA("Tone Generator 1", ARIZONA_TONE_GENERATOR_1,
+		 ARIZONA_TONE1_ENA_SHIFT, 0, NULL, 0),
+SND_SOC_DAPM_PGA("Tone Generator 2", ARIZONA_TONE_GENERATOR_1,
+		 ARIZONA_TONE2_ENA_SHIFT, 0, NULL, 0),
+
+SND_SOC_DAPM_PGA_E("IN1L PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN1L_ENA_SHIFT,
+		   0, NULL, 0, arizona_in_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("IN1R PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN1R_ENA_SHIFT,
+		   0, NULL, 0, arizona_in_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("IN2L PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN2L_ENA_SHIFT,
+		   0, NULL, 0, arizona_in_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("IN2R PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN2R_ENA_SHIFT,
+		   0, NULL, 0, arizona_in_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("IN3L PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN3L_ENA_SHIFT,
+		   0, NULL, 0, arizona_in_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("IN3R PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN3R_ENA_SHIFT,
+		   0, NULL, 0, arizona_in_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("IN4L PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN4L_ENA_SHIFT,
+		   0, NULL, 0, arizona_in_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("IN4R PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN4R_ENA_SHIFT,
+		   0, NULL, 0, arizona_in_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+
+SND_SOC_DAPM_AIF_OUT("AIF1TX1", NULL, 0,
+		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX1_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF1TX2", NULL, 0,
+		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX2_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF1TX3", NULL, 0,
+		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX3_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF1TX4", NULL, 0,
+		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX4_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF1TX5", NULL, 0,
+		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX5_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF1TX6", NULL, 0,
+		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX6_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF1TX7", NULL, 0,
+		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX7_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF1TX8", NULL, 0,
+		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX8_ENA_SHIFT, 0),
+
+SND_SOC_DAPM_AIF_IN("AIF1RX1", NULL, 0,
+		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX1_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF1RX2", NULL, 0,
+		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX2_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF1RX3", NULL, 0,
+		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX3_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF1RX4", NULL, 0,
+		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX4_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF1RX5", NULL, 0,
+		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX5_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF1RX6", NULL, 0,
+		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX6_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF1RX7", NULL, 0,
+		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX7_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF1RX8", NULL, 0,
+		    ARIZONA_AIF1_RX_ENABLES, ARIZONA_AIF1RX8_ENA_SHIFT, 0),
+
+SND_SOC_DAPM_AIF_OUT("AIF2TX1", NULL, 0,
+		     ARIZONA_AIF2_TX_ENABLES, ARIZONA_AIF2TX1_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF2TX2", NULL, 0,
+		     ARIZONA_AIF2_TX_ENABLES, ARIZONA_AIF2TX2_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF2RX1", NULL, 0,
+		    ARIZONA_AIF2_RX_ENABLES, ARIZONA_AIF2RX1_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF2RX2", NULL, 0,
+		    ARIZONA_AIF2_RX_ENABLES, ARIZONA_AIF2RX2_ENA_SHIFT, 0),
+
+SND_SOC_DAPM_AIF_OUT("AIF3TX1", NULL, 0,
+		     ARIZONA_AIF3_TX_ENABLES, ARIZONA_AIF3TX1_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF3TX2", NULL, 0,
+		     ARIZONA_AIF3_TX_ENABLES, ARIZONA_AIF3TX2_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF3RX1", NULL, 0,
+		    ARIZONA_AIF3_RX_ENABLES, ARIZONA_AIF3RX1_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF3RX2", NULL, 0,
+		    ARIZONA_AIF3_RX_ENABLES, ARIZONA_AIF3RX2_ENA_SHIFT, 0),
+
+SND_SOC_DAPM_AIF_OUT("AIF4TX1", NULL, 0,
+		     ARIZONA_AIF4_TX_ENABLES, ARIZONA_AIF4TX1_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_OUT("AIF4TX2", NULL, 0,
+		     ARIZONA_AIF4_TX_ENABLES, ARIZONA_AIF4TX2_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF4RX1", NULL, 0,
+		    ARIZONA_AIF4_RX_ENABLES, ARIZONA_AIF4RX1_ENA_SHIFT, 0),
+SND_SOC_DAPM_AIF_IN("AIF4RX2", NULL, 0,
+		    ARIZONA_AIF4_RX_ENABLES, ARIZONA_AIF4RX2_ENA_SHIFT, 0),
+
+/* HPOUT1 has its own enable sequencing in arizona_hp_ev() */
+SND_SOC_DAPM_PGA_E("OUT1L", SND_SOC_NOPM, ARIZONA_OUT1L_ENA_SHIFT, 0, NULL, 0,
+		   arizona_hp_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("OUT1R", SND_SOC_NOPM, ARIZONA_OUT1R_ENA_SHIFT, 0, NULL, 0,
+		   arizona_hp_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("OUT2L", ARIZONA_OUTPUT_ENABLES_1, ARIZONA_OUT2L_ENA_SHIFT,
+		   0, NULL, 0, arizona_out_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("OUT2R", ARIZONA_OUTPUT_ENABLES_1, ARIZONA_OUT2R_ENA_SHIFT,
+		   0, NULL, 0, arizona_out_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("OUT3L", ARIZONA_OUTPUT_ENABLES_1, ARIZONA_OUT3L_ENA_SHIFT,
+		   0, NULL, 0, arizona_out_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("OUT3R", ARIZONA_OUTPUT_ENABLES_1, ARIZONA_OUT3R_ENA_SHIFT,
+		   0, NULL, 0, arizona_out_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD |
+		   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("OUT5L", ARIZONA_OUTPUT_ENABLES_1, ARIZONA_OUT5L_ENA_SHIFT,
+		   0, NULL, 0, arizona_out_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
+SND_SOC_DAPM_PGA_E("OUT5R", ARIZONA_OUTPUT_ENABLES_1, ARIZONA_OUT5R_ENA_SHIFT,
+		   0, NULL, 0, arizona_out_ev,
+		   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
+
+ARIZONA_MIXER_WIDGETS(HPOUT1L, "HPOUT1L"),
+ARIZONA_MIXER_WIDGETS(HPOUT1R, "HPOUT1R"),
+ARIZONA_MIXER_WIDGETS(HPOUT2L, "HPOUT2L"),
+ARIZONA_MIXER_WIDGETS(HPOUT2R, "HPOUT2R"),
+ARIZONA_MIXER_WIDGETS(HPOUT3L, "HPOUT3L"),
+ARIZONA_MIXER_WIDGETS(HPOUT3R, "HPOUT3R"),
+ARIZONA_MIXER_WIDGETS(SPKDAT1L, "SPKDAT1L"),
+ARIZONA_MIXER_WIDGETS(SPKDAT1R, "SPKDAT1R"),
+
+ARIZONA_MIXER_WIDGETS(AIF1TX1, "AIF1TX1"),
+ARIZONA_MIXER_WIDGETS(AIF1TX2, "AIF1TX2"),
+ARIZONA_MIXER_WIDGETS(AIF1TX3, "AIF1TX3"),
+ARIZONA_MIXER_WIDGETS(AIF1TX4, "AIF1TX4"),
+ARIZONA_MIXER_WIDGETS(AIF1TX5, "AIF1TX5"),
+ARIZONA_MIXER_WIDGETS(AIF1TX6, "AIF1TX6"),
+ARIZONA_MIXER_WIDGETS(AIF1TX7, "AIF1TX7"),
+ARIZONA_MIXER_WIDGETS(AIF1TX8, "AIF1TX8"),
+
+ARIZONA_MIXER_WIDGETS(AIF2TX1, "AIF2TX1"),
+ARIZONA_MIXER_WIDGETS(AIF2TX2, "AIF2TX2"),
+
+ARIZONA_MIXER_WIDGETS(AIF3TX1, "AIF3TX1"),
+ARIZONA_MIXER_WIDGETS(AIF3TX2, "AIF3TX2"),
+
+ARIZONA_MIXER_WIDGETS(AIF4TX1, "AIF4TX1"),
+ARIZONA_MIXER_WIDGETS(AIF4TX2, "AIF4TX2"),
+
+SND_SOC_DAPM_OUTPUT("HPOUT1L"),
+SND_SOC_DAPM_OUTPUT("HPOUT1R"),
+SND_SOC_DAPM_OUTPUT("HPOUT2L"),
+SND_SOC_DAPM_OUTPUT("HPOUT2R"),
+SND_SOC_DAPM_OUTPUT("HPOUT3L"),
+SND_SOC_DAPM_OUTPUT("HPOUT3R"),
+SND_SOC_DAPM_OUTPUT("SPKDAT1L"),
+SND_SOC_DAPM_OUTPUT("SPKDAT1R"),
+SND_SOC_DAPM_OUTPUT("MICSUPP"),
+};
+
+#define ARIZONA_MIXER_INPUT_ROUTES(name)	\
+	{ name, "Noise Generator", "Noise Generator" }, \
+	{ name, "Tone Generator 1", "Tone Generator 1" }, \
+	{ name, "Tone Generator 2", "Tone Generator 2" }, \
+	{ name, "IN1L", "IN1L PGA" }, \
+	{ name, "IN1R", "IN1R PGA" }, \
+	{ name, "IN2L", "IN2L PGA" }, \
+	{ name, "IN2R", "IN2R PGA" }, \
+	{ name, "IN3L", "IN3L PGA" }, \
+	{ name, "IN3R", "IN3R PGA" }, \
+	{ name, "IN4L", "IN4L PGA" }, \
+	{ name, "IN4R", "IN4R PGA" }, \
+	{ name, "AIF1RX1", "AIF1RX1" }, \
+	{ name, "AIF1RX2", "AIF1RX2" }, \
+	{ name, "AIF1RX3", "AIF1RX3" }, \
+	{ name, "AIF1RX4", "AIF1RX4" }, \
+	{ name, "AIF1RX5", "AIF1RX5" }, \
+	{ name, "AIF1RX6", "AIF1RX6" }, \
+	{ name, "AIF1RX7", "AIF1RX7" }, \
+	{ name, "AIF1RX8", "AIF1RX8" }, \
+	{ name, "AIF2RX1", "AIF2RX1" }, \
+	{ name, "AIF2RX2", "AIF2RX2" }, \
+	{ name, "AIF3RX1", "AIF3RX1" }, \
+	{ name, "AIF3RX2", "AIF3RX2" }, \
+	{ name, "AIF4RX1", "AIF4RX1" }, \
+	{ name, "AIF4RX2", "AIF4RX2" }
+
+static const struct snd_soc_dapm_route moon_dapm_routes[] = {
+	{ "AIF2 Capture", NULL, "DBVDD2" },
+	{ "AIF2 Playback", NULL, "DBVDD2" },
+	{ "AIF3 Capture", NULL, "DBVDD3" },
+	{ "AIF3 Playback", NULL, "DBVDD3" },
+	{ "AIF4 Capture", NULL, "DBVDD3" },
+	{ "AIF4 Playback", NULL, "DBVDD3" },
+
+	{ "OUT1L", NULL, "CPVDD" },
+	{ "OUT1R", NULL, "CPVDD" },
+	{ "OUT2L", NULL, "CPVDD" },
+	{ "OUT2R", NULL, "CPVDD" },
+	{ "OUT3L", NULL, "CPVDD" },
+	{ "OUT3R", NULL, "CPVDD" },
+
+	{ "OUT5L", NULL, "SPKVDDL" },
+	{ "OUT5R", NULL, "SPKVDDR" },
+
+	{ "OUT1L", NULL, "SYSCLK" },
+	{ "OUT1R", NULL, "SYSCLK" },
+	{ "OUT2L", NULL, "SYSCLK" },
+	{ "OUT2R", NULL, "SYSCLK" },
+	{ "OUT3L", NULL, "SYSCLK" },
+	{ "OUT3R", NULL, "SYSCLK" },
+	{ "OUT5L", NULL, "SYSCLK" },
+	{ "OUT5R", NULL, "SYSCLK" },
+
+	{ "IN1L PGA", NULL, "SYSCLK" },
+	{ "IN1R PGA", NULL, "SYSCLK" },
+	{ "IN2L PGA", NULL, "SYSCLK" },
+	{ "IN2R PGA", NULL, "SYSCLK" },
+	{ "IN3L PGA", NULL, "SYSCLK" },
+	{ "IN3R PGA", NULL, "SYSCLK" },
+	{ "IN4L PGA", NULL, "SYSCLK" },
+	{ "IN4R PGA", NULL, "SYSCLK" },
+
+	{ "MICBIAS1", NULL, "MICVDD" },
+	{ "MICBIAS2", NULL, "MICVDD" },
+	{ "MICBIAS1A", NULL, "MICBIAS1" },
+	{ "MICBIAS1B", NULL, "MICBIAS1" },
+	{ "MICBIAS1C", NULL, "MICBIAS1" },
+	{ "MICBIAS1D", NULL, "MICBIAS1" },
+	{ "MICBIAS2A", NULL, "MICBIAS2" },
+	{ "MICBIAS2B", NULL, "MICBIAS2" },
+	{ "MICBIAS2C", NULL, "MICBIAS2" },
+	{ "MICBIAS2D", NULL, "MICBIAS2" },
+
+	{ "Noise Generator", NULL, "SYSCLK" },
+	{ "Tone Generator 1", NULL, "SYSCLK" },
+	{ "Tone Generator 2", NULL, "SYSCLK" },
+	{ "Noise Generator", NULL, "NOISE" },
+	{ "Tone Generator 1", NULL, "TONE" },
+	{ "Tone Generator 2", NULL, "TONE" },
+
+	{ "AIF1 Capture", NULL, "AIF1TX1" },
+	{ "AIF1 Capture", NULL, "AIF1TX2" },
+	{ "AIF1 Capture", NULL, "AIF1TX3" },
+	{ "AIF1 Capture", NULL, "AIF1TX4" },
+	{ "AIF1 Capture", NULL, "AIF1TX5" },
+	{ "AIF1 Capture", NULL, "AIF1TX6" },
+	{ "AIF1 Capture", NULL, "AIF1TX7" },
+	{ "AIF1 Capture", NULL, "AIF1TX8" },
+
+	{ "AIF1RX1", NULL, "AIF1 Playback" },
+	{ "AIF1RX2", NULL, "AIF1 Playback" },
+	{ "AIF1RX3", NULL, "AIF1 Playback" },
+	{ "AIF1RX4", NULL, "AIF1 Playback" },
+	{ "AIF1RX5", NULL, "AIF1 Playback" },
+	{ "AIF1RX6", NULL, "AIF1 Playback" },
+	{ "AIF1RX7", NULL, "AIF1 Playback" },
+	{ "AIF1RX8", NULL, "AIF1 Playback" },
+
+	{ "AIF2 Capture", NULL, "AIF2TX1" },
+	{ "AIF2 Capture", NULL, "AIF2TX2" },
+	{ "AIF2RX1", NULL, "AIF2 Playback" },
+	{ "AIF2RX2", NULL, "AIF2 Playback" },
+
+	{ "AIF3 Capture", NULL, "AIF3TX1" },
+	{ "AIF3 Capture", NULL, "AIF3TX2" },
+	{ "AIF3RX1", NULL, "AIF3 Playback" },
+	{ "AIF3RX2", NULL, "AIF3 Playback" },
+
+	{ "AIF4 Capture", NULL, "AIF4TX1" },
+	{ "AIF4 Capture", NULL, "AIF4TX2" },
+	{ "AIF4RX1", NULL, "AIF4 Playback" },
+	{ "AIF4RX2", NULL, "AIF4 Playback" },
+
+	{ "AIF1 Playback", NULL, "SYSCLK" },
+	{ "AIF2 Playback", NULL, "SYSCLK" },
+	{ "AIF3 Playback", NULL, "SYSCLK" },
+	{ "AIF4 Playback", NULL, "SYSCLK" },
+	{ "AIF1 Capture", NULL, "SYSCLK" },
+	{ "AIF2 Capture", NULL, "SYSCLK" },
+	{ "AIF3 Capture", NULL, "SYSCLK" },
+	{ "AIF4 Capture", NULL, "SYSCLK" },
+
+	{ "IN1L Mux", "A", "IN1AL" },
+	{ "IN1L Mux", "B", "IN1BL" },
+	{ "IN1R Mux", "A", "IN1AR" },
+	{ "IN1R Mux", "B", "IN1BR" },
+	{ "IN2L Mux", "A", "IN2AL" },
+	{ "IN2L Mux", "B", "IN2BL" },
+
+	{ "IN1L PGA", NULL, "IN1L Mux" },
+	{ "IN1R PGA", NULL, "IN1R Mux" },
+	{ "IN2L PGA", NULL, "IN2L Mux" },
+	{ "IN2R PGA", NULL, "IN2R" },
+	{ "IN3L PGA", NULL, "IN3L" },
+	{ "IN3R PGA", NULL, "IN3R" },
+	{ "IN4L PGA", NULL, "IN4L" },
+	{ "IN4R PGA", NULL, "IN4R" },
+
+	ARIZONA_MIXER_ROUTES("OUT1L", "HPOUT1L"),
+	ARIZONA_MIXER_ROUTES("OUT1R", "HPOUT1R"),
+	ARIZONA_MIXER_ROUTES("OUT2L", "HPOUT2L"),
+	ARIZONA_MIXER_ROUTES("OUT2R", "HPOUT2R"),
+	ARIZONA_MIXER_ROUTES("OUT3L", "HPOUT3L"),
+	ARIZONA_MIXER_ROUTES("OUT3R", "HPOUT3R"),
+	ARIZONA_MIXER_ROUTES("OUT5L", "SPKDAT1L"),
+	ARIZONA_MIXER_ROUTES("OUT5R", "SPKDAT1R"),
+
+	ARIZONA_MIXER_ROUTES("AIF1TX1", "AIF1TX1"),
+	ARIZONA_MIXER_ROUTES("AIF1TX2", "AIF1TX2"),
+	ARIZONA_MIXER_ROUTES("AIF1TX3", "AIF1TX3"),
+	ARIZONA_MIXER_ROUTES("AIF1TX4", "AIF1TX4"),
+	ARIZONA_MIXER_ROUTES("AIF1TX5", "AIF1TX5"),
+	ARIZONA_MIXER_ROUTES("AIF1TX6", "AIF1TX6"),
+	ARIZONA_MIXER_ROUTES("AIF1TX7", "AIF1TX7"),
+	ARIZONA_MIXER_ROUTES("AIF1TX8", "AIF1TX8"),
+
+	ARIZONA_MIXER_ROUTES("AIF2TX1", "AIF2TX1"),
+	ARIZONA_MIXER_ROUTES("AIF2TX2", "AIF2TX2"),
+
+	ARIZONA_MIXER_ROUTES("AIF3TX1", "AIF3TX1"),
+	ARIZONA_MIXER_ROUTES("AIF3TX2", "AIF3TX2"),
+
+	ARIZONA_MIXER_ROUTES("AIF4TX1", "AIF4TX1"),
+	ARIZONA_MIXER_ROUTES("AIF4TX2", "AIF4TX2"),
+
+	{ "HPOUT1L", NULL, "OUT1L" },
+	{ "HPOUT1R", NULL, "OUT1R" },
+	{ "HPOUT2L", NULL, "OUT2L" },
+	{ "HPOUT2R", NULL, "OUT2R" },
+	{ "HPOUT3L", NULL, "OUT3L" },
+	{ "HPOUT3R", NULL, "OUT3R" },
+	{ "SPKDAT1L", NULL, "OUT5L" },
+	{ "SPKDAT1R", NULL, "OUT5R" },
+
+	{ "MICSUPP", NULL, "SYSCLK" },
+};
+
+static int moon_set_fll(struct snd_soc_component *component, int fll_id,
+			int source, unsigned int fref, unsigned int fout)
 {
-	return -EOPNOTSUPP;
+	struct moon_priv *moon = snd_soc_component_get_drvdata(component);
+
+	switch (fll_id) {
+	case MOON_FLL1:
+		return arizona_set_fll(&moon->fll[0], source, fref, fout);
+	case MOON_FLL2:
+		return arizona_set_fll(&moon->fll[1], source, fref, fout);
+	case MOON_FLL1_REFCLK:
+		return arizona_set_fll_refclk(&moon->fll[0], source, fref, fout);
+	case MOON_FLL2_REFCLK:
+		return arizona_set_fll_refclk(&moon->fll[1], source, fref, fout);
+	default:
+		return -EINVAL;
+	}
 }
 
-static const struct snd_soc_dai_ops moon_dai_ops = {
-	.startup = moon_dai_startup,
-};
-
-#define MOON_DAI(_id, _name, _channels) { \
-	.id = _id, \
-	.name = _name, \
-	.ops = &moon_dai_ops, \
-	.playback = { \
-		.stream_name = _name " Playback", \
-		.channels_min = 1, \
-		.channels_max = _channels, \
-		.rates = MOON_RATES, \
-		.formats = MOON_FORMATS, \
-	}, \
-	.capture = { \
-		.stream_name = _name " Capture", \
-		.channels_min = 1, \
-		.channels_max = _channels, \
-		.rates = MOON_RATES, \
-		.formats = MOON_FORMATS, \
-	}, \
+#define MOON_DAI(_id, _name, _base, _channels) {			\
+	.name = _name,							\
+	.id = _id,							\
+	.base = _base,							\
+	.playback = {							\
+		.stream_name = "AIF" #_id " Playback",			\
+		.channels_min = 1,					\
+		.channels_max = _channels,				\
+		.rates = MOON_RATES,					\
+		.formats = MOON_FORMATS,				\
+	},								\
+	.capture = {							\
+		.stream_name = "AIF" #_id " Capture",			\
+		.channels_min = 1,					\
+		.channels_max = _channels,				\
+		.rates = MOON_RATES,					\
+		.formats = MOON_FORMATS,				\
+	},								\
+	.ops = &arizona_dai_ops,					\
+	.symmetric_rate = 1,						\
 }
 
-static struct snd_soc_dai_driver moon_dais[] = {
-	MOON_DAI(1, "moon-aif1", 8),
-	MOON_DAI(2, "moon-aif2", 8),
-	MOON_DAI(3, "moon-aif3", 2),
-	MOON_DAI(4, "moon-aif4", 2),
+static struct snd_soc_dai_driver moon_dai[] = {
+	MOON_DAI(1, "moon-aif1", ARIZONA_AIF1_BCLK_CTRL, 8),
+	MOON_DAI(2, "moon-aif2", ARIZONA_AIF2_BCLK_CTRL, 2),
+	MOON_DAI(3, "moon-aif3", ARIZONA_AIF3_BCLK_CTRL, 2),
+	MOON_DAI(4, "moon-aif4", ARIZONA_AIF4_BCLK_CTRL, 2),
 };
 
-static const struct snd_soc_component_driver moon_component = {
-	.name = "moon-codec",
-};
-
-static int moon_codec_probe(struct platform_device *pdev)
+static int moon_component_probe(struct snd_soc_component *component)
 {
-	return devm_snd_soc_register_component(&pdev->dev, &moon_component,
-					       moon_dais, ARRAY_SIZE(moon_dais));
+	struct moon_priv *priv = snd_soc_component_get_drvdata(component);
+	struct arizona *arizona = priv->core.arizona;
+
+	snd_soc_component_init_regmap(component, arizona->regmap);
+
+	arizona_init_gpio(component);
+	arizona_init_mono(component);
+
+	/* SAMPLE_RATE_1 is what the AIFs default to before any hw_params */
+	regmap_update_bits(arizona->regmap, ARIZONA_SAMPLE_RATE_1,
+			   ARIZONA_SAMPLE_RATE_1_MASK, 0x03);
+
+	return 0;
 }
 
-static const struct platform_device_id moon_codec_ids[] = {
-	{ "moon-codec", 0 },
-	{ }
+static const struct snd_soc_component_driver soc_component_dev_moon = {
+	.probe			= moon_component_probe,
+	.set_sysclk		= arizona_set_sysclk,
+	.set_pll		= moon_set_fll,
+	.name			= DRV_NAME,
+	.controls		= moon_snd_controls,
+	.num_controls		= ARRAY_SIZE(moon_snd_controls),
+	.dapm_widgets		= moon_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(moon_dapm_widgets),
+	.dapm_routes		= moon_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(moon_dapm_routes),
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
 };
-MODULE_DEVICE_TABLE(platform, moon_codec_ids);
+
+static int moon_probe(struct platform_device *pdev)
+{
+	struct arizona *arizona = dev_get_drvdata(pdev->dev.parent);
+	struct moon_priv *moon;
+	int i, ret;
+
+	BUILD_BUG_ON(ARRAY_SIZE(moon_dai) > ARIZONA_MAX_DAI);
+
+	moon = devm_kzalloc(&pdev->dev, sizeof(*moon), GFP_KERNEL);
+	if (!moon)
+		return -ENOMEM;
+
+	if (IS_ENABLED(CONFIG_OF)) {
+		if (!dev_get_platdata(arizona->dev)) {
+			ret = arizona_of_get_audio_pdata(arizona);
+			if (ret < 0)
+				return ret;
+		}
+	}
+
+	platform_set_drvdata(pdev, moon);
+
+	/* let DAPM find the regulator supplies on the parent SPI node */
+	pdev->dev.of_node = arizona->dev->of_node;
+
+	moon->core.arizona = arizona;
+	moon->core.num_inputs = 8;
+
+	for (i = 0; i < ARRAY_SIZE(moon->fll); i++)
+		moon->fll[i].vco_mult = 3;
+
+	arizona_init_fll(arizona, 1, ARIZONA_FLL1_CONTROL_1 - 1,
+			 ARIZONA_IRQ_FLL1_LOCK, ARIZONA_IRQ_FLL1_CLOCK_OK,
+			 &moon->fll[0]);
+	arizona_init_fll(arizona, 2, ARIZONA_FLL2_CONTROL_1 - 1,
+			 ARIZONA_IRQ_FLL2_LOCK, ARIZONA_IRQ_FLL2_CLOCK_OK,
+			 &moon->fll[1]);
+
+	for (i = 0; i < ARRAY_SIZE(moon_dai); i++)
+		arizona_init_dai(&moon->core, i);
+
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_idle(&pdev->dev);
+
+	ret = devm_snd_soc_register_component(&pdev->dev,
+					      &soc_component_dev_moon,
+					      moon_dai, ARRAY_SIZE(moon_dai));
+	if (ret < 0) {
+		dev_err(&pdev->dev, "failed to register component: %d\n", ret);
+		goto err_pm;
+	}
+
+	return 0;
+
+err_pm:
+	pm_runtime_disable(&pdev->dev);
+	return ret;
+}
+
+static void moon_remove(struct platform_device *pdev)
+{
+	pm_runtime_disable(&pdev->dev);
+}
 
 static struct platform_driver moon_codec_driver = {
-	.probe = moon_codec_probe,
-	.id_table = moon_codec_ids,
 	.driver = {
-		.name = "moon-codec",
+		.name = DRV_NAME,
 	},
+	.probe = moon_probe,
+	.remove = moon_remove,
 };
+
 module_platform_driver(moon_codec_driver);
 
-MODULE_DESCRIPTION("Minimal CS47L90/CS47L91 Moon ASoC component");
-MODULE_AUTHOR("Nous Research");
-MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("ASoC CS47L90/CS47L91 driver");
+MODULE_LICENSE("GPL v2");
+MODULE_ALIAS("platform:" DRV_NAME);

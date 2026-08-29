@@ -28,6 +28,16 @@
 #define MOON_FLLAO_CONTROL_11                    0x1DD
 #define ARIZONA_MIC_BIAS_CTRL_5                  0x21C
 #define ARIZONA_MIC_BIAS_CTRL_6                  0x21E
+
+/* ARIZONA_MIC_BIAS_CTRL_5 / _6 - four independent bias outputs per generator */
+#define ARIZONA_MICB1A_ENA_SHIFT                      0
+#define ARIZONA_MICB1B_ENA_SHIFT                      4
+#define ARIZONA_MICB1C_ENA_SHIFT                      8
+#define ARIZONA_MICB1D_ENA_SHIFT                     12
+#define ARIZONA_MICB2A_ENA_SHIFT                      0
+#define ARIZONA_MICB2B_ENA_SHIFT                      4
+#define ARIZONA_MICB2C_ENA_SHIFT                      8
+#define ARIZONA_MICB2D_ENA_SHIFT                     12
 #define ARIZONA_HP_CTRL_2L                       0x227
 #define ARIZONA_HP_CTRL_2R                       0x228
 #define ARIZONA_HP_CTRL_3L                       0x229
@@ -86,6 +96,12 @@
 #define ARIZONA_AIF4_FRAME_CTRL_12               0x5B2
 #define ARIZONA_AIF4_TX_ENABLES                  0x5B9
 #define ARIZONA_AIF4_RX_ENABLES                  0x5BA
+
+/* ARIZONA_AIF4_TX_ENABLES / _RX_ENABLES */
+#define ARIZONA_AIF4TX1_ENA_SHIFT                     0
+#define ARIZONA_AIF4TX2_ENA_SHIFT                     1
+#define ARIZONA_AIF4RX1_ENA_SHIFT                     0
+#define ARIZONA_AIF4RX2_ENA_SHIFT                     1
 #define ARIZONA_AIF2TX7MIX_INPUT_1_SOURCE        0x770
 #define ARIZONA_AIF2TX7MIX_INPUT_1_VOLUME        0x771
 #define ARIZONA_AIF2TX7MIX_INPUT_2_SOURCE        0x772
