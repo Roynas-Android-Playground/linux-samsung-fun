@@ -1694,12 +1694,12 @@
 		decon8890_f: decon@13960000 {
 			compatible = "samsung,exynos8-decon_driver";
 			reg = <0x13960000 0x10000>;
+			/* index order is the driver's ABI - see decon_f_register_irq() */
 			interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 181 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 184 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 185 IRQ_TYPE_LEVEL_HIGH>;
+				     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "fifo", "vstatus", "framedone", "extra";
 			power-domains = <&pd_disp0>;
 
 			clocks = <&cmu_disp0 CLK_FOUT_DISP_PLL>,
@@ -1736,6 +1736,12 @@
 				/* NWEINT_GPB0_PEND(GPB0_0), NWEINT_GPB0_MASK(GPB0_0) */
 				reg = <0x136d0a1c 0x4>, <0x136d091c 0x4>;
 			};
+		};
+
+		/* SYSREG_DISP0: DSIM<->DISPIF path select and TE sync mode */
+		disp_ss: syscon@13970000 {
+			compatible = "samsung,exynos8-disp_ss";
+			reg = <0x13970000 0x100>;
 		};
 
 		vpp8890_0: vpp@13951000 {
