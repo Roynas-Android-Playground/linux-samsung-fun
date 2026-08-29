@@ -13,10 +13,36 @@
 #include <linux/mfd/max77693-common.h>
 #include <linux/mfd/max77843-private.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/power_supply.h>
 #include <linux/workqueue.h>
 
 #define DELAY_MS_DEFAULT		15000	/* unit: millisecond */
+
+/*
+ * Adaptive Fast Charging. The MUIC has a hardware AFC engine: the driver
+ * drives D+ to 0.6V to open the exchange, writes the requested voltage and
+ * current to HVTXBYTE, fires an Mping, and reads back what the charger is
+ * willing to give in HVRXBYTE. If the charger NAKs the ping it is not an AFC
+ * charger, and we retry it as a Qualcomm one, which needs no handshake at all
+ * - just a fixed D+/D- bias.
+ */
+#define MAX77843_AFC_TX_9V_1_65A	0x46
+#define MAX77843_AFC_TX_VOLT_MASK	GENMASK(7, 4)
+#define MAX77843_AFC_MAX_PING		3
+#define MAX77843_AFC_5V_UV		5000000
+#define MAX77843_AFC_9V_UV		9000000
+/* QC has no acknowledgement, so the result has to be sampled */
+#define MAX77843_AFC_QC_SETTLE_MS	300
+
+enum max77843_muic_afc_state {
+	MAX77843_AFC_IDLE = 0,
+	MAX77843_AFC_PREPARE,
+	MAX77843_AFC_PING,
+	MAX77843_AFC_QC,
+	MAX77843_AFC_DONE,
+};
 
 enum max77843_muic_status {
 	MAX77843_MUIC_STATUS1 = 0,
@@ -40,8 +66,21 @@ struct max77843_muic_info {
 	int prev_chg_type;
 	int prev_gnd_type;
 
+	struct power_supply *psy;
+	struct delayed_work afc_qc_work;
+	enum max77843_muic_afc_state afc_state;
+	unsigned int afc_ping_count;
+	u8 afc_tx_byte;
+	int afc_voltage_uv;
+	bool afc_online;
+
 	bool irq_adc;
 	bool irq_chg;
+	bool irq_hv;
+	bool irq_vdnmon;
+	bool irq_mrxtrf;
+	bool irq_mpnack;
+	bool irq_vbadc;
 };
 
 enum max77843_muic_cable_group {
@@ -528,6 +567,216 @@ static int max77843_muic_adc_handler(struct max77843_muic_info *info)
 	return 0;
 }
 
+static void max77843_muic_afc_vbadc(struct max77843_muic_info *info);
+
+static void max77843_muic_afc_set_voltage(struct max77843_muic_info *info,
+					 int uv)
+{
+	if (info->afc_voltage_uv == uv)
+		return;
+
+	info->afc_voltage_uv = uv;
+	if (info->psy)
+		power_supply_changed(info->psy);
+}
+
+/* Park the HV engine and hand the port back to plain 5V USB. */
+static void max77843_muic_afc_reset(struct max77843_muic_info *info)
+{
+	struct regmap *regmap = info->max77843->regmap_muic;
+
+	cancel_delayed_work(&info->afc_qc_work);
+
+	regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL1, 0);
+	regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL2, 0);
+
+	info->afc_state = MAX77843_AFC_IDLE;
+	info->afc_ping_count = 0;
+	max77843_muic_afc_set_voltage(info,
+				      info->afc_online ? MAX77843_AFC_5V_UV : 0);
+}
+
+/*
+ * Bias D+ to 0.6V and enable the D+/D- comparators. An AFC charger answers
+ * by pulling D- down, which raises VDNMON.
+ */
+static void max77843_muic_afc_start(struct max77843_muic_info *info)
+{
+	struct regmap *regmap = info->max77843->regmap_muic;
+
+	info->afc_state = MAX77843_AFC_PREPARE;
+	info->afc_ping_count = 0;
+
+	regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL2, 0);
+	regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL1,
+		     MAX77843_MUIC_HVCONTROL1_DPVD_0_6V |
+		     MAX77843_MUIC_HVCONTROL1_DPDNVDEN_MASK |
+		     MAX77843_MUIC_HVCONTROL1_VBUSADCEN_MASK);
+}
+
+static void max77843_muic_afc_send_ping(struct max77843_muic_info *info,
+					bool repeat)
+{
+	struct regmap *regmap = info->max77843->regmap_muic;
+	unsigned int hvcontrol2;
+
+	hvcontrol2 = MAX77843_MUIC_HVCONTROL2_HVDIGEN_MASK |
+		     MAX77843_MUIC_HVCONTROL2_DP06EN_MASK |
+		     MAX77843_MUIC_HVCONTROL2_MPING_MASK |
+		     MAX77843_MUIC_HVCONTROL2_MTXEN_MASK;
+	if (repeat)
+		hvcontrol2 |= MAX77843_MUIC_HVCONTROL2_MPNGENB_MASK;
+
+	if (!repeat) {
+		/* stop biasing D+/D- before handing the lines to the engine */
+		regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL2,
+			     MAX77843_MUIC_HVCONTROL2_DP06EN_MASK);
+		regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL1,
+			     MAX77843_MUIC_HVCONTROL1_VBUSADCEN_MASK);
+		regmap_write(regmap, MAX77843_MUIC_REG_HVTXBYTE,
+			     info->afc_tx_byte);
+	}
+
+	info->afc_ping_count++;
+	info->afc_state = MAX77843_AFC_PING;
+	regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL2, hvcontrol2);
+}
+
+/*
+ * The charger echoes the capabilities it can actually provide. If none of
+ * them matches what we asked for, downgrade the request to the best offer
+ * carrying our target voltage.
+ */
+static void max77843_muic_afc_handshake(struct max77843_muic_info *info)
+{
+	struct regmap *regmap = info->max77843->regmap_muic;
+	unsigned int tx, rx;
+	u8 best = 0;
+	int i, ret;
+
+	regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL2,
+		     MAX77843_MUIC_HVCONTROL2_HVDIGEN_MASK |
+		     MAX77843_MUIC_HVCONTROL2_DP06EN_MASK |
+		     MAX77843_MUIC_HVCONTROL2_MTXEN_MASK);
+
+	ret = regmap_read(regmap, MAX77843_MUIC_REG_HVTXBYTE, &tx);
+	if (ret)
+		return;
+
+	for (i = 0; i < MAX77843_MUIC_HVRXBYTE_MAX; i++) {
+		ret = regmap_read(regmap, MAX77843_MUIC_REG_HVRXBYTE1 + i, &rx);
+		if (ret || !rx)
+			break;
+
+		if (i == 0 && rx == tx)
+			return;
+
+		if ((rx & MAX77843_AFC_TX_VOLT_MASK) ==
+		    (info->afc_tx_byte & MAX77843_AFC_TX_VOLT_MASK) && rx > best)
+			best = rx;
+	}
+
+	if (best)
+		regmap_write(regmap, MAX77843_MUIC_REG_HVTXBYTE, best);
+}
+
+/* Qualcomm chargers need no handshake, just a fixed D+/D- bias for 9V. */
+static void max77843_muic_afc_qc(struct max77843_muic_info *info)
+{
+	struct regmap *regmap = info->max77843->regmap_muic;
+
+	info->afc_state = MAX77843_AFC_QC;
+
+	regmap_write(regmap, MAX77843_MUIC_REG_HVCONTROL1,
+		     MAX77843_MUIC_HVCONTROL1_DPDNVDEN_MASK |
+		     (0x2 << MAX77843_MUIC_HVCONTROL1_DNVD_SHIFT) |
+		     (0x3 << MAX77843_MUIC_HVCONTROL1_DPVD_SHIFT) |
+		     MAX77843_MUIC_HVCONTROL1_VBUSADCEN_MASK);
+
+	schedule_delayed_work(&info->afc_qc_work,
+			      msecs_to_jiffies(MAX77843_AFC_QC_SETTLE_MS));
+}
+
+static void max77843_muic_afc_qc_work(struct work_struct *work)
+{
+	struct max77843_muic_info *info = container_of(to_delayed_work(work),
+					struct max77843_muic_info, afc_qc_work);
+	int ret;
+
+	mutex_lock(&info->mutex);
+
+	if (info->afc_state != MAX77843_AFC_QC)
+		goto out;
+
+	ret = regmap_bulk_read(info->max77843->regmap_muic,
+			       MAX77843_MUIC_REG_STATUS1, info->status,
+			       MAX77843_MUIC_STATUS_NUM);
+	if (ret) {
+		dev_err(info->dev, "Cannot read STATUS registers\n");
+		goto out;
+	}
+
+	max77843_muic_afc_vbadc(info);
+out:
+	mutex_unlock(&info->mutex);
+}
+
+static void max77843_muic_afc_vbadc(struct max77843_muic_info *info)
+{
+	unsigned int vbadc;
+
+	vbadc = (info->status[MAX77843_MUIC_STATUS3] &
+		 MAX77843_MUIC_STATUS3_VBADC_MASK) >>
+		MAX77843_MUIC_STATUS3_VBADC_SHIFT;
+
+	switch (vbadc) {
+	case MAX77843_MUIC_VBADC_8V_9V:
+	case MAX77843_MUIC_VBADC_9V_10V:
+		info->afc_state = MAX77843_AFC_DONE;
+		max77843_muic_afc_set_voltage(info, MAX77843_AFC_9V_UV);
+		dev_info(info->dev, "AFC/QC negotiated 9V\n");
+		break;
+	case MAX77843_MUIC_VBADC_4V_5V:
+	case MAX77843_MUIC_VBADC_5V_6V:
+		max77843_muic_afc_set_voltage(info, MAX77843_AFC_5V_UV);
+		break;
+	default:
+		dev_dbg(info->dev, "unexpected VBADC 0x%x\n", vbadc);
+		break;
+	}
+}
+
+static void max77843_muic_afc_handler(struct max77843_muic_info *info)
+{
+	if (info->afc_state == MAX77843_AFC_IDLE)
+		return;
+
+	if (info->irq_vdnmon && info->afc_state == MAX77843_AFC_PREPARE) {
+		if (info->status[MAX77843_MUIC_STATUS3] &
+		    MAX77843_MUIC_STATUS3_VDNMON_MASK)
+			max77843_muic_afc_send_ping(info, false);
+		else
+			dev_dbg(info->dev, "VDNMON high, not an AFC charger\n");
+	}
+
+	if (info->irq_mrxtrf && info->afc_state == MAX77843_AFC_PING)
+		max77843_muic_afc_handshake(info);
+
+	if (info->irq_mpnack && info->afc_state == MAX77843_AFC_PING) {
+		if (info->afc_ping_count < MAX77843_AFC_MAX_PING) {
+			max77843_muic_afc_send_ping(info, true);
+		} else {
+			dev_info(info->dev,
+				 "no AFC answer after %u pings, trying QC\n",
+				 info->afc_ping_count);
+			max77843_muic_afc_qc(info);
+		}
+	}
+
+	if (info->irq_vbadc)
+		max77843_muic_afc_vbadc(info);
+}
+
 static int max77843_muic_chg_handler(struct max77843_muic_info *info)
 {
 	int ret, chg_type, gnd_type;
@@ -572,6 +821,14 @@ static int max77843_muic_chg_handler(struct max77843_muic_info *info)
 
 		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_DCP,
 					attached);
+
+		info->afc_online = attached;
+		if (attached) {
+			max77843_muic_afc_set_voltage(info, MAX77843_AFC_5V_UV);
+			max77843_muic_afc_start(info);
+		} else {
+			max77843_muic_afc_reset(info);
+		}
 		break;
 	case MAX77843_MUIC_CHG_SPECIAL_500MA:
 		ret = max77843_muic_set_path(info,
@@ -655,6 +912,15 @@ static void max77843_muic_irq_work(struct work_struct *work)
 		info->irq_chg = false;
 	}
 
+	if (info->irq_hv) {
+		max77843_muic_afc_handler(info);
+		info->irq_hv = false;
+		info->irq_vdnmon = false;
+		info->irq_mrxtrf = false;
+		info->irq_mpnack = false;
+		info->irq_vbadc = false;
+	}
+
 	mutex_unlock(&info->mutex);
 }
 
@@ -681,11 +947,23 @@ static irqreturn_t max77843_muic_irq_handler(int irq, void *data)
 		info->irq_chg = true;
 		break;
 	case MAX77843_MUIC_IRQ_INT3_VBADC:
+		info->irq_vbadc = true;
+		info->irq_hv = true;
+		break;
 	case MAX77843_MUIC_IRQ_INT3_VDNMON:
-	case MAX77843_MUIC_IRQ_INT3_DNRES:
+		info->irq_vdnmon = true;
+		info->irq_hv = true;
+		break;
 	case MAX77843_MUIC_IRQ_INT3_MPNACK:
-	case MAX77843_MUIC_IRQ_INT3_MRXBUFOW:
+		info->irq_mpnack = true;
+		info->irq_hv = true;
+		break;
 	case MAX77843_MUIC_IRQ_INT3_MRXTRF:
+		info->irq_mrxtrf = true;
+		info->irq_hv = true;
+		break;
+	case MAX77843_MUIC_IRQ_INT3_DNRES:
+	case MAX77843_MUIC_IRQ_INT3_MRXBUFOW:
 	case MAX77843_MUIC_IRQ_INT3_MRXPERR:
 	case MAX77843_MUIC_IRQ_INT3_MRXRDY:
 		break;
@@ -806,10 +1084,44 @@ err_muic_i2c:
 	return ret;
 }
 
+static enum power_supply_property max77843_muic_psy_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+};
+
+static int max77843_muic_psy_get_property(struct power_supply *psy,
+					  enum power_supply_property psp,
+					  union power_supply_propval *val)
+{
+	struct max77843_muic_info *info = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		val->intval = info->afc_online;
+		break;
+	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
+		val->intval = info->afc_voltage_uv;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static const struct power_supply_desc max77843_muic_psy_desc = {
+	.name		= "max77843-muic",
+	.type		= POWER_SUPPLY_TYPE_USB,
+	.properties	= max77843_muic_psy_props,
+	.num_properties	= ARRAY_SIZE(max77843_muic_psy_props),
+	.get_property	= max77843_muic_psy_get_property,
+};
+
 static int max77843_muic_probe(struct platform_device *pdev)
 {
 	struct max77693_dev *max77843 = dev_get_drvdata(pdev->dev.parent);
 	struct max77843_muic_info *info;
+	struct power_supply_config psy_cfg = {};
 	unsigned int id;
 	int cable_type;
 	bool attached;
@@ -839,6 +1151,10 @@ static int max77843_muic_probe(struct platform_device *pdev)
 			MAX77843_MUIC_CONTROL4_FCTAUTO_MASK,
 			CONTROL4_AUTO_DISABLE);
 
+	info->afc_tx_byte = MAX77843_AFC_TX_9V_1_65A;
+	of_property_read_u8(pdev->dev.of_node, "maxim,afc-request-byte",
+			    &info->afc_tx_byte);
+
 	/* Initialize extcon device */
 	info->edev = devm_extcon_dev_allocate(&pdev->dev,
 			max77843_extcon_cable);
@@ -853,6 +1169,20 @@ static int max77843_muic_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Failed to register extcon device\n");
 		goto err_muic_irq;
 	}
+
+	psy_cfg.drv_data = info;
+	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
+	info->psy = devm_power_supply_register(&pdev->dev,
+					       &max77843_muic_psy_desc,
+					       &psy_cfg);
+	if (IS_ERR(info->psy)) {
+		ret = dev_err_probe(&pdev->dev, PTR_ERR(info->psy),
+				    "Failed to register power supply\n");
+		goto err_muic_irq;
+	}
+
+	/* Leave the HV engine parked until a dedicated charger shows up */
+	max77843_muic_afc_reset(info);
 
 	/* Set ADC debounce time */
 	max77843_muic_set_debounce_time(info, MAX77843_DEBOUNCE_TIME_25MS);
@@ -881,6 +1211,7 @@ static int max77843_muic_probe(struct platform_device *pdev)
 
 	/* Support virtual irq domain for max77843 MUIC device */
 	INIT_WORK(&info->irq_work, max77843_muic_irq_work);
+	INIT_DELAYED_WORK(&info->afc_qc_work, max77843_muic_afc_qc_work);
 
 	/* Clear IRQ bits before request IRQs */
 	ret = regmap_bulk_read(max77843->regmap_muic,
@@ -933,6 +1264,7 @@ static void max77843_muic_remove(struct platform_device *pdev)
 	struct max77843_muic_info *info = platform_get_drvdata(pdev);
 	struct max77693_dev *max77843 = info->max77843;
 
+	cancel_delayed_work_sync(&info->afc_qc_work);
 	cancel_work_sync(&info->irq_work);
 	regmap_del_irq_chip(max77843->irq, max77843->irq_data_muic);
 	i2c_unregister_device(max77843->i2c_muic);

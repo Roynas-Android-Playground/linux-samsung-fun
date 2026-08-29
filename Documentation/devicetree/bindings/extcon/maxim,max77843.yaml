@@ -25,6 +25,15 @@ properties:
     $ref: /schemas/connector/usb-connector.yaml#
     unevaluatedProperties: false
 
+  maxim,afc-request-byte:
+    $ref: /schemas/types.yaml#/definitions/uint8
+    default: 0x46
+    description: |
+      The capability the MUIC asks an Adaptive Fast Charging charger for.
+      Bits 7-4 select the voltage as 5V plus one volt per step, bits 3-0 the
+      current as 0.75A plus 0.15A per step, so the default 0x46 requests
+      9V at 1.65A. Chargers that cannot meet the request negotiate downwards.
+
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
     description:
