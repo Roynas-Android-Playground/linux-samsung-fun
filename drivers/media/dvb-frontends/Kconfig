@@ -541,6 +541,7 @@ config DVB_ZL10353
 	  A DVB-T tuner module. Say Y when you want to support this frontend.
 
 source "drivers/media/dvb-frontends/cxd2880/Kconfig"
+source "drivers/media/dvb-frontends/fc8080/Kconfig"
 
 comment "DVB-C (cable) frontends"
 	depends on DVB_CORE

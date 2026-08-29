@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0
+
+config DVB_FC8080
+	tristate "FCI FC8080 T-DMB tuner + demodulator"
+	depends on DVB_CORE
+	default m if !MEDIA_SUBDRV_AUTOSELECT
+	help
+	  Say Y when you want to support this frontend. The chip is a
+	  T-DMB/DAB tuner and baseband found on Korean Galaxy S7 variants.
