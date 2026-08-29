@@ -1015,6 +1015,16 @@ config DRM_PANEL_SAMSUNG_S6E3HA2
 	depends on BACKLIGHT_CLASS_DEVICE
 	select VIDEOMODE_HELPERS
 
+config DRM_PANEL_SAMSUNG_S6E3HA3
+	tristate "Samsung S6E3HA3 DSI command mode panel"
+	depends on GPIOLIB
+	depends on OF
+	depends on DRM_MIPI_DSI
+	select DRM_DISPLAY_HELPER
+	help
+	  Say Y here if you want to enable support for the Samsung S6E3HA3
+	  1440x2560 command-mode AMOLED panel, as found on the Galaxy S7.
+
 config DRM_PANEL_SAMSUNG_S6E3HA8
 	tristate "Samsung S6E3HA8 DSI video mode panel"
 	depends on GPIOLIB

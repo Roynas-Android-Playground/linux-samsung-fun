@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/samsung,s6e3ha3.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung S6E3HA3 1440x2560 command-mode AMOLED panel
+
+maintainers:
+  - Inki Dae <inki.dae@samsung.com>
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: samsung,s6e3ha3
+
+  reg:
+    maxItems: 1
+
+  vdd3-supply:
+    description: 3.0V DDI supply
+
+  vci-supply:
+    description: 1.8V DDI supply
+
+  reset-gpios: true
+  enable-gpios: true
+  port: true
+
+required:
+  - compatible
+  - reg
+  - vdd3-supply
+  - vci-supply
+  - reset-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    dsi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        panel@0 {
+            compatible = "samsung,s6e3ha3";
+            reg = <0>;
+            vdd3-supply = <&ldo3>;
+            vci-supply = <&ldo1>;
+            reset-gpios = <&gpi2 0 GPIO_ACTIVE_LOW>;
+            enable-gpios = <&gpd0 4 GPIO_ACTIVE_HIGH>;
+
+            port {
+                panel_in_dsim: endpoint {
+                    remote-endpoint = <&dsim_out_panel>;
+                };
+            };
+        };
+    };
