@@ -26,36 +26,12 @@
 		spi0 = &spi_0;
 		serial0 = &serial_4; // UART
 		serial1 = &serial_1; // Bluetooth
-		/* decon8890/dsim8890/vpp8890, see the &decon8890_f override below */
-		decon0 = &decon8890_f;
-		dsim0 = &dsim8890_0;
-		mdev0 = &mdev0;
-		vpp0 = &vpp8890_0;
-		vpp1 = &vpp8890_1;
-		vpp2 = &vpp8890_2;
-		vpp3 = &vpp8890_3;
 	};
 
 	chosen {
 		#address-cells = <2>;
 		#size-cells = <1>;
 		ranges;
-
-		framebuffer@e2a00000 {
-			compatible = "simple-framebuffer";
-			status = "disabled";
-			reg = <0x0 0xe2a00000 (1440 * 2560 * 4)>;
-			display = <&decon_f>;
-
-			width = <1440>;
-			height = <2560>;
-			stride = <(1440 * 4)>;
-			format = "a8r8g8b8";
-
-			/* these are required until there's a display driver */
-			vci-supply = <&max77838_ldo1>;
-			vdd3-supply = <&max77838_ldo3>;
-		};
 	};
 
 	gpio-keys {
@@ -291,16 +267,11 @@
 			/*
 			 * of_iommu_get_resv_regions() needs this on the
 			 * reserved-memory node itself, not just memory-region
-			 * on the consumer - memory-region alone only tells it
-			 * which reserved-memory nodes to look at. Cells here
-			 * follow &soc's own #address-cells/#size-cells (1/1)
-			 * since that's each vpp node's DMA parent, translated
-			 * 1:1 (no dma-ranges on &soc - see of_translate_one()).
+			 * on the consumer. Cells follow &soc's own
+			 * #address-cells/#size-cells (1/1) since that is the
+			 * VPP's DMA parent, translated 1:1 (no dma-ranges).
 			 */
-			iommu-addresses = <&vpp8890_0 0xe2a00000 0xe10000>,
-					   <&vpp8890_1 0xe2a00000 0xe10000>,
-					   <&vpp8890_2 0xe2a00000 0xe10000>,
-					   <&vpp8890_3 0xe2a00000 0xe10000>;
+			iommu-addresses = <&vpp_drm 0xe2a00000 0xe10000>;
 		};
 	};
 
@@ -357,37 +328,6 @@
 	status = "okay";
 };
 
-/ {
-	/*
-	 * decon8890's dsim8890_0 lcd_info phandle target - real timing
-	 * values from vendor's exynos8890-display-lcd.dtsi s6e3ha3 node.
-	 */
-	s6e3ha3_wqhd8890: s6e3ha3-wqhd {
-		mode = <2>;			/* MIPI command mode */
-		resolution = <1440 2560>;
-		resolution_fhd = <1080 1920>;
-		resolution_hd = <720 1280>;
-		size = <63 113>;		/* mm */
-		timing,refresh = <60>;
-		timing,h-porch = <2 2 2>;	/* hbp hfp hsa */
-		timing,v-porch = <15 3 1>;	/* vbp vfp vsa */
-		timing,dsi-hs-clk = <897>;
-		timing,pms = <1 69 1>;		/* p m s */
-		timing,dsi-escape-clk = <20>;
-		mic_en = <1>;
-		mic_ratio = <0>;
-		mic_ver = <2>;
-		type_of_ddi = <0>;
-		dsc_en = <0>;
-		dsc_cnt = <0>;
-		dsc_slice_num = <0>;
-	};
-};
-
-&mdev0 {
-	status = "okay";
-};
-
 &mipi_phy_dsim8890 {
 	status = "okay";
 };
@@ -404,47 +344,48 @@
 	status = "okay";
 };
 
-&dsim8890_0 {
-	lcd_info = <&s6e3ha3_wqhd8890>;
-	/* lcd reset, lcd power (LDO enable) */
-	gpios = <&gpi2 0 0x1>, <&gpd0 4 0x1>;
-	disp_type_gpio = <&gpi2 2 0x0>;
-	regulator_30V = "vdd_3p0_ddi";
-	regulator_18V = "vdd_1p8_ddi";
-	status = "okay";
-};
-
-&decon8890_f {
+&decon_drm {
 	status = "okay";
 };
 
 /*
- * All four vpp8890_N nodes get memory-region = <&cont_splash_mem> so the
- * IOMMU direct-maps the bootloader's still-live boot-splash framebuffer
- * (see iommu_dma_get_resv_regions()) - without it, whichever VPP window
- * is actually driving the splash at boot page-faults its SYSMMU the
- * moment the kernel establishes an empty domain under still-running DMA.
- * Confirmed via a real panic: "13a10000.sysmmu: 13952000.vpp: [READ] PAGE
- * FAULT" at an address inside cont_splash_mem's range.
+ * memory-region points the IOMMU at the bootloader's still-live splash
+ * framebuffer (see of_iommu_get_resv_regions()) - without it the VPP driving
+ * the splash page-faults its SysMMU the moment the kernel installs an empty
+ * domain under still-running DMA. Confirmed via a real panic:
+ * "13a10000.sysmmu: 13952000.vpp: [READ] PAGE FAULT" inside its range.
  */
-&vpp8890_0 {
-	memory-region = <&cont_splash_mem>;
+&vpp_drm {
 	status = "okay";
+	memory-region = <&cont_splash_mem>;
 };
 
-&vpp8890_1 {
-	memory-region = <&cont_splash_mem>;
+&dsim_drm {
 	status = "okay";
-};
 
-&vpp8890_2 {
-	memory-region = <&cont_splash_mem>;
-	status = "okay";
-};
+	panel@0 {
+		compatible = "samsung,s6e3ha3";
+		reg = <0>;
+		vdd3-supply = <&max77838_ldo3>;
+		vci-supply = <&max77838_ldo1>;
+		reset-gpios = <&gpi2 0 GPIO_ACTIVE_LOW>;
+		enable-gpios = <&gpd0 4 GPIO_ACTIVE_HIGH>;
 
-&vpp8890_3 {
-	memory-region = <&cont_splash_mem>;
-	status = "okay";
+		port {
+			panel_in_dsim: endpoint {
+				remote-endpoint = <&dsim_out_panel>;
+			};
+		};
+	};
+
+	ports {
+		port@1 {
+			reg = <1>;
+			dsim_out_panel: endpoint {
+				remote-endpoint = <&panel_in_dsim>;
+			};
+		};
+	};
 };
 
 &gpu {
@@ -1081,7 +1022,6 @@
 		startup-delay-us = <200000>;
 	};
 
-
 	/* ABOV mc96ft16xx touchkey (back/recent-apps) - vendor bit-bangs this pair, no real HSI2C bus here */
 	i2c-gpio-touchkey {
 		compatible = "i2c-gpio";
@@ -1678,7 +1618,6 @@
  * interfaces. Basic conservative wired charging and read-only fuel-gauge
  * reporting are enabled here; wireless charging and AFC/QC remain deferred.
  */
-
 
 / {
 	herolte_battery: battery {
