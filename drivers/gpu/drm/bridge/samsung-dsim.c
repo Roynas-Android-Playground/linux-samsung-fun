@@ -2293,7 +2293,7 @@ static int samsung_dsim_resume(struct device *dev)
 
 	ret = clk_bulk_prepare_enable(driver_data->num_clks, driver_data->clk_data);
 	if (ret < 0)
-		goto err_clk;
+		goto err_regulator;
 
 	ret = phy_power_on(dsi->phy);
 	if (ret < 0) {
@@ -2305,6 +2305,7 @@ static int samsung_dsim_resume(struct device *dev)
 
 err_clk:
 	clk_bulk_disable_unprepare(driver_data->num_clks, driver_data->clk_data);
+err_regulator:
 	regulator_bulk_disable(ARRAY_SIZE(dsi->supplies), dsi->supplies);
 
 	return ret;
