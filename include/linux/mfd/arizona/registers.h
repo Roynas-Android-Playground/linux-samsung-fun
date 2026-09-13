@@ -1909,6 +1909,16 @@
 #define ARIZONA_FLL1_GAIN_WIDTH                       4  /* FLL1_GAIN */
 
 /*
+ * R378 (0x17A) - FLL1 EFS 2
+ */
+#define ARIZONA_FLL1_PHASE_GAIN_MASK             0xF000  /* FLL1_PHASE_GAIN */
+#define ARIZONA_FLL1_PHASE_GAIN_SHIFT                12  /* FLL1_PHASE_GAIN */
+#define ARIZONA_FLL1_PHASE_GAIN_WIDTH                 4  /* FLL1_PHASE_GAIN */
+#define ARIZONA_FLL1_PHASE_ENA_MASK              0x0800  /* FLL1_PHASE_ENA */
+#define ARIZONA_FLL1_PHASE_ENA_SHIFT                 11  /* FLL1_PHASE_ENA */
+#define ARIZONA_FLL1_PHASE_ENA_WIDTH                  1  /* FLL1_PHASE_ENA */
+
+/*
  * R385 (0x181) - FLL1 Synchroniser 1
  */
 #define ARIZONA_FLL1_SYNC_ENA                    0x0001  /* FLL1_SYNC_ENA */

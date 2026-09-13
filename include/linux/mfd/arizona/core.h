@@ -34,6 +34,8 @@ enum arizona_type {
 	WM1814 = 6,
 	WM1831 = 7,
 	CS47L24 = 8,
+	CS47L90 = 9,
+	CS47L91 = 10,
 };
 
 #define ARIZONA_IRQ_GP1                    0
@@ -112,12 +114,28 @@ enum arizona_type {
 #define ARIZONA_IRQ_HP1L_SC_NEG           73
 #define ARIZONA_IRQ_HP1L_SC_POS           74
 
-#define ARIZONA_NUM_IRQ                   75
+/* Moon-only IRQs are appended to preserve the existing Arizona ABI. */
+#define ARIZONA_IRQ_GP5                   75
+#define ARIZONA_IRQ_GP6                   76
+#define ARIZONA_IRQ_GP7                   77
+#define ARIZONA_IRQ_GP8                   78
+#define MOON_IRQ_FLLAO_CLOCK_OK           79
+#define MOON_IRQ_MICDET2                  80
+#define MOON_IRQ_DSP1_BUS_ERROR           81
+#define MOON_IRQ_DSP2_BUS_ERROR           82
+#define MOON_IRQ_DSP3_BUS_ERROR           83
+#define MOON_IRQ_DSP4_BUS_ERROR           84
+#define MOON_IRQ_DSP5_BUS_ERROR           85
+#define MOON_IRQ_DSP6_BUS_ERROR           86
+#define MOON_IRQ_DSP7_BUS_ERROR           87
+
+#define ARIZONA_NUM_IRQ                   88
 
 struct snd_soc_dapm_context;
 
 struct arizona {
 	struct regmap *regmap;
+	struct regmap *regmap_32bit;
 	struct device *dev;
 
 	enum arizona_type type;
@@ -187,5 +205,6 @@ int wm5110_patch(struct arizona *arizona);
 int cs47l24_patch(struct arizona *arizona);
 int wm8997_patch(struct arizona *arizona);
 int wm8998_patch(struct arizona *arizona);
+int moon_patch(struct arizona *arizona);
 
 #endif
