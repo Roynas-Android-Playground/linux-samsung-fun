@@ -471,6 +471,10 @@ static int exynos4_mct_starting_cpu(unsigned int cpu)
 	evt->features = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT |
 			CLOCK_EVT_FEAT_PERCPU;
 	evt->rating = MCT_CLKEVENTS_RATING;
+	/* Use MCT SPIs for Exynos8890 ticks across CPU power transitions. */
+	if (mct_int_type == MCT_INT_SPI &&
+	    of_machine_is_compatible("samsung,exynos8890"))
+		evt->rating = 460;
 
 	exynos4_mct_write(TICK_BASE_CNT, mevt->base + MCT_L_TCNTB_OFFSET);
 
