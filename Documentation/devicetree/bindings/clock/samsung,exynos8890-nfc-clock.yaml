@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/clock/samsung,exynos8890-nfc-clock.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 NFC reference clock output
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  The Exynos8890 PMU routes the 26 MHz TCXO to the external NFC clock pin
+  through two complementary controls in PMU_DEBUG1.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-nfc-clock
+
+  '#clock-cells':
+    const: 0
+
+  clocks:
+    maxItems: 1
+
+  samsung,pmu-syscon:
+    description: Phandle to the Exynos8890 PMU syscon.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+required:
+  - compatible
+  - '#clock-cells'
+  - clocks
+  - samsung,pmu-syscon
+
+additionalProperties: false
