@@ -3,6 +3,7 @@
 obj-$(CONFIG_EXYNOS_ASV_ARM)	+= exynos5422-asv.o
 obj-$(CONFIG_EXYNOS_CHIPID)	+= exynos_chipid.o
 exynos_chipid-y			+= exynos-chipid.o exynos-asv.o
+obj-$(CONFIG_EXYNOS8890_CPUPM)	+= exynos8890-cpupm.o
 
 obj-$(CONFIG_EXYNOS_USI)	+= exynos-usi.o
 
