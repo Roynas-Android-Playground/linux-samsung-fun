@@ -4,22 +4,24 @@
 $id: http://devicetree.org/schemas/mfd/maxim,max77843.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Maxim MAX77843 MicroUSB and Companion Power Management IC
+title: Maxim MAX77843/MAX77854 MicroUSB and Companion Power Management IC
 
 maintainers:
   - Krzysztof Kozlowski <krzk@kernel.org>
 
 description: |
-  This is a part of device tree bindings for Maxim MAX77843 MicroUSB
-  Integrated Circuit (MUIC).
+  This is a part of device tree bindings for Maxim MAX77843/MAX77854 MicroUSB
+  Integrated Circuits (MUIC).
 
-  The Maxim MAX77843 is a MicroUSB and Companion Power Management IC which
-  includes voltage current regulators, charger, fuel-gauge, haptic motor driver
-  and MicroUSB management IC.
+  The Maxim MAX77843 and MAX77854 are MicroUSB and Companion Power Management
+  ICs which include voltage/current regulators, charger, fuel-gauge, haptic
+  motor driver and MicroUSB management IC.
 
 properties:
   compatible:
-    const: maxim,max77843
+    enum:
+      - maxim,max77843
+      - maxim,max77854
 
   interrupts:
     maxItems: 1

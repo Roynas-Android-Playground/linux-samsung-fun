@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0+
 //
-// MFD core driver for the Maxim MAX77843
+// MFD core driver for the Maxim MAX77843/MAX77854
 //
 // Copyright (C) 2015 Samsung Electronics
 // Author: Jaewon Kim <jaewon02.kim@samsung.com>
@@ -34,6 +34,32 @@ static const struct mfd_cell max77843_devs[] = {
 	},
 };
 
+/*
+ * MAX77854 reuses the MUIC, SAFEOUT and haptic register interfaces.
+ * Charging and fuel-gauge reporting have separate variant-specific children.
+ */
+static const struct mfd_cell max77854_devs[] = {
+	{
+		.name = "max77843-muic",
+		.of_compatible = "maxim,max77843-muic",
+	}, {
+		.name = "max77854-regulator",
+		.of_compatible = "maxim,max77843-regulator",
+	}, {
+		.name = "max77854-charger",
+		.of_compatible = "maxim,max77854-charger",
+	}, {
+		.name = "max77854-fuel-gauge",
+		.of_compatible = "maxim,max77854-fuel-gauge",
+	}, {
+		.name = "max77854-led",
+		.of_compatible = "maxim,max77854-led",
+	}, {
+		.name = "max77843-haptic",
+		.of_compatible = "maxim,max77843-haptic",
+	},
+};
+
 static const struct regmap_config max77843_charger_regmap_config = {
 	.reg_bits	= 8,
 	.val_bits	= 8,
@@ -44,6 +70,20 @@ static const struct regmap_config max77843_regmap_config = {
 	.reg_bits	= 8,
 	.val_bits	= 8,
 	.max_register	= MAX77843_SYS_REG_END,
+};
+
+static bool max77854_fg_writeable_reg(struct device *dev, unsigned int reg)
+{
+	return false;
+}
+
+static const struct regmap_config max77854_fg_regmap_config = {
+	.reg_bits		= 8,
+	.val_bits		= 16,
+	.val_format_endian	= REGMAP_ENDIAN_LITTLE,
+	.max_register		= 0xff,
+	.cache_type		= REGCACHE_NONE,
+	.writeable_reg		= max77854_fg_writeable_reg,
 };
 
 static const struct regmap_irq max77843_irqs[] = {
@@ -66,35 +106,49 @@ static const struct regmap_irq_chip max77843_irq_chip = {
 /* Charger and Charger regulator use same regmap. */
 static int max77843_chg_init(struct max77693_dev *max77843)
 {
-	int ret;
+	max77843->i2c_chg = devm_i2c_new_dummy_device(max77843->dev,
+						      max77843->i2c->adapter,
+						      I2C_ADDR_CHG);
+	if (IS_ERR(max77843->i2c_chg))
+		return dev_err_probe(max77843->dev, PTR_ERR(max77843->i2c_chg),
+				     "failed to allocate charger I2C client\n");
 
-	max77843->i2c_chg = i2c_new_dummy_device(max77843->i2c->adapter, I2C_ADDR_CHG);
-	if (IS_ERR(max77843->i2c_chg)) {
-		dev_err(&max77843->i2c->dev,
-				"Cannot allocate I2C device for Charger\n");
-		return PTR_ERR(max77843->i2c_chg);
-	}
 	i2c_set_clientdata(max77843->i2c_chg, max77843);
-
 	max77843->regmap_chg = devm_regmap_init_i2c(max77843->i2c_chg,
-			&max77843_charger_regmap_config);
-	if (IS_ERR(max77843->regmap_chg)) {
-		ret = PTR_ERR(max77843->regmap_chg);
-		goto err_chg_i2c;
-	}
+						    &max77843_charger_regmap_config);
+	if (IS_ERR(max77843->regmap_chg))
+		return dev_err_probe(max77843->dev, PTR_ERR(max77843->regmap_chg),
+				     "failed to initialize charger regmap\n");
 
 	return 0;
+}
 
-err_chg_i2c:
-	i2c_unregister_device(max77843->i2c_chg);
+static int max77854_fg_init(struct max77693_dev *max77843)
+{
+	max77843->i2c_fg = devm_i2c_new_dummy_device(max77843->dev,
+						     max77843->i2c->adapter,
+						     I2C_ADDR_FG);
+	if (IS_ERR(max77843->i2c_fg))
+		return dev_err_probe(max77843->dev, PTR_ERR(max77843->i2c_fg),
+				     "failed to allocate fuel-gauge I2C client\n");
 
-	return ret;
+	i2c_set_clientdata(max77843->i2c_fg, max77843);
+	max77843->regmap_fg = devm_regmap_init_i2c(max77843->i2c_fg,
+						   &max77854_fg_regmap_config);
+	if (IS_ERR(max77843->regmap_fg))
+		return dev_err_probe(max77843->dev, PTR_ERR(max77843->regmap_fg),
+				     "failed to initialize fuel-gauge regmap\n");
+
+	return 0;
 }
 
 static int max77843_probe(struct i2c_client *i2c)
 {
 	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
+	const struct mfd_cell *cells;
 	struct max77693_dev *max77843;
+	unsigned int cells_size;
+	unsigned int intsrc_mask;
 	unsigned int reg_data;
 	int ret;
 
@@ -137,17 +191,36 @@ static int max77843_probe(struct i2c_client *i2c)
 		goto err_pmic_id;
 	}
 
+	if (max77843->type == TYPE_MAX77854) {
+		ret = max77854_fg_init(max77843);
+		if (ret)
+			goto err_pmic_id;
+
+		cells = max77854_devs;
+		cells_size = ARRAY_SIZE(max77854_devs);
+		/*
+		 * Keep charger and fuel-gauge sources masked here. The MAX77854
+		 * charger child unmasks CHGR only after its own IRQ chip and
+		 * handlers are ready.
+		 */
+		intsrc_mask = MAX77843_INTSRCMASK_CHGR_MASK |
+			      MAX77843_INTSRCMASK_FG_MASK;
+	} else {
+		cells = max77843_devs;
+		cells_size = ARRAY_SIZE(max77843_devs);
+		intsrc_mask = 0;
+	}
+
 	ret = regmap_update_bits(max77843->regmap,
 				 MAX77843_SYS_REG_INTSRCMASK,
 				 MAX77843_INTSRC_MASK_MASK,
-				 (unsigned int)~MAX77843_INTSRC_MASK_MASK);
+				 intsrc_mask);
 	if (ret < 0) {
-		dev_err(&i2c->dev, "Failed to unmask interrupt source\n");
+		dev_err(&i2c->dev, "Failed to configure interrupt sources\n");
 		goto err_pmic_id;
 	}
-
-	ret = mfd_add_devices(max77843->dev, -1, max77843_devs,
-			      ARRAY_SIZE(max77843_devs), NULL, 0, NULL);
+	ret = mfd_add_devices(max77843->dev, -1, cells, cells_size,
+			      NULL, 0, NULL);
 	if (ret < 0) {
 		dev_err(&i2c->dev, "Failed to add mfd device\n");
 		goto err_pmic_id;
@@ -165,13 +238,23 @@ err_pmic_id:
 
 static const struct of_device_id max77843_dt_match[] = {
 	{ .compatible = "maxim,max77843", },
+	{ .compatible = "maxim,max77854", },
 	{ },
 };
 
 static const struct i2c_device_id max77843_id[] = {
 	{ "max77843", TYPE_MAX77843, },
+	{ "max77854", TYPE_MAX77854, },
 	{ },
 };
+
+static void max77843_remove(struct i2c_client *i2c)
+{
+	struct max77693_dev *max77843 = i2c_get_clientdata(i2c);
+
+	mfd_remove_devices(max77843->dev);
+	regmap_del_irq_chip(max77843->irq, max77843->irq_data_topsys);
+}
 
 static int __maybe_unused max77843_suspend(struct device *dev)
 {
@@ -207,6 +290,7 @@ static struct i2c_driver max77843_i2c_driver = {
 		.suppress_bind_attrs = true,
 	},
 	.probe = max77843_probe,
+	.remove = max77843_remove,
 	.id_table = max77843_id,
 };
 
