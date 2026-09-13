@@ -865,8 +865,8 @@ static unsigned long samsung_dsim_set_pll(struct samsung_dsim *dsi,
 	reinit_completion(&dsi->pll_stabilized);
 	samsung_dsim_write(dsi, DSIM_PLLCTRL_REG, reg);
 
-	if (wait_for_completion_timeout(&dsi->pll_stabilized,
-					usecs_to_jiffies(timeout))) {
+	if (!wait_for_completion_timeout(&dsi->pll_stabilized,
+					 usecs_to_jiffies(timeout))) {
 		dev_err(dsi->dev, "PLL failed to stabilize\n");
 		return 0;
 	}
@@ -1595,19 +1595,17 @@ static irqreturn_t samsung_dsim_irq(int irq, void *dev_id)
 
 	if (status & DSIM_INT_SW_RST_RELEASE) {
 		unsigned long mask = ~(DSIM_INT_RX_DONE |
+				       DSIM_INT_PLL_STABLE |
 				       DSIM_INT_SFR_FIFO_EMPTY |
 				       DSIM_INT_SFR_HDR_FIFO_EMPTY |
 				       DSIM_INT_RX_ECC_ERR |
 				       DSIM_INT_SW_RST_RELEASE);
 		samsung_dsim_write(dsi, DSIM_INTMSK_REG, mask);
 		complete(&dsi->completed);
-		return IRQ_HANDLED;
 	}
 
-	if (status & DSIM_INT_PLL_STABLE) {
+	if (status & DSIM_INT_PLL_STABLE)
 		complete(&dsi->pll_stabilized);
-		return IRQ_HANDLED;
-	}
 
 	if (!(status & (DSIM_INT_RX_DONE | DSIM_INT_SFR_FIFO_EMPTY)))
 		return IRQ_HANDLED;
