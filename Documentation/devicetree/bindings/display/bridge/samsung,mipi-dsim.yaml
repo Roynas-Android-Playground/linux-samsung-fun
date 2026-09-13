@@ -25,6 +25,7 @@ properties:
           - samsung,exynos5422-mipi-dsi
           - samsung,exynos5433-mipi-dsi
           - samsung,exynos7870-mipi-dsi
+          - samsung,exynos8890-mipi-dsi
           - fsl,imx8mm-mipi-dsim
           - fsl,imx8mp-mipi-dsim
       - items:
@@ -47,11 +48,11 @@ properties:
 
   clocks:
     minItems: 2
-    maxItems: 5
+    maxItems: 8
 
   clock-names:
     minItems: 2
-    maxItems: 5
+    maxItems: 8
 
   samsung,phy-type:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -81,6 +82,13 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     description:
       DSIM escape mode frequency.
+
+  samsung,mic-1-2:
+    type: boolean
+    description:
+      Input from DECON is MIC 1/2 compressed data. The command-mode transport
+      width is half the panel width. Only supported on Exynos8890 with an
+      RGB888 command-mode panel; this does not enable the upstream compressor.
 
   samsung,pll-clock-frequency:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -145,6 +153,44 @@ required:
 
 allOf:
   - $ref: ../dsi-controller.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8890-mipi-dsi
+
+    then:
+      properties:
+        clocks:
+          minItems: 8
+          maxItems: 8
+
+        clock-names:
+          items:
+            - const: bus_clk
+            - const: phy_qstate
+            - const: phyclk_mipidphy0_bitclkdiv8
+            - const: phyclk_mipidphy0_rxclkesc0
+            - const: phyclk_bit_src
+            - const: phyclk_esc_src
+            - const: phyclk_bit_gate
+            - const: phyclk_esc_gate
+
+        ports:
+          required:
+            - port@0
+
+      required:
+        - ports
+
+    else:
+      properties:
+        samsung,mic-1-2: false
+        clocks:
+          maxItems: 5
+        clock-names:
+          maxItems: 5
+
   - if:
       properties:
         compatible:

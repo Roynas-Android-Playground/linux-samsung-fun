@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/samsung/samsung,exynos8890-vpp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8890 VPP window DMA
+
+maintainers:
+  - Inki Dae <inki.dae@samsung.com>
+  - Seung-Woo Kim <sw0312.kim@samsung.com>
+
+description: |
+  The four IDMA channels (G0, G1, VG0 and VG1) that feed DECON-F's blending
+  windows on the DISP0 domain. They are described by a single node because
+  they share two ACLK gates, one power domain and a SysMMU pair - a device
+  per channel would place two masters in each IOMMU group, which
+  iommu_attach_device() rejects.
+
+properties:
+  compatible:
+    const: samsung,exynos8890-vpp
+
+  reg:
+    maxItems: 4
+
+  reg-names:
+    items:
+      - const: vpp-g0
+      - const: vpp-g1
+      - const: vpp-vg0
+      - const: vpp-vg1
+
+  interrupts:
+    maxItems: 4
+
+  interrupt-names:
+    items:
+      - const: vpp0
+      - const: vpp1
+      - const: vpp2
+      - const: vpp3
+
+  clocks:
+    maxItems: 2
+
+  clock-names:
+    items:
+      - const: aclk_vpp0
+      - const: aclk_vpp1
+
+  power-domains:
+    maxItems: 1
+
+  iommus:
+    maxItems: 2
+
+  memory-region:
+    maxItems: 1
+    description:
+      Reserved region still being scanned out at hand-off, so that
+      of_iommu_get_resv_regions() direct-maps it before a domain is
+      installed under the running DMA.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - iommus
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/samsung,exynos8890-cmu.h>
+
+    vpp@13951000 {
+        compatible = "samsung,exynos8890-vpp";
+        reg = <0x13951000 0x1000>,
+              <0x13952000 0x1000>,
+              <0x13953000 0x1000>,
+              <0x13954000 0x1000>;
+        reg-names = "vpp-g0", "vpp-g1", "vpp-vg0", "vpp-vg1";
+        interrupts = <GIC_SPI 176 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 177 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 178 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 179 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "vpp0", "vpp1", "vpp2", "vpp3";
+        clocks = <&cmu_disp0 CLK_GOUT_DISP0_ACLK_VPP0_ACLK_0>,
+                 <&cmu_disp0 CLK_GOUT_DISP0_ACLK_VPP0_ACLK_1>;
+        clock-names = "aclk_vpp0", "aclk_vpp1";
+        power-domains = <&pd_disp0>;
+        iommus = <&sysmmu_disp0_00>, <&sysmmu_disp0_01>;
+    };
