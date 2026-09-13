@@ -1391,6 +1391,7 @@ static int samsung_i2s_probe(struct platform_device *pdev)
 	const struct platform_device_id *id;
 	struct samsung_i2s_priv *priv;
 	struct resource *res;
+	struct clk *parent;
 	int num_dais, ret;
 
 	if (IS_ENABLED(CONFIG_OF) && pdev->dev.of_node) {
@@ -1533,10 +1534,45 @@ static int samsung_i2s_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto err_disable_pm;
 
-	priv->op_clk = clk_get_parent(priv->clk_table[CLK_I2S_RCLK_SRC]);
+	if (priv->clk_table[CLK_I2S_RCLK_SRC]) {
+		parent = clk_get_parent(priv->clk_table[CLK_I2S_RCLK_SRC]);
+		if (!parent) {
+			ret = -EINVAL;
+			goto err_unregister_clock;
+		}
+		priv->op_clk = clk_get(&pdev->dev, "i2s_opclk0");
+		if (IS_ERR(priv->op_clk)) {
+			ret = PTR_ERR(priv->op_clk);
+			priv->op_clk = NULL;
+			goto err_unregister_clock;
+		}
+		if (!clk_is_match(parent, priv->op_clk)) {
+			clk_put(priv->op_clk);
+			priv->op_clk = clk_get(&pdev->dev, "i2s_opclk1");
+			if (IS_ERR(priv->op_clk)) {
+				ret = PTR_ERR(priv->op_clk);
+				priv->op_clk = NULL;
+				goto err_unregister_clock;
+			}
+			if (!clk_is_match(parent, priv->op_clk)) {
+				clk_put(priv->op_clk);
+				priv->op_clk = NULL;
+				ret = -EINVAL;
+				goto err_unregister_clock;
+			}
+		}
+		ret = clk_prepare_enable(priv->op_clk);
+		if (ret) {
+			clk_put(priv->op_clk);
+			priv->op_clk = NULL;
+			goto err_unregister_clock;
+		}
+	}
 
 	return 0;
 
+err_unregister_clock:
+	i2s_unregister_clock_provider(priv);
 err_disable_pm:
 	pm_runtime_disable(&pdev->dev);
 err_del_sec:
@@ -1559,6 +1595,10 @@ static void samsung_i2s_remove(struct platform_device *pdev)
 
 	i2s_unregister_clock_provider(priv);
 	i2s_delete_secondary_device(priv);
+	if (priv->op_clk) {
+		clk_disable_unprepare(priv->op_clk);
+		clk_put(priv->op_clk);
+	}
 	clk_disable_unprepare(priv->clk);
 
 	pm_runtime_put_noidle(&pdev->dev);
