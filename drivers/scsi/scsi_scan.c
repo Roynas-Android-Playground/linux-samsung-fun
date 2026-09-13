@@ -336,6 +336,9 @@ static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
 	sdev->sg_reserved_size = INT_MAX;
 
 	scsi_init_limits(shost, &lim);
+	/* Internal commands must remain dispatchable during error recovery. */
+	if (scsi_device_is_pseudo_dev(sdev))
+		lim.features |= BLK_FEAT_SKIP_TAGSET_QUIESCE;
 	q = blk_mq_alloc_queue(&sdev->host->tag_set, &lim, sdev);
 	if (IS_ERR(q)) {
 		/* release fn is set up in scsi_sysfs_device_initialise, so
