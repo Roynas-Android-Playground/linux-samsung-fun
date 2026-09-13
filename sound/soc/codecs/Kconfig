@@ -1456,6 +1456,15 @@ config SND_SOC_MAX98926
 	tristate
 	depends on I2C
 
+config SND_SOC_MAX98506
+	tristate "Maxim MAX98506 speaker amplifier"
+	depends on I2C
+	help
+	  Enable playback-only support for the Maxim MAX98506 speaker
+	  amplifier. The initial driver uses a fixed conservative 48 kHz,
+	  stereo, 16-bit I2S configuration and does not enable DSM or voltage
+	  and current feedback.
+
 config SND_SOC_MAX98927
 	tristate "Maxim Integrated MAX98927 Speaker Amplifier"
 	depends on I2C
