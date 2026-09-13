@@ -143,6 +143,13 @@ see include/trace/events/rcu.h.
 Fine-Tuning the RCU CPU Stall Detector
 ======================================
 
+The early boot parameter ``rcu_stall_panic=<bool>`` initializes the
+``kernel.panic_on_rcu_stall`` sysctl before userspace starts.  It defaults
+to false and does not change stall detection or timeout settings.  The
+sysctl remains writable at runtime.  Setting this parameter to true makes
+RCU invoke the panic path when its configured stall-panic criteria are met;
+it does not guarantee that a debugger can stop other CPUs.
+
 The rcuupdate.rcu_cpu_stall_suppress module parameter disables RCU's
 CPU stall detector, which detects conditions that unduly delay RCU grace
 periods.  This module parameter enables CPU stall detection by default,
