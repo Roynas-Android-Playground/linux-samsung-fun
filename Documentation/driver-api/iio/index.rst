@@ -16,3 +16,4 @@ Contents:
    triggers
    triggered-buffers
    hw-consumer
+   exynos8890-sensorhub
