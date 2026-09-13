@@ -307,7 +307,12 @@ static unsigned long clk_enable_lock(void)
 	 */
 	if (!IS_ENABLED(CONFIG_SMP) ||
 	    !spin_trylock_irqsave(&enable_lock, flags)) {
-		if (enable_owner == current) {
+		/*
+		 * This lockless recursion check can race with another task
+		 * acquiring or releasing the lock. Only current can match;
+		 * any other owner (including NULL) requires taking the lock.
+		 */
+		if (READ_ONCE(enable_owner) == current) {
 			enable_refcnt++;
 			__acquire(enable_lock);
 			if (!IS_ENABLED(CONFIG_SMP))
@@ -318,7 +323,7 @@ static unsigned long clk_enable_lock(void)
 	}
 	WARN_ON_ONCE(enable_owner != NULL);
 	WARN_ON_ONCE(enable_refcnt != 0);
-	enable_owner = current;
+	WRITE_ONCE(enable_owner, current);
 	enable_refcnt = 1;
 	return flags;
 }
@@ -333,7 +338,7 @@ static void clk_enable_unlock(unsigned long flags)
 		__release(enable_lock);
 		return;
 	}
-	enable_owner = NULL;
+	WRITE_ONCE(enable_owner, NULL);
 	spin_unlock_irqrestore(&enable_lock, flags);
 }
 
