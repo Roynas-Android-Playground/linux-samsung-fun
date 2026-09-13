@@ -1023,4 +1023,15 @@ config INPUT_STPMIC1_ONKEY
 	  To compile this driver as a module, choose M here: the
 	  module will be called stpmic1_onkey.
 
+config INPUT_MAX86900
+	tristate "Maxim MAX86900 heart-rate sensor"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say Y to enable support for the Maxim MAX86900 optical
+	  heart-rate (PPG) sensor.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called max86900.
+
 endif

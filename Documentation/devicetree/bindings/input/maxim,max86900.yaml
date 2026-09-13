@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/maxim,max86900.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX86900 and MAX86907 optical heart-rate sensors
+
+maintainers:
+  - Royna2544 <whiteshell2544@naver.com>
+
+description: |
+  Optical pulse sensors with an I2C interface and active-low interrupt.
+  MAX86907 uses the MAX86902 register map and must not fall back to the
+  incompatible MAX86900 compatible. The board identifies the populated
+  variant; ordinary part/revision registers cannot distinguish all OTP
+  subvariants of the MAX86902 family.
+
+properties:
+  compatible:
+    enum:
+      - maxim,max86900
+      - maxim,max86907
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  vdd-supply:
+    description: Digital and analog supply (1.8 V for MAX86907).
+
+  led-supply:
+    description: LED supply (3.3 V for MAX86907).
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - vdd-supply
+  - led-supply
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: maxim,max86907
+    then:
+      properties:
+        reg:
+          items:
+            - const: 0x57
+    else:
+      properties:
+        reg:
+          items:
+            - const: 0x51
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        heart-rate@57 {
+            compatible = "maxim,max86907";
+            reg = <0x57>;
+            interrupt-parent = <&gpa2>;
+            interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+            vdd-supply = <&hrm_1p8>;
+            led-supply = <&hrm_3p3>;
+        };
+    };
