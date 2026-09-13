@@ -394,6 +394,10 @@ struct ufshcd_tx_eq_params {
  * @setup_task_mgmt: called before any task management request is issued
  *                  to set some things
  * @hibern8_notify: called around hibern8 enter/exit
+ * @hibern8_exit_check: optional validation after successful exit and POST_CHANGE.
+ *	Called with clocks enabled by the caller, before software link-state update.
+ *	Must not hold clocks recursively or schedule recovery. Return errors to the
+ *	core for PM-synchronous recovery (or EH outside PM).
  * @apply_dev_quirks: called to apply device specific quirks
  * @fixup_dev_quirks: called to modify device specific quirks
  * @suspend: called during host controller PM callback
@@ -446,6 +450,7 @@ struct ufs_hba_variant_ops {
 	void	(*setup_task_mgmt)(struct ufs_hba *, int, u8);
 	void    (*hibern8_notify)(struct ufs_hba *, enum uic_cmd_dme,
 					enum ufs_notify_change_status);
+	int	(*hibern8_exit_check)(struct ufs_hba *hba);
 	int	(*apply_dev_quirks)(struct ufs_hba *hba);
 	void	(*fixup_dev_quirks)(struct ufs_hba *hba);
 	int     (*suspend)(struct ufs_hba *, enum ufs_pm_op,
@@ -1497,6 +1502,7 @@ int ufshcd_make_hba_operational(struct ufs_hba *hba);
 void ufshcd_remove(struct ufs_hba *);
 int ufshcd_uic_hibern8_enter(struct ufs_hba *hba);
 int ufshcd_uic_hibern8_exit(struct ufs_hba *hba);
+int ufshcd_dme_get_no_hold(struct ufs_hba *hba, u32 attr_sel, u32 *mib_val);
 void ufshcd_delay_us(unsigned long us, unsigned long tolerance);
 void ufshcd_parse_dev_ref_clk_freq(struct ufs_hba *hba, struct clk *refclk);
 void ufshcd_update_evt_hist(struct ufs_hba *hba, u32 id, u32 val);

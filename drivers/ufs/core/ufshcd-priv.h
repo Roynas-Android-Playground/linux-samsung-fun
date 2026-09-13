@@ -222,6 +222,13 @@ static inline void ufshcd_vops_hibern8_notify(struct ufs_hba *hba,
 		hba->vops->hibern8_notify(hba, cmd, status);
 }
 
+static inline int ufshcd_vops_hibern8_exit_check(struct ufs_hba *hba)
+{
+	if (hba->vops && hba->vops->hibern8_exit_check)
+		return hba->vops->hibern8_exit_check(hba);
+	return 0;
+}
+
 static inline int ufshcd_vops_apply_dev_quirks(struct ufs_hba *hba)
 {
 	if (hba->vops && hba->vops->apply_dev_quirks)

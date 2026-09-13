@@ -4434,6 +4434,51 @@ out:
 EXPORT_SYMBOL_GPL(ufshcd_dme_get_attr);
 
 /**
+ * ufshcd_dme_get_no_hold - Read a local DME attribute with caller-owned clocks
+ * @hba: per adapter instance
+ * @attr_sel: UIC command argument1
+ * @mib_val: returned attribute value (zero on failure)
+ *
+ * The caller must keep the controller clocks enabled and prevent gating for
+ * the entire call. In particular, hibern8_exit_check runs in ungate_work or
+ * PM resume before the software link-state update: ufshcd_hold() there would
+ * wait for ungate_work itself. Serialize UIC access and honor the DME delay
+ * exactly as the normal command path, but do not acquire a clock reference.
+ * Only local reads are supported; peer access may require a power-mode change.
+ *
+ * Return: 0 on success, non-zero on failure.
+ */
+int ufshcd_dme_get_no_hold(struct ufs_hba *hba, u32 attr_sel, u32 *mib_val)
+{
+	struct uic_command uic_cmd = {
+		.command = UIC_CMD_DME_GET,
+		.argument1 = attr_sel,
+	};
+	unsigned long flags;
+	int ret;
+
+	*mib_val = 0;
+	if (hba->quirks & UFSHCD_QUIRK_BROKEN_UIC_CMD)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&hba->uic_cmd_mutex);
+	ufshcd_add_delay_before_dme_cmd(hba);
+	spin_lock_irqsave(hba->host->host_lock, flags);
+	ufshcd_enable_intr(hba, UIC_COMMAND_COMPL);
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+
+	ret = __ufshcd_send_uic_cmd(hba, &uic_cmd);
+	if (!ret)
+		ret = ufshcd_wait_for_uic_cmd(hba, &uic_cmd);
+	if (!ret)
+		*mib_val = uic_cmd.argument3;
+	mutex_unlock(&hba->uic_cmd_mutex);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ufshcd_dme_get_no_hold);
+
+/**
  * ufshcd_dme_rmw - get modify set a DME attribute
  * @hba: per adapter instance
  * @mask: indicates which bits to clear from the value that has been read
@@ -4706,6 +4751,21 @@ int ufshcd_uic_hibern8_exit(struct ufs_hba *hba)
 	} else {
 		ufshcd_vops_hibern8_notify(hba, UIC_CMD_DME_HIBER_EXIT,
 								POST_CHANGE);
+		ret = ufshcd_vops_hibern8_exit_check(hba);
+		if (ret) {
+			unsigned long flags;
+
+			dev_err(hba->dev, "%s: exit validation failed: %d\n",
+				__func__, ret);
+			/* Match UIC failure handling: PM callers recover inline. */
+			spin_lock_irqsave(hba->host->host_lock, flags);
+			if (!hba->pm_op_in_progress) {
+				ufshcd_set_link_broken(hba);
+				ufshcd_schedule_eh_work(hba);
+			}
+			spin_unlock_irqrestore(hba->host->host_lock, flags);
+			return ret;
+		}
 		hba->ufs_stats.last_hibern8_exit_tstamp = local_clock();
 		hba->ufs_stats.hibern8_exit_cnt++;
 	}
