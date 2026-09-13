@@ -169,8 +169,12 @@ static int kjournald2(void *arg)
 
 	set_freezable();
 
-	/* Record that the journal thread is running */
-	journal->j_task = current;
+	/*
+	 * Publish the initialized commit timer before the startup wait can
+	 * finish, including when it does not sleep. Pairs with the acquire
+	 * load in jbd2_journal_start_thread().
+	 */
+	smp_store_release(&journal->j_task, current);
 	wake_up(&journal->j_wait_done_commit);
 
 	/*
@@ -246,7 +250,7 @@ loop:
 
 end_loop:
 	timer_delete_sync(&journal->j_commit_timer);
-	journal->j_task = NULL;
+	WRITE_ONCE(journal->j_task, NULL);
 	wake_up(&journal->j_wait_done_commit);
 	jbd2_debug(1, "Journal thread exiting.\n");
 	write_unlock(&journal->j_state_lock);
@@ -262,7 +266,8 @@ static int jbd2_journal_start_thread(journal_t *journal)
 	if (IS_ERR(t))
 		return PTR_ERR(t);
 
-	wait_event(journal->j_wait_done_commit, journal->j_task != NULL);
+	wait_event(journal->j_wait_done_commit,
+		   smp_load_acquire(&journal->j_task) != NULL);
 	return 0;
 }
 
@@ -274,7 +279,8 @@ static void journal_kill_thread(journal_t *journal)
 	while (journal->j_task) {
 		write_unlock(&journal->j_state_lock);
 		wake_up(&journal->j_wait_commit);
-		wait_event(journal->j_wait_done_commit, journal->j_task == NULL);
+		wait_event(journal->j_wait_done_commit,
+			   READ_ONCE(journal->j_task) == NULL);
 		write_lock(&journal->j_state_lock);
 	}
 	write_unlock(&journal->j_state_lock);
