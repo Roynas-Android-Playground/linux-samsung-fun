@@ -336,8 +336,8 @@ static int s6sa552_probe(struct i2c_client *client)
 
 	touchscreen_parse_properties(sdata->input, true, &sdata->prop);
 
-	if (!input_abs_get_max(sdata->input, ABS_X) ||
-	    !input_abs_get_max(sdata->input, ABS_Y)) {
+	if (!input_abs_get_max(sdata->input, ABS_MT_POSITION_X) ||
+	    !input_abs_get_max(sdata->input, ABS_MT_POSITION_Y)) {
 		dev_warn(&client->dev, "the axis have not been set\n");
 	}
 
