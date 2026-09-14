@@ -56,7 +56,6 @@ static int s3fwrn5_fw_prep_msg(struct s3fwrn5_fw_info *fw_info,
 	struct sk_buff *skb;
 
 	hdr.type = type | fw_info->parity;
-	fw_info->parity ^= 0x80;
 	hdr.code = code;
 	hdr.len = len;
 
@@ -64,6 +63,7 @@ static int s3fwrn5_fw_prep_msg(struct s3fwrn5_fw_info *fw_info,
 	if (!skb)
 		return -ENOMEM;
 
+	fw_info->parity ^= 0x80;
 	skb_put_data(skb, &hdr, S3FWRN5_FW_HDR_SIZE);
 	if (len)
 		skb_put_data(skb, data, len);
