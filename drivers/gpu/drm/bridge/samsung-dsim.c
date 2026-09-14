@@ -1876,26 +1876,36 @@ static irqreturn_t samsung_dsim_te_irq_handler(int irq, void *dev_id)
 
 static int samsung_dsim_register_te_irq(struct samsung_dsim *dsi, struct device *dev)
 {
+	struct gpio_desc *te_gpio;
 	int te_gpio_irq;
 	int ret;
 
-	dsi->te_gpio = devm_gpiod_get_optional(dev, "te", GPIOD_IN);
-	if (!dsi->te_gpio)
+	/* The GPIO, like the IRQ, belongs to the DSI attachment. */
+	te_gpio = gpiod_get_optional(dev, "te", GPIOD_IN);
+	if (!te_gpio)
 		return 0;
-	else if (IS_ERR(dsi->te_gpio))
-		return dev_err_probe(dev, PTR_ERR(dsi->te_gpio), "failed to get te GPIO\n");
+	if (IS_ERR(te_gpio))
+		return dev_err_probe(dev, PTR_ERR(te_gpio), "failed to get te GPIO\n");
 
-	te_gpio_irq = gpiod_to_irq(dsi->te_gpio);
+	te_gpio_irq = gpiod_to_irq(te_gpio);
+	if (te_gpio_irq < 0) {
+		ret = te_gpio_irq;
+		goto err_put_gpio;
+	}
 
 	ret = request_threaded_irq(te_gpio_irq, samsung_dsim_te_irq_handler, NULL,
 				   IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN, "TE", dsi);
 	if (ret) {
 		dev_err(dsi->dev, "request interrupt failed with %d\n", ret);
-		gpiod_put(dsi->te_gpio);
-		return ret;
+		goto err_put_gpio;
 	}
 
+	dsi->te_gpio = te_gpio;
 	return 0;
+
+err_put_gpio:
+	gpiod_put(te_gpio);
+	return ret;
 }
 
 static void samsung_dsim_unregister_te_irq(struct samsung_dsim *dsi)
@@ -1903,6 +1913,7 @@ static void samsung_dsim_unregister_te_irq(struct samsung_dsim *dsi)
 	if (dsi->te_gpio) {
 		free_irq(gpiod_to_irq(dsi->te_gpio), dsi);
 		gpiod_put(dsi->te_gpio);
+		dsi->te_gpio = NULL;
 	}
 }
 
