@@ -27,26 +27,41 @@ static int s3fwrn5_fw_send_msg(struct s3fwrn5_fw_info *fw_info,
 		container_of(fw_info, struct s3fwrn5_info, fw_info);
 	struct s3fwrn5_fw_header *hdr;
 	struct sk_buff *reply;
+	unsigned long flags;
 	long ret;
 
+	spin_lock_irqsave(&fw_info->rsp_lock, flags);
+	if (fw_info->pending) {
+		spin_unlock_irqrestore(&fw_info->rsp_lock, flags);
+		return -EBUSY;
+	}
 	reinit_completion(&fw_info->completion);
+	fw_info->pending = true;
+	spin_unlock_irqrestore(&fw_info->rsp_lock, flags);
 
 	ret = s3fwrn5_write(info, msg);
 	if (ret < 0)
-		return ret;
+		goto out;
 
 	ret = wait_for_completion_interruptible_timeout(
 		&fw_info->completion, msecs_to_jiffies(1000));
-	if (ret < 0)
-		return ret;
-	else if (ret == 0)
-		return -ENXIO;
+	if (!ret)
+		ret = -ENXIO;
 
-	if (!fw_info->rsp)
-		return -EINVAL;
-
+out:
+	/* Retire the receive slot even if RX raced a failed write or wait. */
+	spin_lock_irqsave(&fw_info->rsp_lock, flags);
+	fw_info->pending = false;
 	reply = fw_info->rsp;
 	fw_info->rsp = NULL;
+	spin_unlock_irqrestore(&fw_info->rsp_lock, flags);
+	if (ret < 0) {
+		kfree_skb(reply);
+		return ret;
+	}
+	if (!reply)
+		return -EINVAL;
+
 	if (reply->len < S3FWRN5_FW_HDR_SIZE)
 		goto bad_reply;
 	hdr = (struct s3fwrn5_fw_header *)reply->data;
@@ -467,6 +482,8 @@ int s3fwrn5_fw_download(struct s3fwrn5_fw_info *fw_info)
 void s3fwrn5_fw_init(struct s3fwrn5_fw_info *fw_info, const char *fw_name)
 {
 	fw_info->parity = 0x00;
+	spin_lock_init(&fw_info->rsp_lock);
+	fw_info->pending = false;
 	fw_info->rsp = NULL;
 	fw_info->fw.fw = NULL;
 	strscpy(fw_info->fw_name, fw_name);
@@ -482,15 +499,20 @@ int s3fwrn5_fw_recv_frame(struct nci_dev *ndev, struct sk_buff *skb)
 {
 	struct s3fwrn5_info *info = nci_get_drvdata(ndev);
 	struct s3fwrn5_fw_info *fw_info = &info->fw_info;
+	unsigned long flags;
 
-	if (WARN_ON(fw_info->rsp)) {
+	spin_lock_irqsave(&fw_info->rsp_lock, flags);
+	if (!fw_info->pending || fw_info->rsp) {
+		spin_unlock_irqrestore(&fw_info->rsp_lock, flags);
 		kfree_skb(skb);
 		return -EINVAL;
 	}
 
 	fw_info->rsp = skb;
 
+	/* Publish completion before the sender can retire or reuse the slot. */
 	complete(&fw_info->completion);
+	spin_unlock_irqrestore(&fw_info->rsp_lock, flags);
 
 	return 0;
 }

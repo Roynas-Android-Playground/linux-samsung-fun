@@ -9,6 +9,8 @@
 #ifndef __LOCAL_S3FWRN5_FIRMWARE_H_
 #define __LOCAL_S3FWRN5_FIRMWARE_H_
 
+#include <linux/spinlock.h>
+
 /* FW Message Types */
 #define S3FWRN5_FW_MSG_CMD			0x00
 #define S3FWRN5_FW_MSG_RSP			0x01
@@ -85,6 +87,9 @@ struct s3fwrn5_fw_info {
 	u32 base_addr;
 
 	struct completion completion;
+	/* Protect the receive slot against timeout and duplicate replies. */
+	spinlock_t rsp_lock;
+	bool pending;
 	struct sk_buff *rsp;
 	char parity;
 };
