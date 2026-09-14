@@ -25,6 +25,8 @@ static int s3fwrn5_fw_send_msg(struct s3fwrn5_fw_info *fw_info,
 {
 	struct s3fwrn5_info *info =
 		container_of(fw_info, struct s3fwrn5_info, fw_info);
+	struct s3fwrn5_fw_header *hdr;
+	struct sk_buff *reply;
 	long ret;
 
 	reinit_completion(&fw_info->completion);
@@ -43,10 +45,23 @@ static int s3fwrn5_fw_send_msg(struct s3fwrn5_fw_info *fw_info,
 	if (!fw_info->rsp)
 		return -EINVAL;
 
-	*rsp = fw_info->rsp;
+	reply = fw_info->rsp;
 	fw_info->rsp = NULL;
+	if (reply->len < S3FWRN5_FW_HDR_SIZE)
+		goto bad_reply;
+	hdr = (struct s3fwrn5_fw_header *)reply->data;
+	/* Bit 7 carries alternating parity, not the message type. */
+	if ((hdr->type & 0x7f) != S3FWRN5_FW_MSG_RSP)
+		goto bad_reply;
+	if (le16_to_cpu(hdr->len) != reply->len - S3FWRN5_FW_HDR_SIZE)
+		goto bad_reply;
 
+	*rsp = reply;
 	return 0;
+
+bad_reply:
+	kfree_skb(reply);
+	return -EPROTO;
 }
 
 static int s3fwrn5_fw_prep_msg(struct s3fwrn5_fw_info *fw_info,
