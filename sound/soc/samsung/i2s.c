@@ -816,8 +816,11 @@ static int i2s_startup(struct snd_pcm_substream *substream,
 	struct samsung_i2s_priv *priv = snd_soc_dai_get_drvdata(dai);
 	struct i2s_dai *i2s = to_info(dai);
 	struct i2s_dai *other = get_other_dai(i2s);
+	int ret;
 
-	pm_runtime_get_sync(dai->dev);
+	ret = pm_runtime_resume_and_get(dai->dev);
+	if (ret < 0)
+		return ret;
 
 	guard(spinlock_irqsave)(&priv->pcm_lock);
 
@@ -917,6 +920,16 @@ static int config_setup(struct i2s_dai *i2s)
 	return 0;
 }
 
+static void i2s_debug_regs(struct i2s_dai *i2s, int stream, int cmd)
+{
+	/* Called with the stream's PM reference and register lock held. */
+	dev_dbg(&i2s->pdev->dev,
+		"stream %d trigger %d: CON=%08x MOD=%08x FIC=%08x\n",
+		stream, cmd, readl(i2s->priv->addr + I2SCON),
+		readl(i2s->priv->addr + I2SMOD),
+		readl(i2s->priv->addr + I2SFIC));
+}
+
 static int i2s_trigger(struct snd_pcm_substream *substream,
 	int cmd, struct snd_soc_dai *dai)
 {
@@ -925,12 +938,11 @@ static int i2s_trigger(struct snd_pcm_substream *substream,
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct i2s_dai *i2s = to_info(snd_soc_rtd_to_cpu(rtd, 0));
 
+	/* startup() holds the runtime PM reference until shutdown(). */
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		pm_runtime_get_sync(dai->dev);
-
 		if (priv->fixup_early)
 			priv->fixup_early(substream, dai);
 
@@ -945,12 +957,16 @@ static int i2s_trigger(struct snd_pcm_substream *substream,
 				i2s_rxctrl(i2s, 1);
 			else
 				i2s_txctrl(i2s, 1);
+
+			i2s_debug_regs(i2s, substream->stream, cmd);
 		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		scoped_guard(spinlock_irqsave, &priv->lock) {
+			/* Capture the running FIFO before stop and flush erase it. */
+			i2s_debug_regs(i2s, substream->stream, cmd);
 			if (capture) {
 				i2s_rxctrl(i2s, 0);
 				i2s_fifo(i2s, FIC_RXFLUSH);
@@ -959,7 +975,6 @@ static int i2s_trigger(struct snd_pcm_substream *substream,
 				i2s_fifo(i2s, FIC_TXFLUSH);
 			}
 		}
-		pm_runtime_put(dai->dev);
 		break;
 	}
 
