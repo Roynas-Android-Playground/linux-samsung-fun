@@ -167,7 +167,7 @@ static int s3fwrn5_i2c_read(struct s3fwrn5_i2c_phy *phy)
 	ret = i2c_master_recv(phy->i2c_dev, skb_put(skb, data_len), data_len);
 	if (ret != data_len) {
 		kfree_skb(skb);
-		return -EBADMSG;
+		return ret < 0 ? ret : -EBADMSG;
 	}
 
 out:
@@ -296,6 +296,8 @@ static void s3fwrn5_i2c_remove(struct i2c_client *client)
 {
 	struct s3fwrn5_i2c_phy *phy = i2c_get_clientdata(client);
 
+	/* Drain receive callbacks before the NCI device is unregistered/freed. */
+	devm_free_irq(&client->dev, client->irq, phy);
 	s3fwrn5_remove(phy->common.ndev);
 }
 
