@@ -8,15 +8,19 @@
 
 #include <linux/completion.h>
 #include <linux/firmware.h>
+#include <linux/unaligned.h>
 
 #include "s3fwrn5.h"
 #include "nci.h"
 
 static int s3fwrn5_nci_prop_rsp(struct nci_dev *ndev, struct sk_buff *skb)
 {
-	__u8 status = skb->data[0];
+	if (!skb->len) {
+		nci_req_complete(ndev, NCI_STATUS_FAILED);
+		return -EPROTO;
+	}
 
-	nci_req_complete(ndev, status);
+	nci_req_complete(ndev, skb->data[0]);
 	return 0;
 }
 
@@ -60,11 +64,18 @@ int s3fwrn5_nci_rf_configure(struct s3fwrn5_info *info, const char *fw_name)
 	if (ret < 0)
 		return ret;
 
+	/* The checksum uses whole words and section indices are one byte. */
+	if (!fw->size || fw->size % sizeof(u32) ||
+	    fw->size > S3FWRN5_RFREG_SECTION_SIZE * (U8_MAX + 1)) {
+		ret = -EINVAL;
+		goto out;
+	}
+
 	/* Compute rfreg checksum */
 
 	checksum = 0;
 	for (i = 0; i < fw->size; i += 4)
-		checksum += *((u32 *)(fw->data+i));
+		checksum += get_unaligned((const u32 *)(fw->data + i));
 
 	/* Set default clock configuration for external crystal */
 
