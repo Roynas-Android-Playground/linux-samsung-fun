@@ -34,6 +34,8 @@ struct arizona_micsupp {
 	struct regulator_dev *regulator;
 	struct regmap *regmap;
 	struct snd_soc_dapm_context **dapm;
+	/* Optional lifetime fence shared with the codec's pointer writers. */
+	struct mutex *dapm_ptr_lock;
 	const struct regulator_desc *desc;
 	struct device *dev;
 
@@ -47,16 +49,21 @@ static void arizona_micsupp_check_cp(struct work_struct *work)
 {
 	struct arizona_micsupp *micsupp =
 		container_of(work, struct arizona_micsupp, check_cp_work);
-	struct snd_soc_dapm_context *dapm = *micsupp->dapm;
+	struct snd_soc_dapm_context *dapm;
 	const struct regulator_desc *desc = micsupp->desc;
 	unsigned int val;
 	int ret;
+
+	/* Keep the context alive through both the pin update and DAPM sync. */
+	if (micsupp->dapm_ptr_lock)
+		mutex_lock(micsupp->dapm_ptr_lock);
+	dapm = *micsupp->dapm;
 
 	ret = regmap_read(micsupp->regmap, desc->enable_reg, &val);
 	if (ret != 0) {
 		dev_err(micsupp->dev,
 			"Failed to read CP state: %d\n", ret);
-		return;
+		goto out;
 	}
 
 	if (dapm) {
@@ -68,6 +75,9 @@ static void arizona_micsupp_check_cp(struct work_struct *work)
 
 		snd_soc_dapm_sync(dapm);
 	}
+out:
+	if (micsupp->dapm_ptr_lock)
+		mutex_unlock(micsupp->dapm_ptr_lock);
 }
 
 static int arizona_micsupp_enable(struct regulator_dev *rdev)
@@ -247,6 +257,14 @@ static int arizona_micsupp_of_get_pdata(struct arizona_micsupp_pdata *pdata,
 	return 0;
 }
 
+static void arizona_micsupp_stop(void *data)
+{
+	struct arizona_micsupp *micsupp = data;
+
+	/* Reject late producers as well as draining pending/running work. */
+	disable_work_sync(&micsupp->check_cp_work);
+}
+
 static int arizona_micsupp_common_init(struct platform_device *pdev,
 				       struct arizona_micsupp *micsupp,
 				       const struct regulator_desc *desc,
@@ -297,8 +315,15 @@ static int arizona_micsupp_common_init(struct platform_device *pdev,
 		ret = PTR_ERR(micsupp->regulator);
 		dev_err(micsupp->dev, "Failed to register mic supply: %d\n",
 			ret);
+		/* Applying regulator constraints may already have queued work. */
+		arizona_micsupp_stop(micsupp);
 		return ret;
 	}
+
+	/* Stop before regulator unregister, without regulator or DAPM locks. */
+	ret = devm_add_action_or_reset(&pdev->dev, arizona_micsupp_stop, micsupp);
+	if (ret)
+		return ret;
 
 	platform_set_drvdata(pdev, micsupp);
 
@@ -353,6 +378,8 @@ static int madera_micsupp_probe(struct platform_device *pdev)
 
 	micsupp->regmap = madera->regmap;
 	micsupp->dapm = &madera->dapm;
+	if (madera->type == CS47L90 || madera->type == CS47L91)
+		micsupp->dapm_ptr_lock = &madera->dapm_ptr_lock;
 	micsupp->dev = madera->dev;
 	micsupp->init_data = arizona_micsupp_ext_default;
 
