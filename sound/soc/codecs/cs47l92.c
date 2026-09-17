@@ -1893,9 +1893,6 @@ static int cs47l92_component_probe(struct snd_soc_component *component)
 
 	snd_soc_component_init_regmap(component, madera->regmap);
 
-	scoped_guard(mutex, &madera->dapm_ptr_lock)
-		madera->dapm = snd_soc_component_to_dapm(component);
-
 	ret = madera_init_inputs(component);
 	if (ret)
 		return ret;
@@ -1914,7 +1911,14 @@ static int cs47l92_component_probe(struct snd_soc_component *component)
 	if (ret)
 		return ret;
 
-	return wm_adsp2_component_probe(&cs47l92->core.adsp[0], component);
+	ret = wm_adsp2_component_probe(&cs47l92->core.adsp[0], component);
+	if (ret)
+		return ret;
+
+	scoped_guard(mutex, &madera->dapm_ptr_lock)
+		madera->dapm = dapm;
+
+	return 0;
 }
 
 static void cs47l92_component_remove(struct snd_soc_component *component)
