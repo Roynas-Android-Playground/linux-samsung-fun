@@ -1605,9 +1605,21 @@ out:
 static void exynos_ufs_exit(struct ufs_hba *hba)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	int ret;
 
-	phy_power_off(ufs->phy);
-	phy_exit(ufs->phy);
+	/* Failed initialization or suspend may have released the PHY already. */
+	if (ufs->phy->power_count) {
+		ret = phy_power_off(ufs->phy);
+		if (ret) {
+			dev_err(hba->dev, "PHY exit power-off failed: %d\n", ret);
+			return;
+		}
+	}
+	if (ufs->phy->init_count) {
+		ret = phy_exit(ufs->phy);
+		if (ret)
+			dev_err(hba->dev, "PHY exit failed: %d\n", ret);
+	}
 }
 
 static int exynos_ufs_host_reset(struct ufs_hba *hba)
