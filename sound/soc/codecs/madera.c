@@ -1080,10 +1080,10 @@ int madera_rate_put(struct snd_kcontrol *kcontrol,
 }
 EXPORT_SYMBOL_GPL(madera_rate_put);
 
-static void madera_configure_input_mode(struct madera *madera)
+static int madera_configure_input_mode(struct madera *madera)
 {
 	unsigned int dig_mode, ana_mode_l, ana_mode_r;
-	int max_analogue_inputs, max_dmic_sup, i;
+	int max_analogue_inputs, max_dmic_sup, i, ret;
 
 	switch (madera->type) {
 	case CS47L15:
@@ -1156,21 +1156,30 @@ static void madera_configure_input_mode(struct madera *madera)
 			"IN%dA DMIC mode=0x%x Analogue mode=0x%x,0x%x\n",
 			i + 1, dig_mode, ana_mode_l, ana_mode_r);
 
-		regmap_update_bits(madera->regmap,
-				   MADERA_IN1L_CONTROL + (i * 8),
-				   MADERA_IN1_DMIC_SUP_MASK, dig_mode);
+		/* Retry must reach the bus even after a failed cached write. */
+		ret = regmap_write_bits(madera->regmap,
+					MADERA_IN1L_CONTROL + (i * 8),
+					MADERA_IN1_DMIC_SUP_MASK, dig_mode);
+		if (ret)
+			return ret;
 
 		if (i >= max_analogue_inputs)
 			continue;
 
-		regmap_update_bits(madera->regmap,
-				   MADERA_ADC_DIGITAL_VOLUME_1L + (i * 8),
-				   MADERA_IN1L_SRC_SE_MASK, ana_mode_l);
+		ret = regmap_write_bits(madera->regmap,
+					MADERA_ADC_DIGITAL_VOLUME_1L + (i * 8),
+					MADERA_IN1L_SRC_SE_MASK, ana_mode_l);
+		if (ret)
+			return ret;
 
-		regmap_update_bits(madera->regmap,
-				   MADERA_ADC_DIGITAL_VOLUME_1R + (i * 8),
-				   MADERA_IN1R_SRC_SE_MASK, ana_mode_r);
+		ret = regmap_write_bits(madera->regmap,
+					MADERA_ADC_DIGITAL_VOLUME_1R + (i * 8),
+					MADERA_IN1R_SRC_SE_MASK, ana_mode_r);
+		if (ret)
+			return ret;
 	}
+
+	return 0;
 }
 
 int madera_init_inputs(struct snd_soc_component *component)
@@ -1178,9 +1187,7 @@ int madera_init_inputs(struct snd_soc_component *component)
 	struct madera_priv *priv = snd_soc_component_get_drvdata(component);
 	struct madera *madera = priv->madera;
 
-	madera_configure_input_mode(madera);
-
-	return 0;
+	return madera_configure_input_mode(madera);
 }
 EXPORT_SYMBOL_GPL(madera_init_inputs);
 
