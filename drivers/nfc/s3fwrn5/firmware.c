@@ -128,6 +128,11 @@ static int s3fwrn5_fw_get_bootinfo(struct s3fwrn5_fw_info *fw_info,
 		goto out;
 	}
 
+	if (rsp->len < S3FWRN5_FW_HDR_SIZE + 10) {
+		ret = -EPROTO;
+		goto out;
+	}
+	memset(bootinfo, 0, sizeof(*bootinfo));
 	memcpy(bootinfo, rsp->data + S3FWRN5_FW_HDR_SIZE, 10);
 
 out:
@@ -333,16 +338,28 @@ int s3fwrn5_fw_request_firmware(struct s3fwrn5_fw_info *fw_info)
 	memcpy(&fw->version, fw->fw->data + 0x10, 4);
 
 	memcpy(&sig_off, fw->fw->data + 0x14, 4);
-	fw->sig = fw->fw->data + sig_off;
 	memcpy(&fw->sig_size, fw->fw->data + 0x18, 4);
 
 	memcpy(&image_off, fw->fw->data + 0x1C, 4);
-	fw->image = fw->fw->data + image_off;
 	memcpy(&fw->image_sectors, fw->fw->data + 0x20, 4);
 
 	memcpy(&custom_sig_off, fw->fw->data + 0x24, 4);
-	fw->custom_sig = fw->fw->data + custom_sig_off;
 	memcpy(&fw->custom_sig_size, fw->fw->data + 0x28, 4);
+
+	/* Validate offsets before forming pointers; wire lengths are u16. */
+	if (sig_off > fw->fw->size ||
+	    fw->sig_size > fw->fw->size - sig_off ||
+	    fw->sig_size > U16_MAX ||
+	    custom_sig_off > fw->fw->size ||
+	    fw->custom_sig_size > fw->fw->size - custom_sig_off ||
+	    fw->custom_sig_size > U16_MAX || image_off >= fw->fw->size) {
+		release_firmware(fw->fw);
+		return -EINVAL;
+	}
+
+	fw->sig = fw->fw->data + sig_off;
+	fw->image = fw->fw->data + image_off;
+	fw->custom_sig = fw->fw->data + custom_sig_off;
 
 	return 0;
 }
@@ -425,14 +442,12 @@ bool s3fwrn5_fw_check_version(const struct s3fwrn5_fw_info *fw_info, u32 version
 	struct s3fwrn5_fw_version *new = (void *) &fw_info->fw.version;
 	struct s3fwrn5_fw_version *old = (void *) &version;
 
-	if (new->major > old->major)
-		return true;
-	if (new->build1 > old->build1)
-		return true;
-	if (new->build2 > old->build2)
-		return true;
+	if (new->major != old->major)
+		return new->major > old->major;
+	if (new->build1 != old->build1)
+		return new->build1 > old->build1;
 
-	return false;
+	return new->build2 > old->build2;
 }
 
 int s3fwrn5_fw_download(struct s3fwrn5_fw_info *fw_info)
@@ -443,7 +458,17 @@ int s3fwrn5_fw_download(struct s3fwrn5_fw_info *fw_info)
 	u32 image_size, off;
 	int ret;
 
+	/* update_sector() sends exactly sixteen 256-byte data packets. */
+	if (fw_info->sector_size != 4096 || !fw->image_sectors ||
+	    fw->image_sectors > U32_MAX / fw_info->sector_size ||
+	    fw_info->sig_size > U16_MAX)
+		return -EINVAL;
+
 	image_size = fw_info->sector_size * fw->image_sectors;
+	if (image_size > fw->fw->size -
+	    ((const u8 *)fw->image - fw->fw->data) ||
+	    image_size > U32_MAX - fw_info->base_addr)
+		return -EINVAL;
 
 	/* Compute SHA of firmware data */
 	sha1(fw->image, image_size, hash_data);
