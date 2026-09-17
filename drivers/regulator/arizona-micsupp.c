@@ -280,7 +280,12 @@ static int arizona_micsupp_common_init(struct platform_device *pdev,
 		config.init_data = &micsupp->init_data;
 
 	/* Default to regulated mode */
-	regmap_update_bits(micsupp->regmap, desc->enable_reg, desc->bypass_mask, 0);
+	ret = regmap_update_bits(micsupp->regmap, desc->enable_reg,
+				 desc->bypass_mask, 0);
+	if (ret) {
+		of_node_put(config.of_node);
+		return ret;
+	}
 
 	micsupp->regulator = devm_regulator_register(&pdev->dev,
 						     desc,
