@@ -1106,6 +1106,8 @@ static const struct v4l2_file_operations s5p_mfc_fops = {
 static void s5p_mfc_memdev_release(struct device *dev)
 {
 	of_reserved_mem_device_release(dev);
+	kfree(dev->dma_parms);
+	kfree(dev);
 }
 
 static struct device *s5p_mfc_alloc_memdev(struct device *dev,
@@ -1114,7 +1116,7 @@ static struct device *s5p_mfc_alloc_memdev(struct device *dev,
 	struct device *child;
 	int ret;
 
-	child = devm_kzalloc(dev, sizeof(*child), GFP_KERNEL);
+	child = kzalloc_obj(*child);
 	if (!child)
 		return NULL;
 
@@ -1124,8 +1126,7 @@ static struct device *s5p_mfc_alloc_memdev(struct device *dev,
 	child->coherent_dma_mask = dev->coherent_dma_mask;
 	child->dma_mask = dev->dma_mask;
 	child->release = s5p_mfc_memdev_release;
-	child->dma_parms = devm_kzalloc(dev, sizeof(*child->dma_parms),
-					GFP_KERNEL);
+	child->dma_parms = kzalloc_obj(*child->dma_parms);
 	if (!child->dma_parms)
 		goto err;
 
@@ -1209,10 +1210,10 @@ static int s5p_mfc_configure_2port_memory(struct s5p_mfc_dev *mfc_dev)
 
 static void s5p_mfc_unconfigure_2port_memory(struct s5p_mfc_dev *mfc_dev)
 {
-	device_unregister(mfc_dev->mem_dev[BANK_L_CTX]);
-	device_unregister(mfc_dev->mem_dev[BANK_R_CTX]);
 	vb2_dma_contig_clear_max_seg_size(mfc_dev->mem_dev[BANK_L_CTX]);
 	vb2_dma_contig_clear_max_seg_size(mfc_dev->mem_dev[BANK_R_CTX]);
+	device_unregister(mfc_dev->mem_dev[BANK_L_CTX]);
+	device_unregister(mfc_dev->mem_dev[BANK_R_CTX]);
 }
 
 static int s5p_mfc_configure_common_memory(struct s5p_mfc_dev *mfc_dev)
