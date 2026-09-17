@@ -34,8 +34,8 @@ enum arizona_type {
 	WM1814 = 6,
 	WM1831 = 7,
 	CS47L24 = 8,
-	CS47L90 = 9,
-	CS47L91 = 10,
+	ARIZONA_CS47L90 = 9,
+	ARIZONA_CS47L91 = 10,
 };
 
 #define ARIZONA_IRQ_GP1                    0
