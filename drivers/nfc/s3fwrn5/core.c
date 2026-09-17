@@ -46,8 +46,11 @@ static int s3fwrn5_firmware_update(struct s3fwrn5_info *info)
 	s3fwrn5_set_mode(info, S3FWRN5_MODE_FW);
 
 	ret = s3fwrn5_fw_setup(&info->fw_info);
-	if (ret < 0)
+	if (ret < 0) {
+		/* setup() already released the image on failure. */
+		s3fwrn5_set_mode(info, S3FWRN5_MODE_COLD);
 		return ret;
+	}
 
 	need_update = s3fwrn5_fw_check_version(&info->fw_info,
 		info->ndev->manufact_specific_info);
@@ -127,10 +130,12 @@ static int s3fwrn5_nci_post_setup(struct nci_dev *ndev)
 	struct s3fwrn5_info *info = nci_get_drvdata(ndev);
 	int ret;
 
-	if (s3fwrn5_firmware_init(info)) {
-		//skip bootloader mode
+	ret = s3fwrn5_firmware_init(info);
+	/* An absent image is optional; an invalid or unreadable one is not. */
+	if (ret == -ENOENT)
 		return 0;
-	}
+	if (ret < 0)
+		return ret;
 
 	ret = s3fwrn5_firmware_update(info);
 	if (ret < 0)
@@ -181,14 +186,13 @@ int s3fwrn5_probe(struct nci_dev **ndev, void *phy_id, struct device *pdev,
 
 	nci_set_parent_dev(info->ndev, pdev);
 	nci_set_drvdata(info->ndev, info);
+	info->fw_info.ndev = info->ndev;
 
 	ret = nci_register_device(info->ndev);
 	if (ret < 0) {
 		nci_free_device(info->ndev);
 		return ret;
 	}
-
-	info->fw_info.ndev = info->ndev;
 
 	*ndev = info->ndev;
 
